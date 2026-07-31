@@ -1,5 +1,6 @@
 {
   "baseUrl": "https://api.deepseek.com",
   "apiKey": "sk-your-key-here",
-  "model": "deepseek-v4-flash"
+  "model": "deepseek-v4-flash",
+  "provider": "deepseek"
 }

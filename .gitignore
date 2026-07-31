@@ -19,3 +19,7 @@ Thumbs.db
 
 # API 配置（含密钥）
 config/api.json
+config/provider-store.json
+
+# 会话历史
+sessions/

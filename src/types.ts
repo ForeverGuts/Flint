@@ -4,7 +4,9 @@
  * 服务于：定义 Agent 启动所需的静态信息
  */
 export interface AgentConfig {
+  /** Agent 名称 */
   name: string;
+  /** 版本号（语义化） */
   version: string;
 }
 
@@ -34,7 +36,10 @@ export enum Mode {
 
 /** Check 检查结果，由 check() 返回，供 main() 注入 Runtime */
 export interface CheckResult {
+  /** 已初始化的 LLM Provider */
   llm: import('./llm/types.js').LLMProvider;
+  /** LLM 配置信息（模型名等，用于 UI 展示） */
+  config?: import('./llm/types.js').LLMConfig;
 }
 
 /**
@@ -51,4 +56,10 @@ export interface RuntimeOptions {
   session?: SessionStorage;
   /** TODO: 配置 / 扩展 / 资源管理 */
   services?: unknown;
+  /** 当前模型名（供 /model 命令查看和切换） */
+  model?: string;
+  /** 当前 provider 类型 */
+  provider?: string;
+  /** 当前 baseUrl */
+  baseUrl?: string;
 }

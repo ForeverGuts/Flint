@@ -16,5 +16,5 @@ export async function check(): Promise<CheckResult> {
   const config = JSON.parse(raw) as LLMConfig;
   const llm = createProvider(config);
 
-  return { llm };
+  return { llm, config };
 }

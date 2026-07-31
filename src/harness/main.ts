@@ -1,63 +1,120 @@
 /**
  * Agent 启动逻辑。
  * 调用方：harness/index.ts（check 通过后由 Harness.run 调用）
- * 服务于：接收 check 结果 → 注入 Runtime → 按模式进入不同交互方式
+ * 服务于：接收 check 结果 → 创建闭包工厂 → 注入 Runtime → 按模式交互
  */
-import { Runtime } from '../runtime/runtime.js';
-import type { RuntimeOptions } from '../types.js';
-import { Mode } from '../types.js';
-import { closeTerminal, readLine } from '../io/terminal.js';
-import type { LLMProvider } from '../llm/types.js';
 
-export async function main(llm: LLMProvider): Promise<void> {
-  const options: RuntimeOptions = { mode: Mode.Repl, llm };
-  const runtime = new Runtime(options);
+import { Runtime } from '../runtime/runtime.js';
+import { Mode } from '../types.js';
+import type { CheckResult, SessionStorage } from '../types.js';
+import { existsSync } from 'node:fs';
+import { closeTerminal, readLine, isClosed } from '../io/terminal.js';
+import { JsonlSessionStorage } from '../runtime/jsonl-storage.js';
+import { registerBuiltinCommands } from '../runtime/commands.js';
+import { registerBuiltinTools } from '../runtime/tools.js';
+import { demoInputHandler } from '../runtime/commands-handle.js';
+import { TerminalUI } from '../io/ui/index.js';
+
+interface CreateRuntimeOptions {
+  session?: SessionStorage | undefined;
+  services?: unknown;
+  cwd?: string;
+  model?: string;
+}
+
+interface CreateRuntimeResult {
+  runtime: Runtime;
+}
+
+export async function main(checkResult: CheckResult): Promise<void> {
+  const { llm } = checkResult;
+  const modelName = checkResult.config?.model ?? 'unknown';
+  const baseUrl = checkResult.config?.baseUrl ?? '';
+
+  // 初始化持久化会话
+  const sessionDir = './sessions';
+  const sessionPath = `${sessionDir}/default.jsonl`;
+  const session: SessionStorage = existsSync(sessionPath)
+    ? await JsonlSessionStorage.open(sessionPath)
+    : await JsonlSessionStorage.create(sessionDir, 'default');
+
+  const createRuntime = async (options: CreateRuntimeOptions): Promise<CreateRuntimeResult> => {
+    const runtime = new Runtime({
+      mode: Mode.Repl,
+      llm,
+      session: options.session ?? session,
+      model: modelName,
+      provider: checkResult.config?.provider ?? '',
+      baseUrl,
+    });
+    return { runtime };
+  };
+
+  const { runtime } = await createRuntime({});
+
+  // 注册命令 + 工具 + 事件处理器
+  await registerBuiltinCommands(runtime);
+  registerBuiltinTools(runtime);
+  runtime.onInput(demoInputHandler);
 
   process.on('SIGINT', () => { closeTerminal(); runtime.stop().then(() => process.exit(0)); });
   process.on('SIGTERM', () => { closeTerminal(); runtime.stop().then(() => process.exit(0)); });
 
-  switch (options.mode) {
-    case Mode.Repl:
-      await runReplMode(runtime);
-      break;
-    case Mode.Rpc:
-      await runRpcMode(runtime);
-      break;
-  }
+  // 收集启动信息传入 UI
+  const msgs = await session.getMessages();
+  await runReplMode(runtime, {
+    // ui页面展示的信息
+    model: modelName,
+    baseUrl,
+    sessionMsgs: msgs.length,
+    toolCount: runtime.tools.getLLMTools().length,
+    cmdCount: runtime.listCommands().length,
+    skillCount: runtime.getSkillLoader().getAll().length,
+  });
 
   closeTerminal();
-  process.exit(0);
 }
 
-/* ── 通用：读取用户输入，跳过空行，检测退出 ── */
+/* ── REPL 模式 ── */
 
-/** 返回用户输入文本，返回 null 表示用户请求退出（/exit） */
+const promptArrow = `  ${'\x1b[94m'}└─${'\x1b[0m'} `;
+
+interface ReplInfo {
+  model: string;
+  baseUrl: string;
+  sessionMsgs: number;
+  toolCount: number;
+  cmdCount: number;
+  skillCount: number;
+}
+
 async function getUserInput(): Promise<string | null> {
-  const input = await readLine('> ');
+  const input = await readLine();
   const trimmed = input.trim();
   if (!trimmed) return '';
   if (trimmed === '/exit') return null;
   return trimmed;
 }
 
-/* ── REPL 模式：持有 while(true)，循环读 → 调 → 印 ── */
+async function runReplMode(runtime: Runtime, info: ReplInfo): Promise<void> {
+  const ui = new TerminalUI();
 
-async function runReplMode(runtime: Runtime): Promise<void> {
-  console.log('REPL mode — type /exit to quit');
+  ui.showBanner(info);
+
+  ui.attach(runtime);
+
   while (true) {
+    process.stdout.write(promptArrow);
     const input = await getUserInput();
     if (input === null) break;
-    if (!input) continue;
+    if (!input) {
+      if (isClosed()) break;
+      continue;
+    }
 
-    const reply = await runtime.prompt(input);
-    console.log(`🤖 ${reply}`);
+    ui.showUserInput(input);
+    await runtime.prompt(input);
   }
-}
 
-/* ── RPC 模式：事件驱动，无循环 ── */
-
-async function runRpcMode(runtime: Runtime): Promise<void> {
-  // TODO: stdin JSON-RPC 监听 → runtime.prompt() → stdout 回复
-  void runtime;
-  await new Promise(() => {});
+  ui.detach();
 }
