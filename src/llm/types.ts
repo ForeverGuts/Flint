@@ -38,7 +38,7 @@ export interface LLMToolCall {
   };
 }
 
-/** LLM Provider 配置（读取自 config/api.json） */
+/** LLM Provider 配置（读取自 config/active-config.json，当前激活配置） */
 export interface LLMConfig {
   /** 厂商标识：deepseek / openai / anthropic / ollama */
   provider?: string;

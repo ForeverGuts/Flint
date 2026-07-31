@@ -7,20 +7,20 @@ import type { Runtime } from '../runtime.js';
 import { getProviderRegistry } from '../provider-registry.js';
 import { selectFromList } from '../../io/ui/selector.js';
 import { createProvider } from '../../llm/index.js';
-import { readFileSync, writeFileSync } from 'node:fs';
 
 export function activate(runtime: Runtime): void {
   runtime.registerCommand('model', '切换当前供应商的模型（↑↓ 导航选择）', async () => {
-    const registry = getProviderRegistry();
+    const registry = await getProviderRegistry();
     const active = registry.getActive();
 
     if (!active) return '❌ 当前没有激活的供应商，请先使用 /provider 选择一个供应商。';
 
     const modelChoices = active.models.map(m => {
       const isCurrent = m.id === registry.getActiveModel();
+      const staticTag = m.isStatic ? ' (静态模型)' : '';
       return {
         value: m.id,
-        label: isCurrent ? `${m.label} ← 当前` : m.label,
+        label: isCurrent ? `${m.label}${staticTag} ← 当前` : `${m.label}${staticTag}`,
         description: m.description ?? '',
       };
     });
@@ -39,7 +39,7 @@ export function activate(runtime: Runtime): void {
 
 function applyModelSwitch(
   runtime: Runtime,
-  registry: ReturnType<typeof getProviderRegistry>,
+  registry: Awaited<ReturnType<typeof getProviderRegistry>>,
   providerId: string,
   modelId: string,
 ): string {
@@ -63,16 +63,7 @@ function applyModelSwitch(
   runtime.currentProvider = provider.type;
   runtime.currentBaseUrl = provider.baseUrl;
   runtime.currentModel = modelId;
-
-  try {
-    const oldConfig = JSON.parse(readFileSync('config/api.json', 'utf-8'));
-    writeFileSync('config/api.json', JSON.stringify({
-      provider: provider.type,
-      baseUrl: provider.baseUrl,
-      apiKey: provider.apiKey || oldConfig.apiKey || '',
-      model: modelId,
-    }, null, 2), 'utf-8');
-  } catch { /* 写入失败不影响运行 */ }
+  // 注：config/active-config.json 已由 registry.activate() 写入，此处不重复写
 
   const modelLabel = provider.models.find(m => m.id === modelId)?.label ?? modelId;
   return `✅ 已切换模型为: ${modelLabel}`;

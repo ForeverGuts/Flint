@@ -1,0 +1,64 @@
+{
+  "providers": [
+    {
+      "id": "opencode-go",
+      "name": "OpenCode Go",
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "type": "opencode-go",
+      "apiKeyEnv": "OPENCODE_GO_KEY",
+      "isDefault": true,
+      "staticModels": [
+        { "id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "description": "¥0.14/1M 输入，快速省钱的编码模型" },
+        { "id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "description": "¥0.435/1M 输入，能力强但贵" },
+        { "id": "qwen3.7-max", "label": "Qwen3.7 Max", "description": "阿里通义旗舰" },
+        { "id": "qwen3.7-plus", "label": "Qwen3.7 Plus", "description": "¥0.40/1M 输入，256K 上下文" },
+        { "id": "qwen3.6-plus", "label": "Qwen3.6 Plus", "description": "¥0.50/1M 输入" },
+        { "id": "kimi-k2.7-code", "label": "Kimi K2.7 Code", "description": "月之暗面编程专用模型" },
+        { "id": "kimi-k3", "label": "Kimi K3", "description": "月之暗面旗舰" },
+        { "id": "glm-5.2", "label": "GLM-5.2", "description": "智谱旗舰" },
+        { "id": "grok-4.5", "label": "Grok 4.5", "description": "xAI 最强模型，¥2/1M 输入" },
+        { "id": "mimo-v2.5", "label": "MiMo V2.5", "description": "¥0.14/1M 输入，超高性价比" },
+        { "id": "mimo-v2.5-pro", "label": "MiMo V2.5 Pro", "description": "¥0.435/1M 输入" },
+        { "id": "minimax-m3", "label": "MiniMax M3", "description": "¥0.30/1M 输入" },
+        { "id": "hy3", "label": "Hy3", "description": "¥0.14/1M 输入" }
+      ]
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek 官方",
+      "baseUrl": "https://api.deepseek.com",
+      "type": "deepseek",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "staticModels": [
+        { "id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "description": "¥0.50/1M 输入，快速版" },
+        { "id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "description": "¥0.80/1M 输入，更强劲" },
+        { "id": "deepseek-chat", "label": "DeepSeek Chat", "description": "通用聊天模型" }
+      ]
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI 官方",
+      "baseUrl": "https://api.openai.com/v1",
+      "type": "openai",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "staticModels": [
+        { "id": "gpt-4o", "label": "GPT-4o", "description": "OpenAI 旗舰多模态模型" },
+        { "id": "gpt-4o-mini", "label": "GPT-4o Mini", "description": "GPT-4o 轻量版" },
+        { "id": "gpt-4.1", "label": "GPT-4.1", "description": "GPT-4 最新版" },
+        { "id": "o3-mini", "label": "o3-mini", "description": "OpenAI 推理模型" }
+      ]
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic 官方",
+      "baseUrl": "https://api.anthropic.com",
+      "type": "anthropic",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "staticModels": [
+        { "id": "claude-sonnet-4-20250514", "label": "Claude Sonnet 4", "description": "Anthropic 旗舰" },
+        { "id": "claude-haiku-3-5-20241022", "label": "Claude Haiku 3.5", "description": "快速轻量版" },
+        { "id": "claude-opus-4-20250514", "label": "Claude Opus 4", "description": "最强推理模型" }
+      ]
+    }
+  ]
+}

@@ -12,7 +12,7 @@ export async function check(): Promise<CheckResult> {
   // TODO: 更多启动前检查（环境变量、端口占用、权限等）
   // TODO: 调用模型列表接口，自动列出可用模型
 
-  const raw = readFileSync('config/api.json', 'utf-8');
+  const raw = readFileSync('config/active-config.json', 'utf-8');
   const config = JSON.parse(raw) as LLMConfig;
   const llm = createProvider(config);
 

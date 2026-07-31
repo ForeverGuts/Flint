@@ -18,8 +18,8 @@ Thumbs.db
 .env.local
 
 # API 配置（含密钥）
-config/api.json
-config/provider-store.json
+config/active-config.json
+config/provider-keys.json
 
 # 会话历史
 sessions/

@@ -13,6 +13,27 @@
 >   [CI✅]      编译 / 构建 / 验证
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
+2026-07-31 21:45 | [Feature✨] 新增 mock/ 测试模块：MockStdin/MockStdout/installTerminalMocks，测试可注入按键捕获输出
+2026-07-31 21:45 | [CI✅] 键盘驱动测试：模拟方向键/翻页/全局序号/锚点机制/窄终端裁剪，14 项断言全通过
+2026-07-31 21:45 | [Docs📝] 更新 Log/目录.md 反映当前结构（mock/ 目录 + config 新文件布局）
+
+2026-07-31 17:09 | [Fix🐛] 选择器改锚点+清屏重绘（\x1b[s / \x1b[u / \x1b[0J），彻底消除方向键漂移
+2026-07-31 17:09 | [Refactor♻️] 移除选择器行数回退计数（FIXED_LINES/RESERVED_EXTRA），改为绝对锚点定位
+2026-07-31 17:09 | [Fix🐛] fitWidth 按可见宽度裁剪每行，杜绝终端 wrap 导致内容错乱
+
+2026-07-31 16:30 | [Refactor♻️] config/api.json → config/active-config.json，名称直观表达"当前激活配置"
+2026-07-31 16:30 | [Refactor♻️] config/api.example.json → config/active-config.example.json 同步改名
+
+2026-07-31 16:17 | [Refactor♻️] 消除激活状态双写：删除 provider-active.json，api.json 成为唯一真相源
+2026-07-31 16:17 | [Refactor♻️] activate/getActive/getActiveModel 统一读写 config/api.json，删除命令中重复写入逻辑
+2026-07-31 16:17 | [Refactor♻️] 删除 ProviderActive 接口 + loadProviderActive/saveProviderActive 方法
+
+2026-07-31 14:55 | [Refactor♻️] 供应商定义迁至 config/providers.json，运行时载入，无需改代码新增供应商
+2026-07-31 14:55 | [Feature✨] API Key 优先从环境变量解析（apiKeyEnv 字段），provider-store 兜底
+2026-07-31 14:55 | [Feature✨] 模型列表启动时从 {baseUrl}/models 远程拉取，失败回退 staticModels
+2026-07-31 14:55 | [Feature✨] /provider 无 API Key 时交互式输入密钥并持久化
+2026-07-31 14:55 | [Refactor♻️] getProviderRegistry() 改为 promise 单例，支持 async 初始化
+
 2026-07-30 16:12 | [Feature✨] 新增 Provider 工厂路由：LLMConfig.provider 字段支持 deepseek/openai/anthropic/opencode-go
 2026-07-30 16:12 | [Feature✨] 新增 AnthropicProvider：消息格式转换 + API 端点 + SSE 解析适配
 2026-07-30 16:12 | [Refactor♻️] AnthropicAdapter → AnthropicProvider，统一 Provider 命名规范

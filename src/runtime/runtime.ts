@@ -407,14 +407,15 @@ export class Runtime {
 
     const { getProviderRegistry } = await import('../runtime/provider-registry.js');
     const { createProvider } = await import('../llm/index.js');
-    const registry = getProviderRegistry();
+    const registry = await getProviderRegistry();
     const fallback = registry.getFallback();
 
     if (!fallback) return false;
 
+    const fallbackLabel = `${fallback.provider.name} (${fallback.provider.models.find(m => m.id === fallback.modelId)?.label ?? fallback.modelId})`;
     const choice = await selectFromList(
       [
-        { value: 'switch', label: '切换到 OpenCode Go (DeepSeek V4 Flash)' },
+        { value: 'switch', label: `切换到 ${fallbackLabel}` },
         { value: 'no', label: '不切换，直接退出' },
       ],
       '❌ LLM 调用失败，是否切换兜底模型？',
@@ -432,7 +433,7 @@ export class Runtime {
       this.currentProvider = p.type;
       this.currentBaseUrl = p.baseUrl;
       this.currentModel = fallback.modelId;
-      console.log('  ✅ 已自动切换到 OpenCode Go (DeepSeek V4 Flash)，请重试。');
+      console.log(`  ✅ 已切换到 ${fallbackLabel}，请重试。`);
       return true;
     }
 
