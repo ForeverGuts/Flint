@@ -13,6 +13,21 @@
 >   [CI✅]      编译 / 构建 / 验证
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
+2026-08-01 16:34 | [CI✅] steering/followUp/外层循环测试：9 项断言全通过（优先级 steer>followUp，队列正确消费）
+2026-08-01 16:34 | [CI✅] createToolCallFilter 过滤测试：6 项断言全通过（跨片/未闭合/前缀误判）
+
+2026-08-01 16:02 | [Feature✨] 实现 steering 中间插入（方案1：不 abort 当前流，当前轮结束后优先处理）
+2026-08-01 16:02 | [Feature✨] prompt 增加 streamingBehavior 参数（'steer'/'followUp'），生成中消息可分流
+2026-08-01 16:02 | [Feature✨] 外层循环 steering 优先于 followUp 消费（仿 Pi 语义，优先级：steer > followUp）
+
+2026-08-01 15:34 | [Feature✨] prompt 改双层循环（仿 Pi runLoop）：外层消费 followUp 队列，内层 runSingleTurn 单条处理
+2026-08-01 15:34 | [Feature✨] 新增 followUp 队列消费（dequeueFollowUp）+ steering 队列预留点
+2026-08-01 15:34 | [Fix🐛] UI 流式输出跨片换行缩进修复（atLineStart 状态），消除顶格/空段错位
+
+2026-08-01 15:07 | [Refactor♻️] prompt ⑧ 段合并为单一 stream 循环：一次调用完成工具检测+流式输出，消除 token 双倍
+2026-08-01 15:07 | [Feature✨] 新增 createToolCallFilter 流式过滤状态机，剔除 <tool_call> 标签只展示纯文本
+2026-08-01 15:07 | [Optimize⚡] 移除 chat()+stream() 双阶段重复调用，工具检测改为基于 stream 完整输出
+
 2026-07-31 21:45 | [Feature✨] 新增 mock/ 测试模块：MockStdin/MockStdout/installTerminalMocks，测试可注入按键捕获输出
 2026-07-31 21:45 | [CI✅] 键盘驱动测试：模拟方向键/翻页/全局序号/锚点机制/窄终端裁剪，14 项断言全通过
 2026-07-31 21:45 | [Docs📝] 更新 Log/目录.md 反映当前结构（mock/ 目录 + config 新文件布局）

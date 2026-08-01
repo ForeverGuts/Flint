@@ -118,3 +118,105 @@ export function estimateTokenUsage(
   const completionTokens = estimate(output);
   return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
 }
+
+/**
+ * 流式工具调用文本过滤 —— 从逐片到达的 LLM token 流中剔除 <tool_call> 块。
+ * 调用方：runtime.ts（单 stream 循环里，把每个 token 先过这里再推给 UI）
+ * 服务于：工具调用标签是给系统解析的，不应展示给用户
+ *
+ * 难点：token 是逐片到达的，单看某个 token 无法判断它是否属于 <tool_call>。
+ * 方案：累积一个"尾随缓冲"，当缓冲末尾与 <tool_call> 开头匹配时，
+ *       后续内容进入"隐藏模式"，直到拼出 </tool_call> 闭合标签。
+ *       隐藏模式下吞掉所有文本；非隐藏模式下把文本返回供展示。
+ *
+ * 用法（状态机，跨多次调用保持 this 引用）：
+ *   const filter = createToolCallFilter();
+ *   const visible = filter.push(tokenText);   // 返回应展示给用户的文本（可为空）
+ *   filter.flush();                            // 流结束时取残留（若有未闭合标签）
+ */
+export interface ToolCallFilter {
+  /** 喂入一段 token 文本，返回应展示给用户的文本（tool_call 内部为空串） */
+  push(text: string): string;
+  /** 流结束时调用，返回缓冲中的残留可见文本（丢弃未闭合的 tool_call 尾部） */
+  flush(): string;
+  /** 当前是否处于 tool_call 隐藏模式（供调试/测试） */
+  inToolCall(): boolean;
+}
+
+/** 创建工具调用过滤状态机 */
+export function createToolCallFilter(): ToolCallFilter {
+  const OPEN_TAG = '<tool_call>';
+  const CLOSE_TAG = '</tool_call>';
+  /** 尾随缓冲：累积未消费的字符，用于匹配开标签 */
+  let tail = '';
+  /** 是否处于 tool_call 隐藏模式 */
+  let hidden = false;
+  /** 隐藏模式中累积的片段（用于匹配闭合标签） */
+  let hiddenBuf = '';
+
+  return {
+    push(text: string): string {
+      if (!text) return '';
+      let visible = '';
+      let pending = text;
+
+      if (hidden) {
+        // ── 隐藏模式：累积直到拼出闭合标签 ──
+        hiddenBuf += pending;
+        const closeIdx = hiddenBuf.indexOf(CLOSE_TAG);
+        if (closeIdx !== -1) {
+          hidden = false;
+          hiddenBuf = '';
+        }
+        return ''; // 隐藏模式下不展示任何内容
+      }
+
+      // ── 正常模式：把新文本拼到尾随缓冲 ──
+      tail += pending;
+
+      // 检查是否出现开标签：从缓冲中查找 <tool_call>
+      const openIdx = tail.indexOf(OPEN_TAG);
+      if (openIdx !== -1) {
+        // 开标签之前的文本是可见的
+        visible = tail.slice(0, openIdx);
+        // 进入隐藏模式，开标签本身及其后内容都不展示
+        hidden = true;
+        hiddenBuf = tail.slice(openIdx + OPEN_TAG.length);
+        tail = '';
+        // 如果开标签后已含闭合标签（极端情况，同片内闭合），尝试立即闭合
+        if (hiddenBuf.includes(CLOSE_TAG)) {
+          hidden = false;
+          hiddenBuf = '';
+        }
+        return visible;
+      }
+
+      // 没找到开标签：但尾随缓冲可能只含开标签的前缀（如 "<tool_ca"）
+      // 保留 tail 用于下一片匹配，同时把"确定是前缀"的部分截掉
+      const maxPrefixLen = OPEN_TAG.length - 1;
+      if (tail.length > maxPrefixLen) {
+        // 前 tail.length - maxPrefixLen 个字符不可能属于开标签前缀（超长了），可以安全展示
+        const safeLen = tail.length - maxPrefixLen;
+        visible = tail.slice(0, safeLen);
+        tail = tail.slice(safeLen);
+      }
+      return visible;
+    },
+
+    flush(): string {
+      const leftover = tail;
+      tail = '';
+      if (hidden) {
+        // 流结束时仍在隐藏模式 → 开标签未闭合，丢弃隐藏缓冲，tail 也一并丢弃
+        hidden = false;
+        hiddenBuf = '';
+        return '';
+      }
+      return leftover;
+    },
+
+    inToolCall(): boolean {
+      return hidden;
+    },
+  };
+}

@@ -54,6 +54,8 @@ function bot(color: string): string {
 export class TerminalUI {
   private spinner = new StatusIndicator();
   private isNewResponse = true;
+  /** 流式输出是否处于"行首"（跨片维护，保证每行缩进正确，杜绝顶格/空段错位） */
+  private atLineStart = false;
   private lastUsage: { current: { totalTokens: number }; total: { totalTokens: number } } | null = null;
 
   /* ── 启动 Banner ── */
@@ -133,10 +135,39 @@ export class TerminalUI {
             this.spinner.stop();
             const label = ' TS AGENT ';
             console.log(top(C.green, label, `${C.bold}${C.brightGreen}`));
-            process.stdout.write(`  ${' '.repeat(INDENT)}  `);
+            this.atLineStart = true; // 新回复从行首开始
             this.isNewResponse = false;
           }
-          process.stdout.write(event.text.replace(/\n(?!$)/g, `\n${' '.repeat(INDENT)}  `));
+
+          // 逐片写入，跨片维护"是否在行首"状态，保证每行都有正确缩进。
+          // 不能只对片内 \n 做 replace —— 一片结尾是 \n 时，下一片开头是文字，
+          // 若不记录状态，下一片就顶格写了（这就是空段/顶格的根源）。
+          const indent = `${' '.repeat(INDENT)}  `;
+          const text = event.text;
+          let i = 0;
+          // 若当前在行首，先补缩进
+          if (this.atLineStart) {
+            process.stdout.write(indent);
+          }
+          while (i < text.length) {
+            const nl = text.indexOf('\n', i);
+            if (nl === -1) {
+              // 没有换行：写剩余，更新 atLineStart = 是否以 \n 结尾
+              process.stdout.write(text.slice(i));
+              this.atLineStart = false;
+              break;
+            }
+            // 遇到换行：写 [i..nl] 不含 \n，输出 \n，行首标记置真
+            process.stdout.write(text.slice(i, nl) + '\n');
+            this.atLineStart = true;
+            // 下一个片段若还有内容，需要补缩进（除非又是空行）
+            if (nl + 1 < text.length && text[nl + 1] !== '\n') {
+              process.stdout.write(indent);
+            } else if (nl + 1 < text.length) {
+              // 连续换行（空行）：不补缩进，直接留空行
+            }
+            i = nl + 1;
+          }
           break;
         }
 
@@ -178,6 +209,7 @@ export class TerminalUI {
           }
           console.log();
           this.isNewResponse = true;
+          this.atLineStart = false;
           break;
         }
 

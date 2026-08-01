@@ -11,7 +11,7 @@ import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from './jsonl-storage.js';
 import type { EventHandler, HookHandler } from './events.js';
 import { ToolRegistry } from './tool.js';
-import { parseToolCalls, estimateTokenUsage } from './utils.js';
+import { parseToolCalls, estimateTokenUsage, createToolCallFilter } from './utils.js';
 import { PermissionManager } from './permission.js';
 import { promptPermission } from '../io/ui/permission.js';
 import { selectFromList } from '../io/ui/selector.js';
@@ -64,27 +64,51 @@ export class Runtime {
     return this.events.on(type, handler);
   }
 
-  /* ── 流式队列 ── */
+  /* ── 流式队列（仿 Pi 的双层循环结构） ── */
 
-  /** 当前是否正在生成回复 */
+  /**
+   * 当前是否处于"外层循环进行中"（处理一条或多条 followUp 消息）。
+   * 为 true 时，新输入入队 followUp 而非直接进入 prompt。
+   */
   private isStreaming = false;
 
-  /** 待处理的 followUp 队列（当前 LLM 输出完成后逐个处理） */
+  /**
+   * followUp 队列：等当前回复完全结束后才处理的消息。
+   * 用户在 Agent 生成时输入的新消息进入此队列。
+   * 由外层循环（prompt 顶部）消费 —— 仿 Pi runLoop 的 getFollowUpMessages()。
+   */
   private followUpQueue: string[] = [];
+
+  /**
+   * steering 队列（预留）：立即打断当前流并处理的消息。
+   * 需 llm.stream() 支持 AbortSignal 才能中断进行中的流 —— 暂未接入。
+   */
+  private steerQueue: string[] = [];
 
   /** 累计 token 用量 */
   totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
-  // TODO: steer 队列 + AbortSignal 打断
-  //   steer 需要中断正在进行的 LLM 流：
-  //   1. llm.stream() 接受 AbortSignal
-  //   2. queueSteer 时触发 abort，停止当前流
-  //   3. 立即用新消息重新进入 prompt 循环
-  //   private steerQueue: string[] = [];
-
-  /** 发送一条 followUp 消息到队列中 */
+  /** 发送一条 followUp 消息到队列中（等当前回复结束后处理） */
   private queueFollowUp(text: string): void {
     this.followUpQueue.push(text);
+  }
+
+  /** 取出下一条待处理的 followUp 消息（无则返回 null） */
+  private dequeueFollowUp(): string | null {
+    return this.followUpQueue.shift() ?? null;
+  }
+
+  /**
+   * 发送一条 steering 消息（仿 Pi：不 abort 当前流，当前轮结束后优先处理）。
+   * 与 followUp 的区别：steering 在"本轮完成后、外层循环查 followUp 之前"先被处理。
+   */
+  private queueSteer(text: string): void {
+    this.steerQueue.push(text);
+  }
+
+  /** 取出下一条 steering 消息（无则返回 null） */
+  private dequeueSteer(): string | null {
+    return this.steerQueue.shift() ?? null;
   }
 
   constructor(options: RuntimeOptions) {
@@ -145,7 +169,11 @@ export class Runtime {
 
   /* ── 核心方法 ── */
 
-  async prompt(input: string, onToken?: (chunk: string) => void): Promise<string> {
+  async prompt(
+    input: string,
+    onToken?: (chunk: string) => void,
+    streamingBehavior: 'steer' | 'followUp' = 'followUp',
+  ): Promise<string> {
     // ① 扩展命令检查
     if (input.startsWith('/')) {
       const handled = await this.tryExecuteCommand(input);
@@ -179,18 +207,88 @@ export class Runtime {
       currentText = this.expandSkill(currentText);
     }
 
-    // ④ 流式队列检查
+    // ④ 流式队列检查 —— 外层循环进行中，新消息按 streamingBehavior 分流
+    //   - 'followUp'（默认）：等当前所有回复完全结束后处理
+    //   - 'steer'：当前轮跑完后优先处理（仿 Pi，不 abort 当前流）
     if (this.isStreaming) {
+      if (streamingBehavior === 'steer') {
+        this.queueSteer(currentText);
+        if (onToken) onToken('（消息已插入，当前回复完成后立即处理）');
+        return '（已插入）';
+      }
       this.queueFollowUp(currentText);
       if (onToken) onToken('（消息已排队，等当前回复完成后处理）');
       return '（已排队）';
     }
 
-    // ⑤ 发射 thinking 事件（告诉 UI 开始旋转）
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⑤ 外层循环（仿 Pi runLoop 的 outer loop）：消费 followUp 队列
+    //
+    //   首条消息 = 用户当前输入；处理完后检查队列：
+    //     - 有 followUp → 插入上下文继续处理（等当前回复完全结束后才轮到它）
+    //     - 无 followUp → 退出外层循环
+    //
+    //   内层 = runSingleTurn()（单条消息的 LLM + 工具循环）。
+    //   【预留】steering 打断需内层 stream 支持 AbortSignal，暂未接入。
+    // ═══════════════════════════════════════════════════════════════════════════
+    this.isStreaming = true;
+    let finalResult = '';
+    try {
+      let turnText = currentText;
+      while (true) {
+        // ── ① steering 检查（优先于 followUp，仿 Pi：不 abort 当前流） ──
+        //   用户等待时输入的新消息进入 steerQueue，当前轮跑完后立即处理它。
+        //   优先级：steering > followUp（先打断，再排队）。
+        const steer = this.dequeueSteer();
+        if (steer) {
+          turnText = steer;
+          this.events.emit({ type: 'thinking', phase: 'analyzing' });
+          continue;
+        }
+
+        // ── ② 处理一条消息（内层单循环） ──
+        const result = await this.runSingleTurn(turnText, onToken);
+        finalResult = result;
+
+        // ── ③ 本轮结束后，先看有没有新 steering（可能在上轮处理期间入队） ──
+        //   有 → 下一轮优先处理它（steering 优先于 followUp）
+        const steerAfterTurn = this.dequeueSteer();
+        if (steerAfterTurn) {
+          turnText = steerAfterTurn;
+          this.events.emit({ type: 'thinking', phase: 'analyzing' });
+          continue;
+        }
+
+        // ── ④ 检查 followUp 队列：有则继续，无则退出 ──
+        const next = this.dequeueFollowUp();
+        if (!next) break;
+        turnText = next;
+        this.events.emit({ type: 'thinking', phase: 'analyzing' });
+      }
+    } finally {
+      this.isStreaming = false;
+      this.events.emit({ type: 'agent_end' });
+    }
+
+    return finalResult;
+  }
+
+  /**
+   * 处理单条用户消息的完整一轮（内层循环，仿 Pi 的 runLoop inner loop）。
+   * 调用方：prompt 的外层循环，可能被多条 followUp 消息连续调用
+   * 服务于：读历史 → 上下文压缩 → LLM 单 stream 循环（检测+执行工具）→ 存会话 → 统计
+   *
+   * @param currentText 本条要处理的消息文本
+   * @param onToken     流式 token 回调（可选，透传给 UI 展示）
+   * @returns 最终回复文本
+   */
+  private async runSingleTurn(
+    currentText: string,
+    onToken?: (chunk: string) => void,
+  ): Promise<string> {
+    // 发射 thinking 事件（告诉 UI 开始旋转）
     this.events.emit({ type: 'thinking', phase: 'analyzing' });
 
-    // ⑥ TODO: 刷新待处理消息
-    // ⑥ TODO: 模型 + Auth 验证
     // ⑦: 上下文压缩 —— 历史超限时用 LLM 总结，记录被压缩的消息 ID
     let history = this.session ? await this.session.getMessages() : [];
     let compressedSummary = '';
@@ -248,8 +346,6 @@ export class Runtime {
       `  - ${t.function.name}: ${t.function.description}（参数: ${JSON.stringify(t.function.parameters)}）`
     ).join('\n');
 
-    // ⑧: Agent Loop —— 用 chat 检测工具调用，循环执行，全部完成后流式输出
-    let finalText = '';
     const toolMessages: LLMMessage[] = [
       { role: 'system' as const, content: `你有以下工具：\n${toolDescriptions}\n\n规则：
 - 需要操作文件/执行命令时，用 <tool_call>{"name":"工具名","arguments":{...}}</tool_call>
@@ -263,111 +359,121 @@ export class Runtime {
       { role: 'user' as const, content: currentText },
     ];
 
-    // 工具循环：允许 LLM 连续操作（写文件 → 编译 → 运行等），不超过 5 轮
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⑧: Agent Loop —— 单一 stream() 循环（合并工具检测 + 流式输出）
+    //
+    // 重构说明：
+    //   旧版分两阶段：先 chat() 检测工具（非流式），再 stream() 输出（流式）。
+    //   问题：同一组 toolMessages 调两次 LLM → token 双倍；
+    //         chat 与 stream 两次响应可能不一致 → 工具检测不准；
+    //         最终回复是 chat 的旧内容，不是基于工具结果重新生成。
+    //
+    //   新版单循环：每轮只调一次 stream()，同时完成"生成文本 + 检测工具调用"。
+    //   每轮输出：
+    //     ① 有 <tool_call> → 执行工具 → 结果塞回 toolMessages → 下一轮重新 stream
+    //     ② 无 <tool_call> → turnText 就是最终答案，结束
+    //
+    //   【预留扩展点】
+    //     - followUp / steering 打断：循环顶部预留了检查点，后续接入
+    //       （steer 需 llm.stream() 支持 AbortSignal，可中断当前流后立即重进循环）
+    //     - 本轮产生的文字中，<tool_call> 片段是给系统解析的，不展示给用户，
+    //       通过 stripToolCallTags() 过滤，只推纯文本。
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    let finalText = '';
+    // 注：isStreaming 由外层循环（prompt）管理，这里不设置。
+    // 单循环：最多 5 轮，每轮 stream() 一次
     for (let turn = 0; turn < 5; turn++) {
-      // LLM 调用 + 兜底：失败时询问是否切换
-      let reply: string;
-      try {
-        reply = await this.llm.chat(toolMessages);
-      } catch (err) {
-        this.events.emit({ type: 'error', message: String(err) });
-        const switched = await this.tryFallbackOnError(err);
-        if (switched) {
-          reply = await this.llm.chat(toolMessages);
-        } else {
-          finalText = `❌ LLM 调用失败: ${err instanceof Error ? err.message : String(err)}`;
+        // 【预留点】此处可检查 followUp 队列 / steering 消息
+        //   例：const steer = this.steerQueue.shift();
+        //       if (steer) { 用新消息重新进入循环，打断当前轮 }
+        //   需 llm.stream() 支持 AbortSignal 才能中断进行中的流。
+
+        // ── ① 唯一 LLM 调用：stream() 流式生成 + 收集完整文本 ──
+        let turnText = '';
+        // 过滤器：剔除流式输出中的 <tool_call> 块，只把纯文本推给用户
+        const filter = createToolCallFilter();
+        try {
+          const eventStream = this.llm.stream(toolMessages);
+          for await (const event of eventStream) {
+            if (event.type === 'token') {
+              turnText += event.text;
+              // 过滤工具调用标签，只把可见文本推给用户
+              const visible = filter.push(event.text);
+              if (visible) {
+                onToken?.(visible);
+                this.events.emit({ type: 'stream_text', text: visible });
+              }
+            } else if (event.type === 'end') {
+              turnText = event.fullText;
+            }
+          }
+          // 流结束：吐出过滤器中残留的可见文本（丢弃未闭合的 tool_call 尾部）
+          const flushed = filter.flush();
+          if (flushed) {
+            onToken?.(flushed);
+            this.events.emit({ type: 'stream_text', text: flushed });
+          }
+        } catch (err) {
+          // 流异常 → 询问是否切兜底
+          this.events.emit({ type: 'error', message: String(err) });
+          const switched = await this.tryFallbackOnError(err);
+          if (switched) {
+            // 切换后重试本轮
+            continue;
+          } else {
+            finalText = `❌ LLM 调用失败: ${err instanceof Error ? err.message : String(err)}`;
+            break;
+          }
+        }
+
+        // ── ② 检测本轮输出中的工具调用 ──
+        const calls = parseToolCalls(turnText);
+        if (calls.length === 0) {
+          // 没有工具调用 → 这就是最终答案
+          finalText = turnText;
           break;
         }
-      }
-      const tcs = parseToolCalls(reply);
-      if (tcs.length === 0) { finalText = reply; break; }
-      for (const tc of tcs) {
-        this.events.emit({ type: 'tool_execution_start', name: tc.name, args: tc.args });
-        try {
-          // 权限检查：根据工具定义的 requirePermission 决定是否需要确认
-          if (this.tools.requiresPermission(tc.name)) {         
-            const detail = JSON.stringify(tc.args).slice(0, 80);
-            if (!this.permission.isAutoAllowed(tc.name, detail)) {
-              const choice = await promptPermission(tc.name, detail);
-              if (choice === 'deny') {
-                toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 被用户拒绝]` });
-                this.events.emit({ type: 'tool_execution_end', name: tc.name, result: '❌ 已拒绝' });
-                continue;
-              }
-              if (choice === 'always') {
-                this.permission.grantAutoAllow(tc.name, detail);
-              }
-            }
-          }
-          const result = await this.tools.execute(tc.name, tc.args);
-          toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 执行结果]\n${result}\n（工具已完成，请直接回复用户，不要再调用工具）` });
-          this.events.emit({ type: 'tool_execution_end', name: tc.name, result });
-        } catch (err) {
-          toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 执行失败]\n${err}` });
-          this.events.emit({ type: 'error', message: String(err) });
-        }
-      }
-    }
-    // 最终回复：先流式输出，结束后再检查新的工具调用
-    this.isStreaming = true;
-    try {
-      // 收集流式文本
-      const eventStream = this.llm.stream(toolMessages);
-      let full = '';
-      for await (const event of eventStream) {
-        if (event.type === 'token') {
-          full += event.text;
-          onToken?.(event.text);
-          this.events.emit({ type: 'stream_text', text: event.text });
-        } else if (event.type === 'end') {
-          full = event.fullText;
-        }
-      }
-      // 流式结束后检查是否有工具调用（LLM 可能在回复中要求继续操作）
-      const moreCalls = parseToolCalls(full);
-      if (moreCalls.length > 0) {
-        // 有工具调用，追加到 toolMessages 并重新进入工具循环
-        for (const tc of moreCalls) {
+
+        // ── ③ 有工具调用 → 逐个执行，结果塞回 toolMessages ──
+        //     工具结果将在下一轮 stream() 中作为上下文交给 LLM 再加工
+        for (const tc of calls) {
           this.events.emit({ type: 'tool_execution_start', name: tc.name, args: tc.args });
-          if (this.tools.requiresPermission(tc.name)) {
-            const detail = JSON.stringify(tc.args).slice(0, 80);
-            if (!this.permission.isAutoAllowed(tc.name, detail)) {
-              const choice = await promptPermission(tc.name, detail);
-              if (choice === 'deny') {
-                toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 被用户拒绝]` });
-                this.events.emit({ type: 'tool_execution_end', name: tc.name, result: '❌ 拒绝' });
-                continue;
-              }
-              if (choice === 'always') this.permission.grantAutoAllow(tc.name, detail);
-            }
-          }
           try {
+            // 权限检查
+            if (this.tools.requiresPermission(tc.name)) {
+              const detail = JSON.stringify(tc.args).slice(0, 80);
+              if (!this.permission.isAutoAllowed(tc.name, detail)) {
+                const choice = await promptPermission(tc.name, detail);
+                if (choice === 'deny') {
+                  toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 被用户拒绝]` });
+                  this.events.emit({ type: 'tool_execution_end', name: tc.name, result: '❌ 已拒绝' });
+                  continue;
+                }
+                if (choice === 'always') {
+                  this.permission.grantAutoAllow(tc.name, detail);
+                }
+              }
+            }
             const result = await this.tools.execute(tc.name, tc.args);
-            toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 执行结果]\n${result}` });
+            toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 执行结果]\n${result}\n（工具已完成，请直接回复用户，不要再调用工具）` });
             this.events.emit({ type: 'tool_execution_end', name: tc.name, result });
           } catch (err) {
             toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 执行失败]\n${err}` });
             this.events.emit({ type: 'error', message: String(err) });
           }
         }
-        // 工具执行完后，再调一次 LLM 生成最终回答
-        let followUp: string;
-        try {
-          followUp = await this.llm.chat(toolMessages);
-        } catch (err) {
-          const switched = await this.tryFallbackOnError(err);
-          followUp = switched ? await this.llm.chat(toolMessages) : '';
-        }
-        full = followUp || full;
-        if (onToken) { for (const c of full) { onToken(c); this.events.emit({ type: 'stream_text', text: c }); } }
-        else { this.events.emit({ type: 'stream_text', text: full }); }
+        // ④ 工具执行完 → 进入下一轮 for，stream() 带着工具结果重新生成
       }
-      finalText = full;
+
+      // ⑤ 5 轮内没得到最终回复 → 用最后一次流式文本兜底
+      if (!finalText) {
+        const last = toolMessages[toolMessages.length - 1];
+        finalText = typeof last?.content === 'string' ? last.content : '';
+      }
+
       this.events.emit({ type: 'message_end' });
-    } finally {
-      this.isStreaming = false;
-      this.events.emit({ type: 'agent_end' });
-    }
+
     await this.session?.appendMessage('user', currentText);
     await this.session?.appendMessage('assistant', finalText);
     // 计算token
