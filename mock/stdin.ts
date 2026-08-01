@@ -1,12 +1,17 @@
 /**
- * MockStdin —— 模拟 TTY 标准输入。
+ * MockStdin —— 模拟 TTY 的按键输入（方向键 / 功能键）。
  * 调用方：测试脚本（_test_*.ts）通过 mock/terminal.ts 的 installTerminalMocks 注入
- * 服务于：在非 TTY 环境下模拟键盘输入，驱动选择器 / readline / 权限弹窗等交互逻辑
+ * 服务于：在非 TTY 环境下模拟按键，驱动选择器（selector.ts）的方向键导航等交互逻辑
+ *
+ * ── 为什么只保留按键、不保留整行文本输入 ──
+ *   - 保留 emitKey / emitRaw：方向键（↑↓←→）、Enter、Ctrl+C 等**原始按键序列**，
+ *     管道模式（echo "文本" | tsx）无法产生这些按键，是选择器导航测试的唯一途径。
+ *   - 删除 emitLine：模拟"输入一行文本并回车"，可被管道输入（echo "文本"）完全覆盖，
+ *     且管道走真实 stdin 链路，覆盖更彻底，mock 此能力价值低。
  *
  * 用法（配合 installTerminalMocks）：
  *   const { stdin } = installTerminalMocks();
  *   stdin.emitKey('down');        // 模拟按 ↓
- *   stdin.emitLine('你好');       // 模拟输入一行并回车
  *   stdin.emitRaw('\x1b[B');      // 模拟任意原始按键序列
  */
 export class MockStdin {
@@ -67,11 +72,6 @@ export class MockStdin {
   }
 
   /* ── 注入方法（测试用） ── */
-
-  /** 注入一行文本 + 回车（模拟用户打字后按 Enter） */
-  emitLine(text: string): void {
-    this.emitRaw(text + '\r');
-  }
 
   /** 注入方向键 / 功能键序列 */
   emitKey(

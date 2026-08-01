@@ -157,11 +157,13 @@ export async function selectFromList<T = string>(
           do {
             selected = (selected - 1 + options.length) % options.length;
           } while (options[selected].disabled && selected !== old);
-          // 从第一项循环到末尾 → 跳到最后一页
+          // 从第一项循环到末尾 → 跳到最后一页的页首
           if (old === 0 && selected > old) {
-            pageOffset = options.length > pageSize ? options.length - pageSize : 0;
+            const lastPageStart = Math.floor((options.length - 1) / pageSize) * pageSize;
+            pageOffset = lastPageStart;
           } else if (selected < pageOffset) {
-            pageOffset = Math.max(0, pageOffset - pageSize);
+            // 上移到上一页 → 跳到 selected 所在页的页首
+            pageOffset = Math.floor(selected / pageSize) * pageSize;
           }
           changed = true;
         } else if (str === '\x1b[B') {
@@ -173,18 +175,21 @@ export async function selectFromList<T = string>(
           if (old === options.length - 1 && selected < old) {
             pageOffset = 0;
           } else if (selected >= pageOffset + pageSize) {
-            pageOffset = Math.min(options.length - pageSize, pageOffset + pageSize);
+            // selected 超出当前页可见区 → 跳到 selected 所在页的页首
+            pageOffset = Math.floor(selected / pageSize) * pageSize;
           }
           changed = true;
         } else if (str === '\x1b[D') {
+          // 上一页：pageOffset 减一页（回到上一页页首）
           if (pageOffset > 0) {
             pageOffset = Math.max(0, pageOffset - pageSize);
             selected = pageOffset;
             changed = true;
           }
         } else if (str === '\x1b[C') {
+          // 下一页：pageOffset 加一页（跳到下一页页首）
           if (pageOffset + pageSize < options.length) {
-            pageOffset = Math.min(options.length - pageSize, pageOffset + pageSize);
+            pageOffset += pageSize;
             selected = pageOffset;
             changed = true;
           }

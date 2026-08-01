@@ -13,6 +13,10 @@
 >   [CI✅]      编译 / 构建 / 验证
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
+2026-08-01 19:24 | [Refactor♻️] MockStdin 瘦身：删除 emitLine（管道可覆盖），保留 emitKey/emitRaw（方向键导航必需）
+2026-08-01 19:24 | [Fix🐛] 选择器翻页 bug：pageOffset 上限误用 options.length-pageSize，导致无法翻到后续页
+2026-08-01 19:24 | [Fix🐛] 选择器 ↑↓←→ 统一用"selected 所在页页首"语义翻页
+
 2026-08-01 19:02 | [Feature✨] REPL 非阻塞输入：常驻监听 + 队列消费，生成中可立即打断
 2026-08-01 19:02 | [Feature✨] 按键分流：普通 Enter → steer（插入打断），Alt+Enter → followUp（排队），对齐 Pi
 2026-08-01 19:02 | [Fix🐛] 管道模式丢弃最后一行输入：先处理缓冲数据再判断 isClosed 退出
