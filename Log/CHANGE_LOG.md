@@ -13,6 +13,11 @@
 >   [CI✅]      编译 / 构建 / 验证
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
+2026-08-01 19:02 | [Feature✨] REPL 非阻塞输入：常驻监听 + 队列消费，生成中可立即打断
+2026-08-01 19:02 | [Feature✨] 按键分流：普通 Enter → steer（插入打断），Alt+Enter → followUp（排队），对齐 Pi
+2026-08-01 19:02 | [Fix🐛] 管道模式丢弃最后一行输入：先处理缓冲数据再判断 isClosed 退出
+2026-08-01 19:02 | [Refactor♻️] terminal.ts 新增 readLineWithMode + Alt+Enter 检测，mock/stdin.ts 支持 keypress 事件
+
 2026-08-01 16:34 | [CI✅] steering/followUp/外层循环测试：9 项断言全通过（优先级 steer>followUp，队列正确消费）
 2026-08-01 16:34 | [CI✅] createToolCallFilter 过滤测试：6 项断言全通过（跨片/未闭合/前缀误判）
 

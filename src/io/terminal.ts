@@ -115,9 +115,58 @@ export function isClosed(): boolean {
   return closed;
 }
 
-/** 关闭 readline 接口，清理终端资源 */
+/**
+ * 关闭 readline 接口，清理终端资源
+ */
 export function closeTerminal(): void {
   if (rl && !closed) {
     rl.close();
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   非阻塞输入 + 按键模式检测（供 REPL 区分 Enter / Alt+Enter）
+   调用方：main.ts 的 REPL 循环
+   服务于：Agent 生成时也能读取用户输入；普通 Enter → steer，Alt+Enter → followUp
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+export type InputSubmitMode = 'enter' | 'alt-enter';
+
+/**
+ * 记录"最近一次 line 是否由 Alt+Enter 提交"。
+ * 依赖 Node.js readline 的 keypress 事件：
+ *   - readline 内部会 emitKeypressEvents(stdin)
+ *   - Alt+Enter 触发 keypress，key.meta === true
+ * 在 line 事件落地前，on('keypress') 先触发，据此设置标记；
+ * readLineWithMode 读 line 时消费该标记。
+ */
+let lastAltEnter = false;
+
+/** 是否已安装 keypress 辅助监听（只装一次） */
+let altEnterMonitorInstalled = false;
+
+/** 安装 Alt+Enter 检测：在 stdin 上叠加 keypress 监听，标记最近一次 Enter 是否 Alt */
+function ensureAltEnterMonitor(): void {
+  if (altEnterMonitorInstalled) return;
+  altEnterMonitorInstalled = true;
+  process.stdin.on('keypress', (_str: string, key: { name?: string; meta?: boolean }) => {
+    if (key.name === 'return' && key.meta) {
+      lastAltEnter = true;
+    }
+  });
+}
+
+/**
+ * 非阻塞读取一行输入（带提交模式检测）。
+ * 与 readLine 区别：返回 { text, mode }，mode 区分普通 Enter / Alt+Enter。
+ * 依赖现有 readline 的 'line' 事件机制（与 readLine 同源），
+ * 仅叠加 keypress 检测 Alt+Enter 标记。
+ */
+export async function readLineWithMode(prompt?: string): Promise<{ text: string; mode: InputSubmitMode }> {
+  ensureAltEnterMonitor();
+  lastAltEnter = false; // 每次读取前重置
+
+  if (prompt !== undefined) process.stdout.write(prompt);
+  const text = await readLine(prompt);
+  return { text, mode: lastAltEnter ? 'alt-enter' : 'enter' };
 }

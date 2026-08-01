@@ -8,7 +8,7 @@ import { Runtime } from '../runtime/runtime.js';
 import { Mode } from '../types.js';
 import type { CheckResult, SessionStorage } from '../types.js';
 import { existsSync } from 'node:fs';
-import { closeTerminal, readLine, isClosed } from '../io/terminal.js';
+import { closeTerminal, isClosed, readLine, readLineWithMode, type InputSubmitMode } from '../io/terminal.js';
 import { JsonlSessionStorage } from '../runtime/jsonl-storage.js';
 import { registerBuiltinCommands } from '../runtime/commands.js';
 import { registerBuiltinTools } from '../runtime/tools.js';
@@ -77,8 +77,6 @@ export async function main(checkResult: CheckResult): Promise<void> {
 
 /* ── REPL 模式 ── */
 
-const promptArrow = `  ${'\x1b[94m'}└─${'\x1b[0m'} `;
-
 interface ReplInfo {
   model: string;
   baseUrl: string;
@@ -88,33 +86,96 @@ interface ReplInfo {
   skillCount: number;
 }
 
-async function getUserInput(): Promise<string | null> {
-  const input = await readLine();
-  const trimmed = input.trim();
-  if (!trimmed) return '';
-  if (trimmed === '/exit') return null;
-  return trimmed;
+/** 待处理的用户输入队列（非阻塞 REPL 用） */
+interface PendingInput {
+  text: string;
+  mode: InputSubmitMode;
+}
+
+/** 输入队列：键盘常驻监听写入，处理循环消费 */
+const pendingInputs: PendingInput[] = [];
+
+/**
+ * 等待队列中有输入（避免竞态：先注册唤醒，再检查队列）。
+ * 若队列已有数据立即返回；否则挂起等 listener 写入后唤醒。
+ */
+function waitForInput(): Promise<void> {
+  if (pendingInputs.length > 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    // listener 写入后需要通知 —— 用一个轮询间隔兜底（简单可靠）
+    const check = setInterval(() => {
+      if (pendingInputs.length > 0 || isClosed()) {
+        clearInterval(check);
+        resolve();
+      }
+    }, 50);
+  });
+}
+
+/**
+ * 启动常驻键盘监听：任何时刻用户打字都立即入队。
+ * 普通 Enter → mode='enter'（steer，插入打断）
+ * Alt+Enter → mode='alt-enter'（followUp，排队）
+ * 依赖 terminal.ts 的 lineBuffer：流式期间主循环不读 stdin 时，
+ * 输入先进 lineBuffer，listener 的 readLineWithMode 读到后入队。
+ */
+async function startInputListener(): Promise<void> {
+  while (true) {
+    if (isClosed()) break;
+    const { text, mode } = await readLineWithMode();
+    if (isClosed()) break;
+    const trimmed = text.trim();
+    if (!trimmed) continue;
+    if (trimmed === '/exit') break;
+    pendingInputs.push({ text: trimmed, mode });
+  }
 }
 
 async function runReplMode(runtime: Runtime, info: ReplInfo): Promise<void> {
   const ui = new TerminalUI();
 
   ui.showBanner(info);
-
   ui.attach(runtime);
 
+  // 非 TTY（管道模式）：走旧的顺序读取，一次处理一条输入
+  if (!process.stdin.isTTY) {
+    while (true) {
+      const input = await readLine();
+      const trimmed = input.trim();
+      // 注意：管道模式下 stdin 关闭后 readLine 仍能返回缓冲中的最后一行，
+      // 此时 isClosed() 为 true 但数据有效 —— 先处理数据，再判断是否退出。
+      if (trimmed && trimmed !== '/exit') {
+        ui.showUserInput(trimmed);
+        await runtime.prompt(trimmed);
+      }
+      if (isClosed()) break;
+      if (!trimmed) continue;
+      if (trimmed === '/exit') break;
+    }
+    ui.detach();
+    return;
+  }
+  // TTY：启动常驻键盘监听（后台运行），支持生成中打断（steer/followUp）
+  const listenerPromise = startInputListener();
+
+  // 处理循环：空闲时取队列处理
   while (true) {
-    process.stdout.write(promptArrow);
-    const input = await getUserInput();
-    if (input === null) break;
-    if (!input) {
+    if (isClosed()) break;
+
+    // 等待有输入可处理
+    await waitForInput();
+    const pending = pendingInputs.shift();
+    if (!pending) {
       if (isClosed()) break;
       continue;
     }
 
-    ui.showUserInput(input);
-    await runtime.prompt(input);
+    // 普通 Enter → steer（插入打断）；Alt+Enter → followUp（排队）
+    const behavior = pending.mode === 'alt-enter' ? 'followUp' : 'steer';
+    ui.showUserInput(pending.text);
+    await runtime.prompt(pending.text, undefined, behavior);
   }
 
   ui.detach();
+  await listenerPromise;
 }
