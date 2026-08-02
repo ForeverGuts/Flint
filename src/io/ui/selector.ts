@@ -1,12 +1,12 @@
 /**
  * 通用终端选择器 —— ↑↓ 方向键导航、Enter 确认。
  *
- * 不漂移的核心策略：
- *   ① 进入选择器时用 \x1b[s 保存光标位置作为锚点（在 banner 之后）。
- *   ② 每次重绘：\x1b[u 恢复到锚点 → \x1b[0J 清除锚点到屏幕末尾 → 重新打印。
- *      锚点上方（banner 等）由终端记住绝对位置，物理上不可能被动到。
- *   ③ 每行用 fitWidth 裁剪到终端宽度内，防止 wrap 导致内容错乱。
- *   不再依赖"回退 N 行"计数（任何 wrap / 终端差异都会导致回退不到位）。
+ * 不漂移的核心策略（固定行数 + 回退清行）：
+ *   ① 每次渲染输出固定行数 FIXED_LINES（不足用空行填充），行数恒定不变。
+ *   ② 重绘前先回退到上次渲染顶部，逐行 \r\x1b[2K 清空，再重写。
+ *      行数恒定 + fitWidth 保证每行不 wrap → 回退精确，永不残留旧内容。
+ *   ③ 不用 \x1b[s/\x1b[u 保存光标（真实 Windows 终端下不可靠），
+ *      不用 \x1b[0J 清屏（会把上方 banner 一并清除）。
  */
 export type SelectorChoice<T = string> = {
   value: T;
@@ -34,7 +34,7 @@ const DESC_MAX = 30;
 /**
  * 把文本裁剪到指定"可见宽度"（忽略 ANSI 颜色码，中文/全角按 2 宽度计）。
  * 保证输出的每一行都不会触发终端自动换行（wrap），从而：
- *   打印行数 == 物理行数 → 光标回退精确 → 选择器不漂移。
+ *   打印行数 == 物理行数 → 回退精确 → 选择器不漂移。
  */
 function fitWidth(text: string, maxWidth: number): string {
   let out = '';
@@ -89,6 +89,12 @@ export async function selectFromList<T = string>(
 
       let selected = 0;
       let pageOffset = 0;
+      /**
+       * 固定输出行数（恒定不变，保证回退精确）：
+       *   标题 2 行（可选）+ 选项 pageSize 行 + 页码 1 行 + 提示 1 行
+       * 每次渲染不足的部分用空行填充，行数永远一致。
+       */
+      const FIXED_LINES = (title ? 2 : 0) + pageSize + 2;
 
       function buildRows(): string[] {
         const rows: string[] = [];
@@ -124,27 +130,27 @@ export async function selectFromList<T = string>(
       /**
        * 完整绘制到终端。
        *
-       * 不漂移的关键：不再用"回退 N 行"计数（任何 wrap / 终端差异都会导致回退不到位）。
-       * 改用终端的光标位置保存/恢复 + 清屏重绘：
-       *   ① \x1b[s 保存锚点：进入选择器时保存一次，锚点在 banner 之后
-       *   ② \x1b[u 恢复锚点：每次重绘都回到同一绝对位置
-       *   ③ \x1b[0J 清除从锚点到屏幕末尾的全部内容（旧选择器）
-       *   ④ 重新打印新内容
-       * 锚点上方（banner 等）由终端记住绝对位置，物理上不可能被动到。
+       * 步骤：
+       *   ① 若上次渲染过，光标回退到上次顶部（\x1b[${FIXED_LINES-1}A）
+       *   ② 逐行输出 FIXED_LINES 行：每行先 \r\x1b[2K 清空，再写内容
+       *      （内容不足用空行填充，保证行数恒定）
+       *   ③ 光标停在最后一行，供下次回退
        */
       function render(): void {
-        process.stdout.write('\x1b[u');  // 恢复锚点（banner 之后）
-        process.stdout.write('\x1b[0J'); // 清除锚点之后的所有内容
-        const rows = buildRows();
         const maxLineWidth = (process.stdout.columns ?? 80) - 1;
-        for (let i = 0; i < rows.length; i++) {
-          process.stdout.write(fitWidth(rows[i], maxLineWidth));
-          if (i < rows.length - 1) process.stdout.write('\n');
+        // ① 回退到上次渲染顶部（上次光标停在最后一行，回退 FIXED_LINES-1 行到首行）
+        process.stdout.write(`\x1b[${FIXED_LINES - 1}A`);
+        // ② 逐行重写
+        const rows = buildRows();
+        for (let i = 0; i < FIXED_LINES; i++) {
+          const line = i < rows.length ? fitWidth(rows[i], maxLineWidth) : '';
+          process.stdout.write(`\r\x1b[2K${line}`);
+          if (i < FIXED_LINES - 1) process.stdout.write('\n');
         }
+        // ③ 光标停在最后一行（下次 render 回退 FIXED_LINES-1 行回到首行）
       }
 
-      // 进入选择器：保存锚点（当前光标位置 = 选择器顶部），隐藏光标，首次渲染
-      process.stdout.write('\x1b[s');
+      // 首次渲染：隐藏光标
       process.stdout.write('\x1b[?25l');
       render();
 
@@ -219,9 +225,12 @@ export async function selectFromList<T = string>(
       const finish = (result: T | undefined) => {
         process.stdin.removeListener('data', onData);
         if (!wasRaw) process.stdin.setRawMode(false);
-        // 恢复锚点 → 清除选择器内容 → 光标停在锚点（banner 之后），调用方可继续
-        process.stdout.write('\x1b[u');
-        process.stdout.write('\x1b[0J');
+        // 回退到选择器顶部，逐行清空整个选择区域
+        process.stdout.write(`\x1b[${FIXED_LINES - 1}A`);
+        for (let i = 0; i < FIXED_LINES; i++) {
+          process.stdout.write('\r\x1b[2K');
+          if (i < FIXED_LINES - 1) process.stdout.write('\n');
+        }
         process.stdout.write('\x1b[?25h');
         resolve(result);
       };

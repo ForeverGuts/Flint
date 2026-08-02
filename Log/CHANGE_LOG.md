@@ -13,6 +13,9 @@
 >   [CI✅]      编译 / 构建 / 验证
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
+2026-08-02 14:41 | [Fix🐛] 选择器重复打印：弃用 \x1b[s/\x1b[u/\x1b[0J 锚点方案（真实终端不可靠），改固定行数+回退清行
+2026-08-02 14:41 | [Refactor♻️] 选择器渲染统一 FIXED_LINES 恒定行数，不足空行填充，配合 fitWidth 保证回退精确
+
 2026-08-01 19:24 | [Refactor♻️] MockStdin 瘦身：删除 emitLine（管道可覆盖），保留 emitKey/emitRaw（方向键导航必需）
 2026-08-01 19:24 | [Fix🐛] 选择器翻页 bug：pageOffset 上限误用 options.length-pageSize，导致无法翻到后续页
 2026-08-01 19:24 | [Fix🐛] 选择器 ↑↓←→ 统一用"selected 所在页页首"语义翻页
