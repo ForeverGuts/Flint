@@ -14,7 +14,11 @@
     "start": "node dist/index.js",
     "clean": "rm -rf dist"
   },
-  "keywords": ["cli", "agent", "typescript"],
+  "keywords": [
+    "cli",
+    "agent",
+    "typescript"
+  ],
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.0.0",

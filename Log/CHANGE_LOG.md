@@ -13,6 +13,14 @@
 >   [CI✅]      编译 / 构建 / 验证
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
+2026-08-02 18:36 | [Refactor♻️] UI 重构为自研组件树 + Screen 差分渲染（方案2），替代 pi-tui
+2026-08-02 18:36 | [Feature✨] 自研 Screen：行数组快照 + 差分写入，只用清行/光标移动，避开同步输出坑
+2026-08-02 18:36 | [Feature✨] 自研组件树：Container/Text/SelectList，递归 render(width) 返回行数组
+2026-08-02 18:36 | [Feature✨] 自研 InputHandler：raw mode 逐键解析，Enter→steer / Alt+Enter→followUp
+2026-08-02 18:36 | [Refactor♻️] 卸载 pi-tui（Windows 终端同步输出协议不兼容，乱码/空行/闪退）
+2026-08-02 18:36 | [Fix🐛] start.bat 中文注释 GBK 乱码：改为纯英文，解决乱码命令报错
+2026-08-02 18:36 | [Env📦] 新增 ts-agent-run.bat（wt 启动实际执行脚本，避免嵌套引号）
+
 2026-08-02 14:54 | [Fix🐛] 选择器首次渲染覆盖 banner：render 首次不回退，仅后续重绘回退 FIXED_LINES-1
 2026-08-02 14:54 | [Refactor♻️] 删除 mock/ 目录（无存活消费者，测不出真实终端行为，改真实 TTY 验证）
 
