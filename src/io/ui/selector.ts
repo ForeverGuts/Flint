@@ -131,15 +131,19 @@ export async function selectFromList<T = string>(
        * 完整绘制到终端。
        *
        * 步骤：
-       *   ① 若上次渲染过，光标回退到上次顶部（\x1b[${FIXED_LINES-1}A）
+       *   ① 首次渲染不回退（光标在 banner 之后的当前位置直接画）；
+       *      后续渲染先回退到上次顶部（\x1b[${FIXED_LINES-1}A）
        *   ② 逐行输出 FIXED_LINES 行：每行先 \r\x1b[2K 清空，再写内容
        *      （内容不足用空行填充，保证行数恒定）
        *   ③ 光标停在最后一行，供下次回退
        */
+      let rendered = false;
       function render(): void {
         const maxLineWidth = (process.stdout.columns ?? 80) - 1;
-        // ① 回退到上次渲染顶部（上次光标停在最后一行，回退 FIXED_LINES-1 行到首行）
-        process.stdout.write(`\x1b[${FIXED_LINES - 1}A`);
+        // ① 首次渲染不回退（避免越过 banner 上方覆盖内容）；后续回退到上次顶部
+        if (rendered) {
+          process.stdout.write(`\x1b[${FIXED_LINES - 1}A`);
+        }
         // ② 逐行重写
         const rows = buildRows();
         for (let i = 0; i < FIXED_LINES; i++) {
@@ -148,6 +152,7 @@ export async function selectFromList<T = string>(
           if (i < FIXED_LINES - 1) process.stdout.write('\n');
         }
         // ③ 光标停在最后一行（下次 render 回退 FIXED_LINES-1 行回到首行）
+        rendered = true;
       }
 
       // 首次渲染：隐藏光标
