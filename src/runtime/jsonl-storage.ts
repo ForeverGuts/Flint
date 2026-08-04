@@ -62,6 +62,35 @@ export class JsonlSessionStorage implements SessionStorage {
     return this.stored.map((m) => m.msgId);
   }
 
+  /** 获取全部存储消息（含 msgId）—— 供 /history 命令展示与回溯 */
+  getAllStored(): Array<{ msgId: string; role: string; content: string }> {
+    return [...this.stored];
+  }
+
+  /**
+   * 删除某条之后的所有消息（不含该条本身）。
+   * 调用方：/history 命令（"从此继续"回溯）
+   * 服务于：回到历史某点，删除之后的对话，让 LLM 从该点重新生成
+   */
+  async truncateAfter(msgId: string): Promise<void> {
+    const idx = this.stored.findIndex((m) => m.msgId === msgId);
+    if (idx === -1) return;
+    this.stored = this.stored.slice(0, idx + 1);
+    await this.rewriteFile();
+  }
+
+  /**
+   * 替换某条消息的内容。
+   * 调用方：/history 命令（"编辑"）
+   * 服务于：修正历史中的某条消息，配合 truncateAfter 让后续对话作废重来
+   */
+  async updateMessage(msgId: string, content: string): Promise<void> {
+    const m = this.stored.find((x) => x.msgId === msgId);
+    if (!m) return;
+    m.content = content;
+    await this.rewriteFile();
+  }
+
   /** 按 ID 查找原始消息 */
   getMsgById(msgId: string): StoredMessage | undefined {
     return this.stored.find((m) => m.msgId === msgId);
@@ -122,5 +151,14 @@ export class JsonlSessionStorage implements SessionStorage {
     const headerLine = JSON.stringify(this.header) + '\n';
     await fs.writeFile(this.filePath, headerLine, 'utf-8');
     this.stored = [];
+  }
+
+  /** 重写整个文件（header + 当前全部消息）—— truncateAfter / updateMessage 用 */
+  private async rewriteFile(): Promise<void> {
+    const headerLine = JSON.stringify(this.header) + '\n';
+    const msgLines = this.stored.map((m) =>
+      JSON.stringify({ type: 'message', msgId: m.msgId, role: m.role, content: m.content }) + '\n',
+    );
+    await fs.writeFile(this.filePath, headerLine + msgLines.join(''), 'utf-8');
   }
 }

@@ -15,6 +15,7 @@ import { parseToolCalls, estimateTokenUsage, createToolCallFilter } from './util
 import { PermissionManager } from './permission.js';
 import { promptPermission } from '../io/ui/permission.js';
 import { selectFromList } from '../io/ui/selector.js';
+import { readLine } from '../io/terminal.js';
 /* ── 类型定义 ── */
 
 /** 命令处理函数签名 */
@@ -158,6 +159,58 @@ export class Runtime {
 
   async clearSession(): Promise<void> {
     await this.session?.clear();
+  }
+
+  /**
+   * 获取全部历史消息（含 msgId）。
+   * 调用方：/history 命令
+   * 服务于：展示会话历史、定位回溯/编辑点
+   */
+  async getHistoryMessages(): Promise<Array<{ msgId: string; role: string; content: string }>> {
+    if (this.session instanceof JsonlSessionStorage) {
+      return this.session.getAllStored();
+    }
+    // 非 JSONL 存储（InMemory/Mock）：从 getMessages 拼装（无 msgId）
+    const msgs = (await this.session?.getMessages()) ?? [];
+    return msgs.map((m, i) => ({ msgId: `m${i}`, role: m.role, content: m.content }));
+  }
+
+  /**
+   * 截断会话：删除某条消息之后的所有消息（含该条之后的全部内容）。
+   * 调用方：/history 命令（"从此继续"）
+   */
+  async truncateSessionAfter(msgId: string): Promise<void> {
+    if (this.session instanceof JsonlSessionStorage) {
+      await this.session.truncateAfter(msgId);
+    }
+  }
+
+  /**
+   * 替换某条历史消息的内容。
+   * 调用方：/history 命令（"编辑"）
+   */
+  async updateSessionMessage(msgId: string, content: string): Promise<void> {
+    if (this.session instanceof JsonlSessionStorage) {
+      await this.session.updateMessage(msgId, content);
+    }
+  }
+
+  /**
+   * 读取一行输入（临时让渡 raw mode，供 /history 编辑等场景）。
+   * 调用方：/history 命令
+   * 服务于：让用户输入修正后的消息文本（readline 依赖 cooked mode，故需先退 raw）
+   */
+  async readLineInput(prompt?: string): Promise<string> {
+    if (process.stdin.isTTY && process.stdin.setRawMode) {
+      process.stdin.setRawMode(false);
+    }
+    try {
+      return await readLine(prompt);
+    } finally {
+      if (process.stdin.isTTY && process.stdin.setRawMode) {
+        process.stdin.setRawMode(true);
+      }
+    }
   }
 
   getSkillLoader(): SkillLoader {
