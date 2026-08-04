@@ -30,6 +30,62 @@ export function visibleWidth(text: string): number {
   return w;
 }
 
+/**
+ * 按可见宽度折行文本（超宽不截断，换到下一行）。
+ * 调用方：TreeUI（回复框/用户框内容折行）
+ * 服务于：长回复按边框内宽折行，避免单行超宽 wrap 串行导致差分渲染错位
+ *
+ * 要点：
+ *   - 按 \n 分段，每段再按可见宽度折行（CJK/全角计 2 列）
+ *   - ANSI 颜色码不计宽度、完整保留
+ *   - 折行按字符粒度，不切碎 ANSI 序列
+ */
+export function wrapText(text: string, maxWidth: number): string[] {
+  const lines: string[] = [];
+  let cur = '';
+  let width = 0;
+  let inAnsi = false;
+  let ansiBuf = '';
+
+  for (const ch of text) {
+    if (inAnsi) {
+      ansiBuf += ch;
+      if (ch === 'm') {
+        inAnsi = false;
+        cur += ansiBuf;
+        ansiBuf = '';
+      }
+      continue;
+    }
+    if (ch === '\x1b') {
+      inAnsi = true;
+      ansiBuf = '\x1b';
+      continue;
+    }
+    if (ch === '\n') {
+      lines.push(cur);
+      cur = '';
+      width = 0;
+      continue;
+    }
+    const w = ch.charCodeAt(0) > 0xff ? 2 : 1;
+    // 放不下就折行（cur 为空时强制放当前字符，避免超宽字符死循环）
+    if (width + w > maxWidth && cur !== '') {
+      lines.push(cur);
+      cur = '';
+      width = 0;
+    }
+    cur += ch;
+    width += w;
+  }
+  // 兜底：未闭合的 ANSI 序列保留
+  if (inAnsi) cur += ansiBuf;
+  lines.push(cur);
+  // 文本以换行结尾时不留下空行（中间空行保留，作为段落分隔）
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
 export function fitWidth(text: string, maxWidth: number): string {
   let out = '';
   let width = 0;

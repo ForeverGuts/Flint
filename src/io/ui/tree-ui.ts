@@ -19,7 +19,7 @@
 import { Container, Text, SelectList } from './components.js';
 import { Screen } from './screen.js';
 import { InputHandler } from './input-handler.js';
-import { fitWidth, visibleWidth } from './fit-width.js';
+import { fitWidth, visibleWidth, wrapText } from './fit-width.js';
 
 const C = {
   reset: '\x1b[0m',
@@ -37,6 +37,15 @@ const C = {
 
 /** header 标签列固定宽度（保证各行对齐） */
 const pad = (s: string) => s.padEnd(14);
+
+/**
+ * 消息框（YOU / TS AGENT）边框总宽（列）。
+ * 顶行 = 2空格 + ┌──(3) + 标签 + ─×N + ┐(1) → N = BOX_WIDTH - 6 - 标签长
+ * 底行 = 2空格 + └(1) + ─×M + ┘(1)          → M = BOX_WIDTH - 4
+ */
+const BOX_WIDTH = 50;
+/** 框内每行文本最大可见宽度（= 边框宽 - 4 空格缩进 - 1 安全边距，防顶到边框） */
+const BOX_INNER_WIDTH = BOX_WIDTH - 4 - 1;
 
 /** 由 baseUrl 推断供应商显示名（header Backend 行用） */
 function backendName(baseUrl: string): string {
@@ -250,9 +259,12 @@ export class TreeUI {
   private appendUserBox(text: string): void {
     const label = ' YOU ';
     const box = new Container();
-    box.addChild(new Text(`  ${C.blue}┌──${C.reset}${C.bold}${C.blue}${label}${C.reset}${C.blue}${'─'.repeat(48 - label.length - 4)}┐${C.reset}`));
-    box.addChild(new Text(`    ${C.brightWhite}${text}${C.reset}`));
-    box.addChild(new Text(`  ${C.blue}└${'─'.repeat(48 - 2)}┘${C.reset}`));
+    box.addChild(new Text(`  ${C.blue}┌──${C.reset}${C.bold}${C.blue}${label}${C.reset}${C.blue}${'─'.repeat(BOX_WIDTH - 6 - label.length)}┐${C.reset}`));
+    // 长输入按框内宽折行，每行统一 4 空格缩进，保证都在边框内
+    for (const line of wrapText(text, BOX_INNER_WIDTH)) {
+      box.addChild(new Text(`    ${C.brightWhite}${line}${C.reset}`));
+    }
+    box.addChild(new Text(`  ${C.blue}└${'─'.repeat(BOX_WIDTH - 4)}┘${C.reset}`));
     this.chat.addChild(box);
   }
 
@@ -318,11 +330,14 @@ export class TreeUI {
     if (!this.currentReply && !this.lastUsage) return;
     const label = ' TS AGENT ';
     const box = new Container();
-    box.addChild(new Text(`  ${C.green}┌──${C.reset}${C.bold}${C.green}${label}${C.reset}${C.green}${'─'.repeat(48 - label.length - 4)}┐${C.reset}`));
+    box.addChild(new Text(`  ${C.green}┌──${C.reset}${C.bold}${C.green}${label}${C.reset}${C.green}${'─'.repeat(BOX_WIDTH - 6 - label.length)}┐${C.reset}`));
     if (this.currentReply) {
-      box.addChild(new Text(`    ${this.currentReply}${C.reset}`));
+      // 长回复按框内宽折行，每行统一 4 空格缩进，保证都在边框内
+      for (const line of wrapText(this.currentReply, BOX_INNER_WIDTH)) {
+        box.addChild(new Text(`    ${line}${C.reset}`));
+      }
     }
-    box.addChild(new Text(`  ${C.green}└${'─'.repeat(48 - 2)}┘${C.reset}`));
+    box.addChild(new Text(`  ${C.green}└${'─'.repeat(BOX_WIDTH - 4)}┘${C.reset}`));
     if (this.lastUsage) {
       box.addChild(new Text(`    ${C.dim}${this.lastUsage}${C.reset}`));
       this.lastUsage = null;
