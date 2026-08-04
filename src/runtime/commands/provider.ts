@@ -7,7 +7,6 @@
  */
 import type { Runtime } from '../runtime.js';
 import { getProviderRegistry } from '../provider-registry.js';
-import { selectFromList } from '../../io/ui/selector.js';
 import { createProvider } from '../../llm/index.js';
 import { readLine } from '../../io/terminal.js';
 
@@ -26,7 +25,7 @@ export function activate(runtime: Runtime): void {
       // 无 key 也能选（选了再提示输入），所以不禁用
     }));
 
-    const chosenProviderId = await selectFromList(
+    const chosenProviderId = await runtime.select(
       providerChoices,
       '选择 AI 供应商（↑↓ 切换  Enter 确认）',
     );
@@ -56,7 +55,7 @@ export function activate(runtime: Runtime): void {
       description: m.description ?? '',
     }));
 
-    const chosenModelId = await selectFromList(
+    const chosenModelId = await runtime.select(
       modelChoices,
       `选择 ${refreshed.name} 的模型（↑↓ 切换  Enter 确认）`,
     );

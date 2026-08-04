@@ -34,6 +34,12 @@ export class Container implements Component {
     this.children.push(component);
   }
 
+  /** 移除子组件（选择器结束后移除 selectBox） */
+  removeChild(component: Component): void {
+    const idx = this.children.indexOf(component);
+    if (idx !== -1) this.children.splice(idx, 1);
+  }
+
   clear(): void {
     this.children = [];
   }
@@ -112,19 +118,23 @@ export class SelectList implements Component {
     return this.selected;
   }
 
-  /** 处理按键，返回是否发生了变化 */
-  handleInput(data: string): boolean {
+  /**
+   * 处理按键。
+   * 返回 { changed: boolean, done?: string }：
+   *   - changed=true 表示选中项/页面变化，需重绘
+   *   - done 为选中值（Enter 确认）或 'cancel'（Ctrl+C 取消）
+   */
+  handleInput(data: string): { changed: boolean; done?: string } {
     if (data === '\x1b[A') {
       // ↑
       const old = this.selected;
       do {
         this.selected = (this.selected - 1 + this.items.length) % this.items.length;
       } while (this.items[this.selected].disabled && this.selected !== old);
-      // 翻页：selected 进入上一页
       if (this.selected < this.pageOffset) {
         this.pageOffset = Math.floor(this.selected / this.pageSize) * this.pageSize;
       }
-      return true;
+      return { changed: true };
     }
     if (data === '\x1b[B') {
       // ↓
@@ -132,29 +142,41 @@ export class SelectList implements Component {
       do {
         this.selected = (this.selected + 1) % this.items.length;
       } while (this.items[this.selected].disabled && this.selected !== old);
-      // 翻页：selected 超出当前页
       if (this.selected >= this.pageOffset + this.pageSize) {
         this.pageOffset = Math.floor(this.selected / this.pageSize) * this.pageSize;
       }
-      return true;
+      return { changed: true };
     }
     if (data === '\x1b[D') {
       // ← 上一页
       if (this.pageOffset > 0) {
         this.pageOffset = Math.max(0, this.pageOffset - this.pageSize);
         this.selected = this.pageOffset;
-        return true;
+        return { changed: true };
       }
+      return { changed: false };
     }
     if (data === '\x1b[C') {
       // → 下一页
       if (this.pageOffset + this.pageSize < this.items.length) {
         this.pageOffset += this.pageSize;
         this.selected = this.pageOffset;
-        return true;
+        return { changed: true };
       }
+      return { changed: false };
     }
-    return false;
+    // Enter 确认
+    if (data === '\r' || data === '\n') {
+      if (!this.items[this.selected].disabled) {
+        return { changed: false, done: this.value };
+      }
+      return { changed: false };
+    }
+    // Ctrl+C 取消
+    if (data === '\x03') {
+      return { changed: false, done: 'cancel' };
+    }
+    return { changed: false };
   }
 
   /** 按数字键跳转（全局序号） */

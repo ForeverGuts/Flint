@@ -58,7 +58,15 @@ export async function main(checkResult: CheckResult): Promise<void> {
   registerBuiltinTools(runtime);
   runtime.onInput(demoInputHandler);
 
-  process.on('SIGINT', () => { closeTerminal(); runtime.stop().then(() => process.exit(0)); });
+  // SIGINT/Ctrl+C：raw mode 下由 InputHandler 处理（选择器取消/输入），
+  // 这里只作兜底（非 TTY 或 InputHandler 未捕获时），优雅退出
+  process.on('SIGINT', () => {
+    if (!process.stdin.isTTY) {
+      closeTerminal();
+      runtime.stop().then(() => process.exit(0));
+    }
+    // TTY 下：Ctrl+C 交给 InputHandler（onSelectKey 消费），此处不退出
+  });
   process.on('SIGTERM', () => { closeTerminal(); runtime.stop().then(() => process.exit(0)); });
 
   // 收集启动信息传入 UI

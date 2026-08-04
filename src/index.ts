@@ -13,8 +13,15 @@ process.stdout.on('error', () => {});
 process.stderr.on('error', () => {});
 
 process.on('unhandledRejection', (err) => {
-  console.error('[FATAL]', err);
+  console.error('[FATAL] unhandledRejection:', err);
   process.exit(1);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] uncaughtException:', err);
+  process.exit(1);
+});
+process.on('exit', (code) => {
+  console.error(`[INFO] process exit code=${code}`);
 });
 
 const harness = new Harness();

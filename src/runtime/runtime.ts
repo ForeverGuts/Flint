@@ -20,6 +20,9 @@ import { selectFromList } from '../io/ui/selector.js';
 /** 命令处理函数签名 */
 export type CommandHandler = (args: string) => string | Promise<string>;
 
+/** 选择器条目（命令系统调 runtime.select 用） */
+export type SelectItem = { value: string; label: string; description?: string; disabled?: boolean };
+
 interface RegisteredCommand {
   description: string;
   handler: CommandHandler;
@@ -50,6 +53,8 @@ export class Runtime {
   currentProvider: string = 'deepseek';
   /** 当前 baseUrl（供 /model 命令读写） */
   currentBaseUrl: string = '';
+  /** 选择器钩子（TTY 由 TreeUI 注册，管道用默认 selectFromList） */
+  private selectHook: ((items: SelectItem[], title?: string) => Promise<string | undefined>) | null = null;
   /* ── 事件发射器（组合模式，Runtime 只持自己的事件） ── */
 
   /** Runtime 运行时事件（stream_text、message_end、agent_end 等） */
@@ -129,6 +134,18 @@ export class Runtime {
 
   listCommands(): Array<{ name: string; description: string }> {
     return [...this.commands.entries()].map(([name, cmd]) => ({ name, description: cmd.description }));
+  }
+
+  /** 注册选择器实现（TTY 由 TreeUI 提供组件树选择器，管道用默认） */
+  registerSelect(fn: (items: SelectItem[], title?: string) => Promise<string | undefined>): void {
+    this.selectHook = fn;
+  }
+
+  /** 运行选择器（命令系统调用；TTY 走 TreeUI 组件树，否则用默认 selectFromList） */
+  select(items: SelectItem[], title?: string): Promise<string | undefined> {
+    if (this.selectHook) return this.selectHook(items, title);
+    // 未注册钩子（管道模式）→ 用默认选择器
+    return selectFromList(items as any, title);
   }
 
   /* ── Input 事件 ── */
@@ -519,7 +536,7 @@ export class Runtime {
     if (!fallback) return false;
 
     const fallbackLabel = `${fallback.provider.name} (${fallback.provider.models.find(m => m.id === fallback.modelId)?.label ?? fallback.modelId})`;
-    const choice = await selectFromList(
+    const choice = await this.select(
       [
         { value: 'switch', label: `切换到 ${fallbackLabel}` },
         { value: 'no', label: '不切换，直接退出' },

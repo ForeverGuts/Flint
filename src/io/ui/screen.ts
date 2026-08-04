@@ -19,11 +19,43 @@
  * 前提：调用方保证每行宽度不超过终端（fitWidth），
  *       且行数变化是"追加"（消息区增长），不会从中间删行。
  */
+import { appendFileSync } from 'node:fs';
+
+/** 计算可见宽度（剔除 ANSI 码，CJK 计 2）——供调试判断行是否超宽 */
+function visibleWidth(text: string): number {
+  let w = 0;
+  let inAnsi = false;
+  for (const ch of text) {
+    if (inAnsi) {
+      if (ch === 'm') inAnsi = false;
+      continue;
+    }
+    if (ch === '\x1b') {
+      inAnsi = true;
+      continue;
+    }
+    w += ch.charCodeAt(0) > 0xff ? 2 : 1;
+  }
+  return w;
+}
+
 export class Screen {
   /** 上次渲染的行数组快照 */
   private previousLines: string[] = [];
   /** 光标当前所在的行（0 基，相对内容顶部） */
   private cursorLine = 0;
+  /** 调试日志（env TS_AGENT_DEBUG_SCREEN=1 时开启，写入 debug-screen.log） */
+  static debug = !!process.env.TS_AGENT_DEBUG_SCREEN;
+
+  /** 调试日志（写入文件，避免污染 stdout） */
+  private debugLog(msg: string): void {
+    if (!Screen.debug) return;
+    try {
+      appendFileSync('debug-screen.log', msg + '\n');
+    } catch {
+      /* ignore */
+    }
+  }
 
   /**
    * 渲染新行数组（差分更新）。
@@ -59,27 +91,50 @@ export class Screen {
     // ── ③ 重写从 firstDiff 到末尾的所有行 ──
     for (let i = firstDiff; i < maxLen; i++) {
       if (i > firstDiff) {
-        // 后续行：换行到下一行
         out += '\r\n';
       } else {
-        // 首个变化行：回到行首（不换行）
         out += '\r';
       }
-      // 清行 + 写内容（旧内容较长时清行覆盖）
       if (i < newLines.length) {
         out += '\x1b[2K' + newLines[i];
       } else {
-        // 新内容没有这一行（旧内容多余）→ 只清行
         out += '\x1b[2K';
       }
     }
 
-    // ── ④ 写回终端 ──
+    // ── ④ 若旧内容比新内容长（内容缩短），把光标回退到新内容末尾 ──
+    //   否则光标停在旧内容末尾，留下"空行尾巴"（巨大空格）
+    if (maxLen > newLines.length) {
+      const extra = maxLen - newLines.length;
+      out += `\x1b[${extra}A`;
+    }
+    // 确保光标在最后一行行首
+    out += '\r';
+
+    // ── ⑤ 写回终端 ──
     process.stdout.write(out);
 
     // ── ⑤ 更新状态 ──
+    const prevCount = this.previousLines.length;
     this.previousLines = [...newLines];
     this.cursorLine = Math.max(0, newLines.length - 1);
+
+    // ── 调试：记录每次渲染的关键状态（env TS_AGENT_DEBUG_SCREEN=1） ──
+    if (Screen.debug) {
+      const cols = process.stdout.columns ?? 80;
+      let warn = '';
+      for (let i = 0; i < newLines.length; i++) {
+        const w = visibleWidth(newLines[i]);
+        if (w > cols) warn += ` [行${i}宽${w}>列${cols}!!]`;
+      }
+      this.debugLog(
+        `render#: 旧${prevCount}→新${newLines.length} firstDiff=${firstDiff} ` +
+          `cursorLine=${this.cursorLine} cols=${cols}${warn}`,
+      );
+      this.debugLog(`  out=${JSON.stringify(out)}`);
+      this.debugLog(`  firstDiff行="${newLines[firstDiff] ?? ''}"`);
+      this.debugLog(`  newLine宽度=[${newLines.map((l) => visibleWidth(l)).join(',')}]`);
+    }
   }
 
   /**

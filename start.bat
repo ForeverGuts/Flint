@@ -3,8 +3,9 @@ cd /d "%~dp0"
 
 rem Check if running inside Windows Terminal
 if "%WT_SESSION%"=="" (
-    rem Not in Windows Terminal: launch a new WT window running the agent
-    powershell -NoProfile -Command "$d = '%~dp0'; Start-Process wt.exe -ArgumentList ('cmd','/c','\"' + $d + 'ts-agent-run.bat\"')"
+    rem Not in Windows Terminal: launch a new WT window running the agent script
+    rem wt.exe can run a .bat directly; use start so the original window closes
+    start "" wt.exe "%~dp0ts-agent-run.bat"
     exit /b 0
 )
 

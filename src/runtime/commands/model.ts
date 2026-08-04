@@ -5,7 +5,6 @@
  */
 import type { Runtime } from '../runtime.js';
 import { getProviderRegistry } from '../provider-registry.js';
-import { selectFromList } from '../../io/ui/selector.js';
 import { createProvider } from '../../llm/index.js';
 
 export function activate(runtime: Runtime): void {
@@ -25,7 +24,7 @@ export function activate(runtime: Runtime): void {
       };
     });
 
-    const chosen = await selectFromList(
+    const chosen = await runtime.select(
       modelChoices,
       `${active.name} —— 选择模型（↑↓ 切换  Enter 确认）`,
     );

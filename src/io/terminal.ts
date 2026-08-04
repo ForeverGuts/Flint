@@ -65,6 +65,11 @@ export function initTerminal(): void {
     output: process.stdout,
   });
 
+  // 关键：阻止 readline 的默认 Ctrl+C 处理（会 pause stdin + setRawMode(false)）。
+  // TreeUI 的 InputHandler 在 raw 模式下自己消费 Ctrl+C（选择器取消 / 退出），
+  // readline 若也处理 Ctrl+C，会把 stdin 暂停 + 退出 raw 模式，之后所有按键失效。
+  rl.on('SIGINT', () => {});
+
   rl.on('line', (line: string) => {
     if (pendingResolver) {
       // 有人在等输入(比如readline)，直接 resolve
@@ -167,6 +172,7 @@ export async function readLineWithMode(prompt?: string): Promise<{ text: string;
   lastAltEnter = false; // 每次读取前重置
 
   if (prompt !== undefined) process.stdout.write(prompt);
+  // 调用过去阻塞的 readLine，等待用户输入一行，外界while循环可继续处理其他逻辑，实现非阻塞
   const text = await readLine(prompt);
   return { text, mode: lastAltEnter ? 'alt-enter' : 'enter' };
 }

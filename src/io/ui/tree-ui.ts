@@ -19,6 +19,7 @@
 import { Container, Text } from './components.js';
 import { Screen } from './screen.js';
 import { InputHandler } from './input-handler.js';
+import { SelectList } from './components.js';
 
 const C = {
   reset: '\x1b[0m',
@@ -47,10 +48,14 @@ export interface TreeUIInfo {
 export class TreeUI {
   private screen = new Screen();
   private input = new InputHandler();
+  /** 心跳定时器（保持事件循环活跃） */
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
   /** 组件树：根容器 */
   private root = new Container();
   /** 消息区容器（追加文本） */
   private chat = new Container();
+  /** 选择器容器（激活时注入组件树，结束后移除） */
+  private selectBox = new Container();
   /** 输入行文本组件 */
   private inputLine: Text;
 
@@ -62,7 +67,60 @@ export class TreeUI {
     this.inputLine = new Text('');
     this.root.addChild(this.buildHeader());
     this.root.addChild(this.chat);
+    this.root.addChild(this.selectBox);   // 选择器容器常驻（空时不渲染）
     this.root.addChild(this.inputLine);
+  }
+
+  /**
+   * 运行选择器（组件树集成）。
+   * 调用方：runtime.select（由命令系统经 registerSelect 调用）
+   * 原理：
+   *   ① SelectList 加入 selectBox（常驻组件树，空时不渲染）
+   *   ② 暂停输入，转发所有按键给 SelectList
+   *   ③ Enter 确认 / Ctrl+C 取消 → 清空 selectBox，恢复输入，resolve
+   *   finally 确保即使异常也恢复输入，不残留 onSelectKey
+   */
+  showSelect(
+    items: Array<{ value: string; label: string; description?: string; disabled?: boolean }>,
+    title?: string,
+  ): Promise<string | undefined> {
+    // 创建选择器组件
+    const list = new SelectList(items, title, 8);
+    this.selectBox.clear();
+    this.selectBox.addChild(list);
+
+    // 注意：不调用 input.pause()！onSelectKey 拦截已足够（返回 true 消费所有按键）。
+    // 若 pause，handleData 开头 return，onSelectKey 收不到按键。
+    this.input.onSelectKey = null;
+
+    return new Promise((resolve) => {
+      // 转发按键给选择器
+      this.input.onSelectKey = (data) => {
+        const result = list.handleInput(data);
+        if (result.changed) {
+          this.requestRender();
+        }
+        if (result.done !== undefined) {
+          // 选择完成：清理 + 恢复输入 + resolve
+          this.finishSelect(resolve, result.done === 'cancel' ? undefined : result.done);
+        }
+        // 消费所有按键（方向键/Enter/Ctrl+C 都不走普通输入）
+        return true;
+      };
+
+      // 立即渲染（显示选择器）
+      this.requestRender();
+    });
+  }
+
+  /** 结束选择器：清理拦截、清空 selectBox */
+  private finishSelect(resolve: (v: string | undefined) => void, result: string | undefined): void {
+    this.input.onSelectKey = null;
+    this.selectBox.clear();
+    // 防御：选择器期间 readline 可能因 Ctrl+C 暂停过 stdin，恢复流动
+    process.stdin.resume();
+    this.requestRender();
+    resolve(result);
   }
 
   /** 构建 header 组件 */
@@ -93,13 +151,20 @@ export class TreeUI {
 
   /** 启动 UI */
   start(): void {
+    // 注册选择器钩子（命令系统调 runtime.select 时走组件树选择器）
+    this.runtime.registerSelect((items, title) => this.showSelect(items, title));
+
     // 首次渲染
     this.requestRender();
 
     // 输入处理
     this.input.onChange = () => this.requestRender();
     this.input.onSubmit = (text: string, mode: 'enter' | 'alt-enter') => this.onSubmit(text, mode);
+    this.input.onExit = () => this.stop();  // Ctrl+C 退出前恢复终端
     this.input.start();
+
+    // 保持事件循环活跃（防止 Windows 下取消选择后事件循环空导致退出）
+    this.heartbeat = setInterval(() => {}, 1000);
 
     // 订阅 runtime 事件
     this.runtime.subscribe((event: any) => {
@@ -112,6 +177,10 @@ export class TreeUI {
     this.input.stop();
     this.screen.clear();
     process.stdout.write('\x1b[?25h');
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = null;
+    }
   }
 
   /** 请求重绘 */
@@ -135,6 +204,11 @@ export class TreeUI {
     this.requestRender();
     // 普通 Enter → steer，Alt+Enter → followUp
     void this.runtime.prompt(text, undefined, mode === 'alt-enter' ? 'followUp' : 'steer').then(() => {
+      this.requestRender();
+    }).catch((err) => {
+      // 命令/对话异常不应导致进程退出，展示错误后继续
+      this.currentReply = `❌ ${err instanceof Error ? err.message : String(err)}`;
+      this.endReply();
       this.requestRender();
     });
   }

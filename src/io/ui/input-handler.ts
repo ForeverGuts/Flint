@@ -9,6 +9,7 @@
  *   - 逐字节解析：普通字符追加到输入行，Enter 提交，\x1b[A/B 等转义交给方向键
  *   - Alt+Enter：\x1b\r（ESC 后跟回车）→ 标记为 followUp
  */
+import { appendFileSync } from 'node:fs';
 /** 提交回调：text = 输入文本, mode = 'enter' | 'alt-enter' */
 export type SubmitCallback = (text: string, mode: 'enter' | 'alt-enter') => void;
 
@@ -66,45 +67,128 @@ export class InputHandler {
     }
   }
 
+  /** 选择器按键拦截回调（返回 true 表示消费，不再走内置处理） */
+  onSelectKey: ((data: string) => boolean) | null = null;
+  /** 退出前清理回调（恢复终端等） */
+  onExit: (() => void) | null = null;
+
+  /** 转义序列缓冲（raw mode 下 ↑ 可能是 \x1b + [A 拆包到达） */
+  private escapeBuf = '';
+
+  /** 调试日志（env TS_AGENT_DEBUG_INPUT=1 时开启，写入 debug-input.log，避免污染 stdout） */
+  static debug = !!process.env.TS_AGENT_DEBUG_INPUT;
+  private debugLog(msg: string): void {
+    if (!InputHandler.debug) return;
+    try {
+      appendFileSync('debug-input.log', msg + '\n');
+    } catch {
+      /* ignore */
+    }
+  }
+
   /** 处理原始字节 */
   private handleData(chunk: Buffer): void {
     if (this.paused) return;
-    const str = chunk.toString('utf-8');
+    let str = chunk.toString('utf-8');
+    this.debugLog(`[handleData] raw=${JSON.stringify(str)} | onSelectKey=${this.onSelectKey !== null} | buffer="${this.buffer}"`);
+
+    // ── 转义序列缓冲：累积 \x1b 开头的序列直到完整（CSI 序列以字母结尾） ──
+    if (this.escapeBuf) {
+      // 正在累积转义序列
+      this.escapeBuf += str;
+      const complete = this.tryCompleteEscape();
+      if (!complete) return; // 序列不完整，等下一个 chunk
+      str = this.escapeBuf;
+      this.escapeBuf = '';
+    } else if (str.startsWith('\x1b')) {
+      // 新转义序列开始：可能是完整（\x1b[A）或拆包（\x1b + [A）
+      this.escapeBuf = str;
+      const complete = this.tryCompleteEscape();
+      if (!complete) return;
+      str = this.escapeBuf;
+      this.escapeBuf = '';
+    }
+
+    // 选择器拦截：选择器激活时所有按键先给它，由它决定消费
+    if (this.onSelectKey && this.onSelectKey(str)) {
+      this.debugLog(`  → 被选择器消费 (${JSON.stringify(str)})`);
+      return;
+    }
 
     // Alt+Enter：\x1b\r
     if (str === '\x1b\r' || str === '\x1b\n') {
+      this.debugLog('  → Alt+Enter 提交');
       this.submit('alt-enter');
       return;
     }
 
     // Enter：\r 或 \n
     if (str === '\r' || str === '\n') {
+      this.debugLog('  → Enter 提交');
       this.submit('enter');
       return;
     }
 
     // Ctrl+C
     if (str === '\x03') {
+      this.debugLog('  → Ctrl+C，退出');
+      // 先恢复终端（raw mode → 正常模式 + 显示光标），再退出
+      if (this.onExit) {
+        this.onExit();
+      } else {
+        if (process.stdin.setRawMode) process.stdin.setRawMode(false);
+        process.stdout.write('\x1b[?25h');
+      }
       process.exit(0);
       return;
     }
 
     // 退格：\x7f 或 \x08
     if (str === '\x7f' || str === '\x08') {
+      this.debugLog(`  → 退格`);
       this.buffer = this.buffer.slice(0, -1);
       this.onChange?.();
       return;
     }
 
-    // 方向键等转义序列（\x1b[...）交给组件处理，不作为文本
+    // 完整转义序列（\x1b[A 等）交给组件处理，不作为文本
     if (str.startsWith('\x1b')) {
+      this.debugLog(`  → 未消费转义序列 (${JSON.stringify(str)})`);
       this.onEscapeSequence?.(str);
       return;
     }
 
     // 普通字符：追加到输入行
+    this.debugLog(`  → 追加 "${str}"`);
     this.buffer += str;
     this.onChange?.();
+  }
+
+  /**
+   * 尝试完成当前转义缓冲序列。
+   * CSI 序列：\x1b [ 参数? 最终字节，最终字节是 0x40-0x7e 的字母/符号。
+   * 返回 true 表示序列完整。
+   */
+  private tryCompleteEscape(): boolean {
+    const buf = this.escapeBuf;
+    if (buf.length === 0) return false;
+    if (buf === '\x1b') return false; // 单独的 ESC，等后续
+
+    // 检查：\x1b 后是否已有完整 CSI（\x1b[ ... 最终字节）
+    if (buf[1] === '[') {
+      // 从第 3 个字符开始，找到非参数（非 0-9;?）的最终字节
+      for (let i = 2; i < buf.length; i++) {
+        const ch = buf[i];
+        if (!/[0-9;?]/.test(ch)) {
+          // 遇到最终字节（A/B/C/D 等）→ 序列完整
+          return true;
+        }
+      }
+      return false; // 还在参数中
+    }
+
+    // 非 CSI 的 ESC 序列（如 \x1b 单键）——完整
+    return true;
   }
 
   /** 提交当前输入 */
