@@ -16,10 +16,10 @@
  *
  * 输入：InputHandler raw mode 逐键解析，Enter → steer，Alt+Enter → followUp
  */
-import { Container, Text } from './components.js';
+import { Container, Text, SelectList } from './components.js';
 import { Screen } from './screen.js';
 import { InputHandler } from './input-handler.js';
-import { SelectList } from './components.js';
+import { fitWidth, visibleWidth } from './fit-width.js';
 
 const C = {
   reset: '\x1b[0m',
@@ -34,6 +34,17 @@ const C = {
   brightWhite: '\x1b[97m',
   bgGreen: '\x1b[42m',
 };
+
+/** header 标签列固定宽度（保证各行对齐） */
+const pad = (s: string) => s.padEnd(14);
+
+/** 由 baseUrl 推断供应商显示名（header Backend 行用） */
+function backendName(baseUrl: string): string {
+  return baseUrl.includes('opencode') ? 'OpenCode Go'
+    : baseUrl.includes('deepseek') ? 'DeepSeek'
+    : baseUrl.includes('127.0.0.1') ? 'CC Switch'
+    : baseUrl || 'local';
+}
 
 /** 界面信息 */
 export interface TreeUIInfo {
@@ -58,6 +69,10 @@ export class TreeUI {
   private selectBox = new Container();
   /** 输入行文本组件 */
   private inputLine: Text;
+  /** header 中 Backend 行（切换供应商后实时刷新，buildHeader 中赋值） */
+  private headerBackend!: Text;
+  /** header 中 Model 行（切换模型后实时刷新，buildHeader 中赋值） */
+  private headerModel!: Text;
 
   constructor(
     private runtime: import('../../runtime/runtime.js').Runtime,
@@ -123,7 +138,7 @@ export class TreeUI {
     resolve(result);
   }
 
-  /** 构建 header 组件 */
+  /** 构建 header 组件（Backend/Model 行存引用，切换后由 refreshHeader 更新） */
   private buildHeader(): Container {
     const box = new Container();
     const now = new Date();
@@ -131,22 +146,32 @@ export class TreeUI {
     const dateStr = now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' });
     const platform = process.platform === 'win32' ? 'Windows' : process.platform === 'linux' ? 'Linux' : 'macOS';
     const cwd = process.cwd().split(/[/\\]/).pop() || '';
-    const backend = this.info.baseUrl.includes('opencode') ? 'OpenCode Go'
-      : this.info.baseUrl.includes('deepseek') ? 'DeepSeek'
-      : this.info.baseUrl.includes('127.0.0.1') ? 'CC Switch'
-      : this.info.baseUrl || 'local';
-    const pad = (s: string) => s.padEnd(14);
 
+    this.headerBackend = new Text('');
+    this.headerModel = new Text('');
     box.addChild(new Text(`  ${C.bgGreen}${C.bold}   ◆  Ts Agent v0.1.0  ◆   ${C.reset}`));
-    box.addChild(new Text(`  ${C.dim}${pad('Backend')}${C.reset}   ${backend}`));
-    box.addChild(new Text(`  ${C.dim}${pad('Model')}${C.reset}   ${C.bold}${this.info.model}${C.reset}`));
+    box.addChild(this.headerBackend);
+    box.addChild(this.headerModel);
     box.addChild(new Text(`  ${C.dim}${pad('Mode')}${C.reset}   ${C.bold}REPL${C.reset}  │  ${C.dim}tools${C.reset} ${this.info.toolCount}  ${C.dim}skills${C.reset} ${this.info.skillCount}  ${C.dim}cmds${C.reset} ${this.info.cmdCount}`));
     box.addChild(new Text(`  ${C.dim}${pad('Session')}${C.reset}   ${C.bold}${this.info.sessionMsgs}${C.reset} msgs  │  ${C.dim}${dateStr} ${timeStr}${C.reset}`));
     box.addChild(new Text(`  ${C.dim}${pad('Runtime')}${C.reset}   Node${process.version}  ·  ${platform}  ·  ${C.dim}${cwd}${C.reset}`));
     box.addChild(new Text(`  ${C.green}${'─'.repeat(48)}${C.reset}`));
     box.addChild(new Text(`  ${C.dim}${C.italic}  /help  ·  /exit  ·  /clear  ·  /model  ·  /usage${C.reset}`));
     box.addChild(new Text(`  ${C.green}${'─'.repeat(48)}${C.reset}`));
+    this.refreshHeader();
     return box;
+  }
+
+  /**
+   * 刷新 header 的 Backend/Model 行（每次渲染前调用）。
+   * 切换供应商/模型后，runtime.currentProvider/currentModel 已更新，
+   * 这里从 runtime 读实时值，让 banner 与真实加载的模型保持一致。
+   */
+  private refreshHeader(): void {
+    const baseUrl = this.runtime.currentBaseUrl || this.info.baseUrl;
+    this.headerBackend.setText(`  ${C.dim}${pad('Backend')}${C.reset}   ${backendName(baseUrl)}`);
+    const model = this.runtime.currentModel || this.info.model;
+    this.headerModel.setText(`  ${C.dim}${pad('Model')}${C.reset}   ${C.bold}${model}${C.reset}`);
   }
 
   /** 启动 UI */
@@ -185,12 +210,20 @@ export class TreeUI {
 
   /** 请求重绘 */
   private requestRender(): void {
+    // 实时刷新 header（切换供应商/模型后 banner 保持一致）
+    this.refreshHeader();
     // 更新输入行显示
     const inputText = this.input.getText();
-    this.inputLine.setText(`  > ${inputText}${C.reset}`);
+    const promptStr = `  > ${inputText}${C.reset}`;
+    this.inputLine.setText(promptStr);
     const width = process.stdout.columns ?? 80;
     const lines = this.root.render(width);
-    this.screen.render(lines);
+    // 输入行是最后一行：光标定位到输入文本末尾（按可见宽度，跳过 ANSI/中文按2列）
+    // 让用户输入时字符落在提示符之后，而不是行首
+    const maxLineWidth = Math.max(1, width - 1);
+    const shown = fitWidth(promptStr, maxLineWidth);
+    const cursorCol = visibleWidth(shown);
+    this.screen.render(lines, cursorCol);
   }
 
   /** 输入提交 */

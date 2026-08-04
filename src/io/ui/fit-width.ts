@@ -8,6 +8,28 @@
  *   - 中文/全角字符按 2 列宽计算
  *   - 超宽截断丢弃剩余字符
  */
+/**
+ * 计算文本可见宽度（剔除 ANSI 颜色码，CJK/全角计 2 列）。
+ * 调用方：Screen（行宽告警）、TreeUI（输入行光标定位）
+ * 服务于：把"显示宽度"与"光标列"对齐，避免中文/ANSI 导致光标错位
+ */
+export function visibleWidth(text: string): number {
+  let w = 0;
+  let inAnsi = false;
+  for (const ch of text) {
+    if (inAnsi) {
+      if (ch === 'm') inAnsi = false;
+      continue;
+    }
+    if (ch === '\x1b') {
+      inAnsi = true;
+      continue;
+    }
+    w += ch.charCodeAt(0) > 0xff ? 2 : 1;
+  }
+  return w;
+}
+
 export function fitWidth(text: string, maxWidth: number): string {
   let out = '';
   let width = 0;

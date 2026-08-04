@@ -20,24 +20,7 @@
  *       且行数变化是"追加"（消息区增长），不会从中间删行。
  */
 import { appendFileSync } from 'node:fs';
-
-/** 计算可见宽度（剔除 ANSI 码，CJK 计 2）——供调试判断行是否超宽 */
-function visibleWidth(text: string): number {
-  let w = 0;
-  let inAnsi = false;
-  for (const ch of text) {
-    if (inAnsi) {
-      if (ch === 'm') inAnsi = false;
-      continue;
-    }
-    if (ch === '\x1b') {
-      inAnsi = true;
-      continue;
-    }
-    w += ch.charCodeAt(0) > 0xff ? 2 : 1;
-  }
-  return w;
-}
+import { visibleWidth } from './fit-width.js';
 
 export class Screen {
   /** 上次渲染的行数组快照 */
@@ -59,9 +42,12 @@ export class Screen {
 
   /**
    * 渲染新行数组（差分更新）。
-   * @param newLines 组件树渲染出的完整行数组
+   * @param newLines  组件树渲染出的完整行数组
+   * @param cursorCol 渲染完成后光标应停的列（0 基，相对最后一行）。
+   *                  输入行调用方传入"输入文本末尾列"，让光标跟随输入；
+   *                  不传则停在最后一行行首（0）。
    */
-  render(newLines: string[]): void {
+  render(newLines: string[], cursorCol = 0): void {
     // ── ① 找第一个变化行 ──
     let firstDiff = -1;
     const maxLen = Math.max(this.previousLines.length, newLines.length);
@@ -108,8 +94,11 @@ export class Screen {
       const extra = maxLen - newLines.length;
       out += `\x1b[${extra}A`;
     }
-    // 确保光标在最后一行行首
+    // 光标回到最后一行行首，再右移到调用方指定的列（输入文本末尾）
     out += '\r';
+    if (cursorCol > 0 && newLines.length > 0) {
+      out += `\x1b[${cursorCol}C`;
+    }
 
     // ── ⑤ 写回终端 ──
     process.stdout.write(out);
