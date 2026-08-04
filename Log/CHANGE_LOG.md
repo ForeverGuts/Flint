@@ -13,6 +13,10 @@
 >   [CI✅]      编译 / 构建 / 验证
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
+
+2026-08-04 16:05 | [Fix🐛] 输入行光标定位到文本末尾（Screen 差分渲染支持 cursorCol）+ 切换模型后 header 实时刷新
+2026-08-04 15:40 | [Feature✨] 选择器接入组件树（runtime.select 抽象）+ 转义序列缓冲 + Ctrl+C/readline 冲突修复
+
 2026-08-02 18:36 | [Refactor♻️] UI 重构为自研组件树 + Screen 差分渲染（方案2），替代 pi-tui
 2026-08-02 18:36 | [Feature✨] 自研 Screen：行数组快照 + 差分写入，只用清行/光标移动，避开同步输出坑
 2026-08-02 18:36 | [Feature✨] 自研组件树：Container/Text/SelectList，递归 render(width) 返回行数组
