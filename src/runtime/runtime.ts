@@ -11,7 +11,7 @@ import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from './jsonl-storage.js';
 import type { EventHandler, HookHandler } from './events.js';
 import { ToolRegistry } from './tool.js';
-import { parseToolCalls, estimateTokenUsage, createToolCallFilter } from './utils.js';
+import { estimateTokenUsage } from './utils.js';
 import { PermissionManager } from './permission.js';
 import { promptPermission } from '../io/ui/permission.js';
 import { selectFromList } from '../io/ui/selector.js';
@@ -418,10 +418,11 @@ export class Runtime {
           return msg ? `${msg.role}: ${msg.content.slice(0, 200)}` : '';
         }).filter(Boolean).join('\n');
         try {
-          const summary = await this.llm.chat([
+          const result = await this.llm.chat([
             { role: 'system', content: '将以下对话压缩为一段摘要（50 字内），保留关键信息。只输出摘要。' },
             { role: 'user', content: toSummarize },
           ]);
+          const summary = result.content;
           // 压缩结果作为 compaction entry 入树（firstKeptId = 第一条保留消息）
           const firstKeptId = allIds[allIds.length - 10] ?? allIds[allIds.length - 1] ?? '';
           await jsonlSession?.appendCompaction(summary, firstKeptId);
@@ -449,8 +450,8 @@ export class Runtime {
       { role: 'system' as const, content: `你有以下工具：\n${toolDescriptions}\n\n规则：
 【最优先】普通对话、闲聊、提问建议、讨论概念时，直接回答，绝不调用任何工具。
 工具只在你明确需要操作文件、执行命令、搜索代码时才调用——用户没明确要求时，禁止调用。
-- 需要操作文件/执行命令时，用 <tool_call>{"name":"工具名","arguments":{...}}</tool_call>
-- 工具结果会返回给你
+- 需要工具时，通过 tool_calls 结构化调用（工具名 + JSON 参数会自动发给系统执行）
+- 工具结果会以 tool 消息返回给你
 - 如果任务还没完成（如刚创建完文件需要运行测试），继续调下一个工具
 - 全部做完后再给用户最终回答
 - ⚠️ 口述"我创建了文件"不等于真的创建了文件，必须调工具才算
@@ -460,59 +461,42 @@ export class Runtime {
     ];
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ⑧: Agent Loop —— 单一 stream() 循环（合并工具检测 + 流式输出）
+    // ⑧: Agent Loop —— 单一 stream() 循环（合并文本生成 + 结构化工具调用）
     //
-    // 重构说明：
-    //   旧版分两阶段：先 chat() 检测工具（非流式），再 stream() 输出（流式）。
-    //   问题：同一组 toolMessages 调两次 LLM → token 双倍；
-    //         chat 与 stream 两次响应可能不一致 → 工具检测不准；
-    //         最终回复是 chat 的旧内容，不是基于工具结果重新生成。
+    // 升级说明（function calling）：
+    //   旧版从回复文本里抠 <tool_call> 标签 → 脆、空参数、token 浪费。
+    //   新版通过 API tools 参数，模型返回结构化 tool_calls（名称+参数由 API 保证）。
+    //   stream() 事件：
+    //     - token      → 纯文本，推给用户
+    //     - tool_call  → 结构化调用，累积后执行
+    //     - end        → 流结束（含完整文本）
     //
-    //   新版单循环：每轮只调一次 stream()，同时完成"生成文本 + 检测工具调用"。
     //   每轮输出：
-    //     ① 有 <tool_call> → 执行工具 → 结果塞回 toolMessages → 下一轮重新 stream
-    //     ② 无 <tool_call> → turnText 就是最终答案，结束
-    //
-    //   【预留扩展点】
-    //     - followUp / steering 打断：循环顶部预留了检查点，后续接入
-    //       （steer 需 llm.stream() 支持 AbortSignal，可中断当前流后立即重进循环）
-    //     - 本轮产生的文字中，<tool_call> 片段是给系统解析的，不展示给用户，
-    //       通过 stripToolCallTags() 过滤，只推纯文本。
+    //     ① 有 tool_call → 执行工具 → assistant 的 tool_calls + tool 结果塞回 toolMessages → 下一轮
+    //     ② 只有文本     → turnText 就是最终答案，结束
+    //     ③ 文本+工具并存 → 文本展示 + 工具执行，下一轮带上工具结果再生成最终答案
     // ═══════════════════════════════════════════════════════════════════════════
 
     let finalText = '';
     // 注：isStreaming 由外层循环（prompt）管理，这里不设置。
     // 单循环：最多 5 轮，每轮 stream() 一次
+    const tools = this.tools.getLLMTools();
     for (let turn = 0; turn < 5; turn++) {
-        // 【预留点】此处可检查 followUp 队列 / steering 消息
-        //   例：const steer = this.steerQueue.shift();
-        //       if (steer) { 用新消息重新进入循环，打断当前轮 }
-        //   需 llm.stream() 支持 AbortSignal 才能中断进行中的流。
-
-        // ── ① 唯一 LLM 调用：stream() 流式生成 + 收集完整文本 ──
+        // ── ① 唯一 LLM 调用：stream() 流式生成 + 收集结构化工具调用 ──
         let turnText = '';
-        // 过滤器：剔除流式输出中的 <tool_call> 块，只把纯文本推给用户
-        const filter = createToolCallFilter();
+        const turnCalls: import('../llm/types.js').LLMToolCall[] = [];
         try {
-          const eventStream = this.llm.stream(toolMessages);
+          const eventStream = this.llm.stream(toolMessages, tools);
           for await (const event of eventStream) {
             if (event.type === 'token') {
               turnText += event.text;
-              // 过滤工具调用标签，只把可见文本推给用户
-              const visible = filter.push(event.text);
-              if (visible) {
-                onToken?.(visible);
-                this.events.emit({ type: 'stream_text', text: visible });
-              }
+              onToken?.(event.text);
+              this.events.emit({ type: 'stream_text', text: event.text });
+            } else if (event.type === 'tool_call') {
+              turnCalls.push(...event.toolCalls);
             } else if (event.type === 'end') {
               turnText = event.fullText;
             }
-          }
-          // 流结束：吐出过滤器中残留的可见文本（丢弃未闭合的 tool_call 尾部）
-          const flushed = filter.flush();
-          if (flushed) {
-            onToken?.(flushed);
-            this.events.emit({ type: 'stream_text', text: flushed });
           }
         } catch (err) {
           // 流异常 → 询问是否切兜底
@@ -527,39 +511,49 @@ export class Runtime {
           }
         }
 
-        // ── ② 检测本轮输出中的工具调用 ──
-        const calls = parseToolCalls(turnText);
-        if (calls.length === 0) {
-          // 没有工具调用 → 这就是最终答案
+        // ── ② 无工具调用 → 这就是最终答案 ──
+        if (turnCalls.length === 0) {
           finalText = turnText;
           break;
         }
 
         // ── ③ 有工具调用 → 逐个执行，结果塞回 toolMessages ──
-        //     工具结果将在下一轮 stream() 中作为上下文交给 LLM 再加工
-        for (const tc of calls) {
-          this.events.emit({ type: 'tool_execution_start', name: tc.name, args: tc.args });
+        //     先记录 assistant 的 tool_calls（保持对话一致性），再 push tool 结果
+        toolMessages.push({
+          role: 'assistant',
+          content: turnText,
+          tool_calls: turnCalls,
+        });
+        for (const tc of turnCalls) {
+          // 解析结构化参数（API 返回的 JSON 字符串）
+          let args: Record<string, unknown> = {};
+          try {
+            args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+          } catch {
+            args = {};
+          }
+          this.events.emit({ type: 'tool_execution_start', name: tc.function.name, args });
           try {
             // 权限检查
-            if (this.tools.requiresPermission(tc.name)) {
-              const detail = JSON.stringify(tc.args).slice(0, 80);
-              if (!this.permission.isAutoAllowed(tc.name, detail)) {
-                const choice = await promptPermission(tc.name, detail);
+            if (this.tools.requiresPermission(tc.function.name)) {
+              const detail = JSON.stringify(args).slice(0, 80);
+              if (!this.permission.isAutoAllowed(tc.function.name, detail)) {
+                const choice = await promptPermission(tc.function.name, detail);
                 if (choice === 'deny') {
-                  toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 被用户拒绝]` });
-                  this.events.emit({ type: 'tool_execution_end', name: tc.name, result: '❌ 已拒绝' });
+                  toolMessages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: `[工具 ${tc.function.name} 被用户拒绝]` });
+                  this.events.emit({ type: 'tool_execution_end', name: tc.function.name, result: '❌ 已拒绝' });
                   continue;
                 }
                 if (choice === 'always') {
-                  this.permission.grantAutoAllow(tc.name, detail);
+                  this.permission.grantAutoAllow(tc.function.name, detail);
                 }
               }
             }
-            const result = await this.tools.execute(tc.name, tc.args);
-            toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 执行结果]\n${result}\n（工具已完成，请直接回复用户，不要再调用工具）` });
-            this.events.emit({ type: 'tool_execution_end', name: tc.name, result });
+            const result = await this.tools.execute(tc.function.name, args);
+            toolMessages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: result });
+            this.events.emit({ type: 'tool_execution_end', name: tc.function.name, result });
           } catch (err) {
-            toolMessages.push({ role: 'user', content: `[工具 ${tc.name} 执行失败]\n${err}` });
+            toolMessages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: `[工具 ${tc.function.name} 执行失败]\n${err}` });
             this.events.emit({ type: 'error', message: String(err) });
           }
         }

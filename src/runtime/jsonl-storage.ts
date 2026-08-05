@@ -20,6 +20,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as fsSync from 'node:fs';
 import type { SessionStorage } from '../types.js';
+import type { LLMMessage, LLMToolCall } from '../llm/types.js';
 
 interface SessionHeader {
   type: 'session';
@@ -36,6 +37,12 @@ export interface MessageEntry {
   role: string;
   content: string;
   timestamp: number;
+  /** 结构化工具调用（仅 assistant 角色，function calling 时携带） */
+  tool_calls?: LLMToolCall[];
+  /** 工具调用结果 ID（仅 tool 角色，关联 LLMToolCall.id） */
+  tool_call_id?: string;
+  /** 工具调用结果对应的工具名（仅 tool 角色） */
+  name?: string;
 }
 
 /** 上下文压缩节点：承载摘要，替代独立 summary 文件 */
@@ -95,12 +102,17 @@ export class JsonlSessionStorage implements SessionStorage {
   private constructor(filePath: string, header: SessionHeader, entries: SessionTreeEntry[]) {
     this.filePath = filePath;
     this.header = header;
+    let lastMessageId: string | null = null;
     for (const e of entries) {
       this.entries.push(e);
       this.byId.set(e.id, e);
-      // 重放 leaf entry 恢复当前分支指针
+      // 重放 leaf entry 恢复当前分支指针（leaf 是最后写入的分支标记）
       if (e.type === 'leaf') this.currentLeafId = e.targetId;
+      // 兜底：记录最后一条 message（无 leaf entry 时用最后消息作 leaf）
+      if (e.type === 'message') lastMessageId = e.id;
     }
+    // 若文件里从未写过 leaf entry（纯 append 线性场景），用最后一条消息作 leaf
+    if (this.currentLeafId === null) this.currentLeafId = lastMessageId;
   }
 
   /** 获取文件路径（供外部读取） */
@@ -166,7 +178,16 @@ export class JsonlSessionStorage implements SessionStorage {
      消息读写
      ════════════════════════════════════════════════════════════════════════════ */
 
-  async appendMessage(role: string, content: string): Promise<void> {
+  /**
+   * 追加一条消息到当前分支。
+   * 调用方：runtime.ts（用户/助手消息）、Agent 循环（tool 结果消息）
+   * 支持 function calling：可传结构化工具调用（tool_calls）或 tool 结果（tool_call_id/name）
+   */
+  async appendMessage(
+    role: string,
+    content: string,
+    extra?: { tool_calls?: LLMToolCall[]; tool_call_id?: string; name?: string },
+  ): Promise<void> {
     const entry: MessageEntry = {
       type: 'message',
       id: nextEntryId(),
@@ -174,6 +195,9 @@ export class JsonlSessionStorage implements SessionStorage {
       role,
       content,
       timestamp: Date.now(),
+      ...(extra?.tool_calls ? { tool_calls: extra.tool_calls } : {}),
+      ...(extra?.tool_call_id ? { tool_call_id: extra.tool_call_id } : {}),
+      ...(extra?.name ? { name: extra.name } : {}),
     };
     await this.appendLine(entry);
     this.entries.push(entry);
@@ -184,16 +208,20 @@ export class JsonlSessionStorage implements SessionStorage {
   /**
    * 读取当前分支的对话消息（遇 compaction 转成摘要 system 消息）。
    * 调用方：runtime.ts（LLM 上下文）
-   * 服务于：让 LLM 看到"当前路径上的历史"，含压缩摘要但不算 compaction 节点
+   * 服务于：让 LLM 看到"当前路径上的历史"，含压缩摘要、结构化工具调用（function calling）
    */
-  async getMessages(): Promise<Array<{ role: string; content: string }>> {
+  async getMessages(): Promise<LLMMessage[]> {
     return this.getPathToRoot(this.currentLeafId)
       .filter((e): e is MessageEntry | CompactionEntry => e.type !== 'leaf')
-      .map((e) => {
+      .map((e): LLMMessage => {
         if (e.type === 'compaction') {
           return { role: 'system', content: `[对话摘要] ${e.summary}` };
         }
-        return { role: e.role, content: e.content };
+        const base: LLMMessage = { role: e.role as LLMMessage['role'], content: e.content };
+        if (e.tool_calls) base.tool_calls = e.tool_calls;
+        if (e.tool_call_id) base.tool_call_id = e.tool_call_id;
+        if (e.name) base.name = e.name;
+        return base;
       });
   }
 

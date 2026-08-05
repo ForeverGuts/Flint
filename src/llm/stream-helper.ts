@@ -1,9 +1,15 @@
 /**
  * 通用请求助手 —— 抽离 fetch 逻辑，避免 chat/stream 重复。
- * 调用方：DeepSeekProvider 等具体实现
- * 服务于：统一 OpenAI 兼容格式的 HTTP 请求与流式解析
+ * 调用方：DeepSeekProvider（OpenAI 兼容格式）
+ * 服务于：统一 OpenAI 兼容格式的 HTTP 请求与流式解析，支持结构化工具调用（function calling）
+ *
+ * 工具调用：
+ *   - 请求 body 增加 tools 数组（LLMTool[]），告知模型可用工具
+ *   - 流式响应中，工具调用出现在 delta.tool_calls（与 delta.content 并行）
+ *     function.arguments 是 JSON 字符串，会分片到达，需按 index 累积后 JSON.parse
+ *   - 非流式响应中，工具调用出现在 message.tool_calls（结构化）
  */
-import type { LLMConfig, LLMMessage, LLMStreamEvent } from './types.js';
+import type { ChatResult, LLMConfig, LLMMessage, LLMStreamEvent, LLMTool, LLMToolCall } from './types.js';
 import { EventStream } from '../runtime/event-stream.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -28,132 +34,136 @@ function buildRequest(config: LLMConfig, body: Record<string, unknown>): Request
 
 /* ════════════════════════════════════════════════════════════════════════════
    非流式请求（chat）
-     需要：config.baseUrl → API 地址（如 https://api.deepseek.com）
+     需要：config.baseUrl → API 地址
            messages       → 对话消息列表 [{role, content}, ...]
-   过程：发起 fetch → 等完整 HTTP 响应 → 解析 JSON → 提取 choices[0].message.content
-   返回：完整回复文本（一次性）
+           tools          → 工具定义（可选，开启 function calling）
+   返回：ChatResult { content, tool_calls }
    ════════════════════════════════════════════════════════════════════════════ */
 
-export async function createChat(config: LLMConfig, messages: LLMMessage[]): Promise<string> {
+export async function createChat(
+  config: LLMConfig,
+  messages: LLMMessage[],
+  tools?: LLMTool[],
+): Promise<ChatResult> {
   const body: Record<string, unknown> = { messages, stream: false, thinking: { type: 'disabled' } };
+  if (tools && tools.length > 0) body.tools = tools;
   const res = await fetch(`${config.baseUrl}/chat/completions`, buildRequest(config, body));
   if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
-  const data = await res.json() as { choices: Array<{ message: { content: string } }> };
-  return data.choices[0].message.content;
+  const data = await res.json() as {
+    choices: Array<{ message: { content: string | null; tool_calls?: LLMToolCall[] } }>;
+  };
+  const message = data.choices[0]?.message;
+  return {
+    content: message?.content ?? '',
+    ...(message?.tool_calls && message.tool_calls.length > 0
+      ? { tool_calls: message.tool_calls }
+      : {}),
+  };
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
    流式请求（stream）
      需要：config.baseUrl → API 地址
            messages       → 对话消息列表
+           tools          → 工具定义（可选，开启 function calling）
            EventStream    → 推拉通道，生产者 push，消费者 for await...of
-   过程分 5 步：
+   过程：
      ① 发起 fetch + stream:true（告诉 API 我要流式）
      ② 获取 reader（ReadableStream，逐块读取 HTTP 响应体）
      ③ 粘包/半包处理（buffer 拼合 → 按行切分 → 完整行解析 → 半截放回）
-     ④ 遍历完整行，解析 SSE data JSON，提取 delta.content
-     ⑤ 流结束 → push end 事件（携带完整文本）
+     ④ 遍历完整行，解析 SSE data JSON：
+        - delta.content → 推 token 事件（文本）
+        - delta.tool_calls → 按 index 累积（arguments 分片拼接）
+     ⑤ 流结束 → 若有累积的 tool_calls 推 tool_call 事件，再推 end 事件
    ════════════════════════════════════════════════════════════════════════════ */
 
-export function createSSEStream(config: LLMConfig, messages: LLMMessage[]): EventStream<LLMStreamEvent> {
-  // ① 创建 EventStream 实例
-  //    需要两个判断函数：
-  //    - isComplete：当事件 type === 'end' 时标记流结束
-  //    - extractResult：从 end 事件中提取完整文本供 result() 使用
+/** OpenAI 兼容格式的流式 tool_calls 片段 */
+interface StreamToolCallDelta {
+  index: number;
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+export function createSSEStream(
+  config: LLMConfig,
+  messages: LLMMessage[],
+  tools?: LLMTool[],
+): EventStream<LLMStreamEvent> {
   const eventStream = new EventStream<LLMStreamEvent>(
     (event) => event.type === 'end',
     (event) => event as { type: 'end'; fullText: string },
   );
 
-  // ② 立即启动异步生产者（不阻塞当前线程，EventStream 内部缓冲）
-  //    消费者通过 for await...of 从 EventStream 拉取事件
   (async () => {
     try {
-      // ── ②-a 发起 HTTP 请求 ──
-      //     需要：config.baseUrl + /chat/completions
-      //           config.apiKey → Bearer token
-      //           body → model + messages + stream:true
-      //     过程：fetch → 等待第一个响应头 → 获取可读流 res.body
-      //     注意：此时连接保持打开，API 会持续发送 SSE 事件
       const body: Record<string, unknown> = { messages, stream: true, thinking: { type: 'disabled' } };
+      if (tools && tools.length > 0) body.tools = tools;
       const res = await fetch(`${config.baseUrl}/chat/completions`, buildRequest(config, body));
       if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
 
-      // ── ②-b 获取流读取器 ──
-      //     res.body 是 ReadableStream<Uint8Array>（HTTP 响应体的流式接口）
-      //     getReader() 返回一个可逐块读取的 reader
-      //     每次 reader.read() 返回 { done: boolean, value: Uint8Array }
       const reader = res.body!.getReader();
-
-      // ── ②-c 初始化 SSE 解析状态 ──
-      //     decoder：将 Uint8Array 二进制块解码为字符串（UTF-8）
-      //     buffer：粘包/半包缓冲区（存储上一轮未完成的半截行）
-      //     full：累加所有 token，最终作为 end 事件的完整文本
       const decoder = new TextDecoder();
       let buffer = '';
       let full = '';
 
-      // ── ②-d 主循环：逐块读取 HTTP 流 ──
-      //     每次循环读取一个 chunk（可能是多个 SSE 事件、半个事件、或多个完整事件）
-      //     当 res.body 读完时 done === true
+      // ── 工具调用累积：按 index 分组，arguments 分片拼接 ──
+      // 流式里一个工具调用的 name 只出现在第一片，arguments 是 JSON 字符串切成多片
+      const toolCallAcc: Map<number, { id: string; name: string; args: string }> = new Map();
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        // ── ②-e 粘包/半包处理 ──
-        //     问题：一次 reader.read() 可能拿到：
-        //       - 半个 SSE 事件（"data: {\"choices\":[{\"delta\":{\"cont"）
-        //       - 多个完整 SSE 事件粘在一起
-        //     处理：
-        //       1. 新数据追加到 buffer（和上一轮的半截拼起来）
-        //       2. 按 \n 切分成行（SSE 协议每行以 \n 结尾）
-        //       3. 弹出行数组的最后一项放回 buffer（可能是不完整的半截）
-        //       4. 剩余行都是完整的，进入下一阶段解析
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
 
-        // ── ②-f 逐行解析 SSE ──
-        //     每行格式：data: {"choices":[{"delta":{"content":"你好"}}]}
-        //     过虑规则：
-        //       - 空行 → 跳过（SSE 协议用空行分隔事件）
-        //       - data: [DONE] → 跳过（API 的流结束标记）
-        //       - 不以 data: 开头 → 跳过（非 SSE 行）
-        //       - 合法 → JSON.parse 提取 delta.content
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed || trimmed === 'data: [DONE]') continue;
           if (!trimmed.startsWith('data: ')) continue;
 
           try {
-            // ── ②-g 提取 token 并推入 EventStream ──
-            //     trimmed.slice(6) 去掉 "data: " 前缀
-            //     json.choices[0].delta.content 是本次的 token 块
-            //     可能为空（如 role 标记行），此时跳过
             const json = JSON.parse(trimmed.slice(6)) as {
-              choices?: Array<{ delta: { content?: string } }>;
+              choices?: Array<{ delta: { content?: string; tool_calls?: StreamToolCallDelta[] } }>;
             };
-            const content = json.choices?.[0]?.delta?.content;
-            if (content) {
-              full += content;                                   // 累加到完整文本
-              eventStream.push({ type: 'token', text: content }); // push 到 EventStream
+            const delta = json.choices?.[0]?.delta;
+
+            // 文本 token
+            if (delta?.content) {
+              full += delta.content;
+              eventStream.push({ type: 'token', text: delta.content });
+            }
+
+            // 结构化工具调用（分片）
+            if (delta?.tool_calls) {
+              for (const tc of delta.tool_calls) {
+                const acc = toolCallAcc.get(tc.index) ?? { id: '', name: '', args: '' };
+                if (tc.id) acc.id = tc.id;
+                if (tc.function?.name) acc.name += tc.function.name;
+                if (tc.function?.arguments) acc.args += tc.function.arguments;
+                toolCallAcc.set(tc.index, acc);
+              }
             }
           } catch {
-            // 跳过无法解析的 SSE 行（如非 JSON 的 keepalive 行）
+            // 跳过无法解析的 SSE 行
           }
         }
       }
 
-      // ── ②-h 流结束 ──
-      //     当 reader.read() 返回 done: true 时，HTTP 流已关闭
-      //     data: [DONE] 标记已在解析循环中被跳过
-      //     此时推入 end 事件，携带完整文本，供消费者使用
+      // 流结束：先推累积的工具调用（若有）
+      if (toolCallAcc.size > 0) {
+        const toolCalls: LLMToolCall[] = [...toolCallAcc.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([index, acc]) => ({
+            id: acc.id || `call_${index}`,
+            type: 'function' as const,
+            function: { name: acc.name, arguments: acc.args || '{}' },
+          }));
+        eventStream.push({ type: 'tool_call', toolCalls });
+      }
       eventStream.push({ type: 'end', fullText: full });
     } catch {
-      // ── ②-i 异常处理 ──
-      //     网络断开 / API 返回错误 / JSON 解析失败 等
-      //     调用 eventStream.end() 强制结束流
-      //     消费者会在 for await...of 中退出循环
       eventStream.end();
     }
   })();

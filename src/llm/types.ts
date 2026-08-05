@@ -57,9 +57,18 @@ export interface LLMUsage {
   totalTokens: number;
 }
 
+/** 非流式 chat() 的返回结果（可能是纯文本，也可能含结构化工具调用） */
+export interface ChatResult {
+  /** 助手文本回复（调工具时可能为空字符串） */
+  content: string;
+  /** 结构化工具调用（纯文本回复时为空） */
+  tool_calls?: LLMToolCall[];
+}
+
 /** LLM 事件流中的事件类型 */
 export type LLMStreamEvent =
   | { type: 'token'; text: string }
+  | { type: 'tool_call'; toolCalls: LLMToolCall[] }
   | { type: 'end'; fullText: string; usage?: LLMUsage };
 
 /**
@@ -67,9 +76,9 @@ export type LLMStreamEvent =
  * 每种接入方式（DeepSeek / Anthropic / Ollama / 自定义）实现此接口。
  */
 export interface LLMProvider {
-  /** 发送消息列表，返回完整回复文本（非流式，可带工具定义） */
-  chat(messages: LLMMessage[], tools?: LLMTool[]): Promise<string>;
+  /** 发送消息列表，返回完整回复（非流式，可带工具定义；含结构化工具调用） */
+  chat(messages: LLMMessage[], tools?: LLMTool[]): Promise<ChatResult>;
 
-  /** 流式调用，返回 EventStream 推拉通道 */
+  /** 流式调用，返回 EventStream 推拉通道（文本 token + 结构化 tool_call 事件） */
   stream(messages: LLMMessage[], tools?: LLMTool[]): import('../runtime/event-stream.js').EventStream<LLMStreamEvent>;
 }

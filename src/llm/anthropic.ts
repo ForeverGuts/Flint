@@ -19,7 +19,7 @@
  *     而非 OpenAI 的 tool_calls 顶级字段
  *   - 流式 SSE 格式不同：Anthropic 用 event: 行前缀，OpenAI 用 data: 行前缀
  */
-import type { LLMConfig, LLMMessage, LLMProvider, LLMStreamEvent, LLMTool } from './types.js';
+import type { ChatResult, LLMConfig, LLMMessage, LLMProvider, LLMStreamEvent, LLMTool, LLMToolCall } from './types.js';
 import { EventStream } from '../runtime/event-stream.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -144,14 +144,30 @@ function toAnthropicMessages(msgs: LLMMessage[]): {
 }
 
 /**
- * 从 Anthropic API 响应中提取文本内容。
- * 找到第一个 type: 'text' 的 content block，取其 text 值。
+ * 从 Anthropic 响应 content 块解析出 ChatResult（文本 + tool_use 块转 LLMToolCall[]）。
+ * Anthropic 的工具调用是 content 里的 tool_use 块（OpenAI 是顶级 tool_calls 字段）。
  */
-function extractTextFromResponse(response: AnthropicResponse): string {
+function extractChatResult(response: AnthropicResponse): ChatResult {
+  let content = '';
+  const toolCalls: LLMToolCall[] = [];
   for (const block of response.content) {
-    if (block.type === 'text' && block.text) return block.text;
+    if (block.type === 'text' && block.text) {
+      content += block.text;
+    } else if (block.type === 'tool_use' && block.id && block.name) {
+      toolCalls.push({
+        id: block.id,
+        type: 'function',
+        function: {
+          name: block.name,
+          arguments: JSON.stringify(block.input ?? {}),
+        },
+      });
+    }
   }
-  return '';
+  return {
+    content,
+    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+  };
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -163,16 +179,16 @@ export class AnthropicProvider implements LLMProvider {
 
   /* ── 非流式调用 ── */
 
-  async chat(messages: LLMMessage[], _tools?: LLMTool[]): Promise<string> {
+  async chat(messages: LLMMessage[], tools?: LLMTool[]): Promise<ChatResult> {
     const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
 
-    const body: AnthropicRequest = {
+    const body: AnthropicRequest & { tools?: LLMTool[] } = {
       model: this.config.model,
       messages: anthropicMsgs,
       max_tokens: 4096,
       stream: false,
     };
-
+    if (tools && tools.length > 0) body.tools = tools;
     if (system) body.system = system;
 
     const res = await fetch(`${this.config.baseUrl}/v1/messages`, {
@@ -190,12 +206,12 @@ export class AnthropicProvider implements LLMProvider {
     }
 
     const data = (await res.json()) as AnthropicResponse;
-    return extractTextFromResponse(data);
+    return extractChatResult(data);
   }
 
   /* ── 流式调用 ── */
 
-  stream(messages: LLMMessage[], _tools?: LLMTool[]): EventStream<LLMStreamEvent> {
+  stream(messages: LLMMessage[], tools?: LLMTool[]): EventStream<LLMStreamEvent> {
     const eventStream = new EventStream<LLMStreamEvent>(
       (event) => event.type === 'end',
       (event) => event as { type: 'end'; fullText: string },
@@ -205,12 +221,13 @@ export class AnthropicProvider implements LLMProvider {
       try {
         const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
 
-        const body: AnthropicRequest = {
+        const body: AnthropicRequest & { tools?: LLMTool[] } = {
           model: this.config.model,
           messages: anthropicMsgs,
           max_tokens: 4096,
           stream: true,
         };
+        if (tools && tools.length > 0) body.tools = tools;
         if (system) body.system = system;
 
         const res = await fetch(`${this.config.baseUrl}/v1/messages`, {
@@ -232,6 +249,10 @@ export class AnthropicProvider implements LLMProvider {
         let buffer = '';
         let full = '';
 
+        // ── 工具调用累积（Anthropic 流式 tool_use） ──
+        // content_block_start 携带 tool_use 的 id/name，input 通过 input_json_delta 分片累积
+        const toolBlocks: Map<number, { id: string; name: string; input: string }> = new Map();
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -252,15 +273,38 @@ export class AnthropicProvider implements LLMProvider {
             try {
               const data = JSON.parse(trimmed.slice(6)) as {
                 type?: string;
-                delta?: { text?: string };
-                content_block?: { text?: string };
+                index?: number;
+                delta?: { text?: string; partial_json?: string };
+                content_block?: {
+                  type?: string;
+                  text?: string;
+                  id?: string;
+                  name?: string;
+                };
               };
 
-              // content_block_delta 事件携带文本增量
+              // 文本增量
               if (data.type === 'content_block_delta' && data.delta?.text) {
                 const text = data.delta.text;
                 full += text;
                 eventStream.push({ type: 'token', text });
+              }
+
+              // tool_use 块开始：记录 id + name
+              if (data.type === 'content_block_start' && data.content_block?.type === 'tool_use') {
+                toolBlocks.set(data.index ?? toolBlocks.size, {
+                  id: data.content_block.id ?? '',
+                  name: data.content_block.name ?? '',
+                  input: '',
+                });
+              }
+
+              // tool_use 的 input 分片累积
+              if (data.type === 'content_block_delta' && data.delta?.partial_json !== undefined) {
+                const block = toolBlocks.get(data.index ?? -1);
+                if (block) {
+                  block.input += data.delta.partial_json;
+                }
               }
             } catch {
               // 跳过解析失败的行
@@ -268,6 +312,17 @@ export class AnthropicProvider implements LLMProvider {
           }
         }
 
+        // 流结束：先推累积的工具调用（若有）
+        if (toolBlocks.size > 0) {
+          const toolCalls: LLMToolCall[] = [...toolBlocks.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([, b]) => ({
+              id: b.id,
+              type: 'function' as const,
+              function: { name: b.name, arguments: b.input || '{}' },
+            }));
+          eventStream.push({ type: 'tool_call', toolCalls });
+        }
         eventStream.push({ type: 'end', fullText: full });
       } catch {
         eventStream.end();

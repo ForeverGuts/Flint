@@ -14,6 +14,9 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-05 17:45 | [Refactor♻️] 工具调用升级为 function calling（结构化）：API tools 参数 + tool_calls 事件，废弃 <tool_call> 标签解析
+2026-08-05 17:45 | [Feature✨] stream/chat 支持结构化工具调用（分片累积、ChatResult 返回）；存储消息支持 tool_calls 往返
+2026-08-05 17:45 | [Refactor♻️] 删除 parseToolCalls/createToolCallFilter/fixJSON；系统提示词移除标签引导；修复纯 append 场景 leaf 恢复
 2026-08-05 15:35 | [Fix🐛] 普通对话误调 bash：系统提示词强化"闲聊/建议直接回答不调工具"，bash 工具描述收窄为仅明确要求时用
 2026-08-05 15:17 | [Refactor♻️] 会话存储重构为 entry 树 + leaf + fork（对齐 Pi）：消息带 parentId、leaf 指针持久化、摘要入树为 compaction entry
 2026-08-05 15:17 | [Feature✨] /history 改为分叉（fork 复制前缀，原历史保留）+ 移除编辑；新增 /sessions（切换/新建会话）
