@@ -14,6 +14,7 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-05 18:37 | [Fix🐛] SelectList 翻页：↑ 从首项 wrap 到末项时确保翻到其所在页，箭头不再消失/循环错乱
 2026-08-05 18:25 | [Fix🐛] bash 工具描述补 Windows 环境提示（勿用 pwd/ls/cat，用 cd/dir/type）
 2026-08-05 18:25 | [Fix🐛] 工具执行框美化：参数/结果改用 wrapText 折行 + 统一 4 空格缩进 + BOX_WIDTH 对齐，替代 80 字符硬截断
 2026-08-05 17:45 | [Refactor♻️] 工具调用升级为 function calling（结构化）：API tools 参数 + tool_calls 事件，废弃 <tool_call> 标签解析

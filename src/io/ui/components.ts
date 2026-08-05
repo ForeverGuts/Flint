@@ -131,9 +131,7 @@ export class SelectList implements Component {
       do {
         this.selected = (this.selected - 1 + this.items.length) % this.items.length;
       } while (this.items[this.selected].disabled && this.selected !== old);
-      if (this.selected < this.pageOffset) {
-        this.pageOffset = Math.floor(this.selected / this.pageSize) * this.pageSize;
-      }
+      this.ensureSelectedVisible();
       return { changed: true };
     }
     if (data === '\x1b[B') {
@@ -142,9 +140,7 @@ export class SelectList implements Component {
       do {
         this.selected = (this.selected + 1) % this.items.length;
       } while (this.items[this.selected].disabled && this.selected !== old);
-      if (this.selected >= this.pageOffset + this.pageSize) {
-        this.pageOffset = Math.floor(this.selected / this.pageSize) * this.pageSize;
-      }
+      this.ensureSelectedVisible();
       return { changed: true };
     }
     if (data === '\x1b[D') {
@@ -177,6 +173,17 @@ export class SelectList implements Component {
       return { changed: false, done: 'cancel' };
     }
     return { changed: false };
+  }
+
+  /**
+   * 确保 selected 在当前页可见范围内；否则翻到它所在的页。
+   * 修复：↑ 从第一项 wrap 到末项时，selected 跑到当前页之外，
+   * 旧逻辑只查 selected < pageOffset，导致不翻页、箭头消失、按久循环回原页。
+   */
+  private ensureSelectedVisible(): void {
+    if (this.selected < this.pageOffset || this.selected >= this.pageOffset + this.pageSize) {
+      this.pageOffset = Math.floor(this.selected / this.pageSize) * this.pageSize;
+    }
   }
 
   /** 按数字键跳转（全局序号） */
