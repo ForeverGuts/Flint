@@ -32,12 +32,24 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const modelName = checkResult.config?.model ?? 'unknown';
   const baseUrl = checkResult.config?.baseUrl ?? '';
 
-  // 初始化持久化会话
+  // 初始化持久化会话（v2 会话树格式）
   const sessionDir = './sessions';
   const sessionPath = `${sessionDir}/default.jsonl`;
-  const session: SessionStorage = existsSync(sessionPath)
-    ? await JsonlSessionStorage.open(sessionPath)
-    : await JsonlSessionStorage.create(sessionDir, 'default');
+  let session: SessionStorage;
+  try {
+    session = existsSync(sessionPath)
+      ? await JsonlSessionStorage.open(sessionPath)
+      : await JsonlSessionStorage.create(sessionDir, 'default');
+  } catch (err) {
+    // 旧 v1 线性格式已废弃：不迁移，提示后建新文件
+    if (existsSync(sessionPath)) {
+      console.warn(`[会话] 检测到旧版会话文件（v1 线性格式已废弃），新建空会话。旧文件可手动删除。`);
+      console.warn(`[会话] 详情: ${err instanceof Error ? err.message : String(err)}`);
+      session = await JsonlSessionStorage.create(sessionDir, 'default');
+    } else {
+      throw err;
+    }
+  }
 
   const createRuntime = async (options: CreateRuntimeOptions): Promise<CreateRuntimeResult> => {
     const runtime = new Runtime({
@@ -70,12 +82,11 @@ export async function main(checkResult: CheckResult): Promise<void> {
   process.on('SIGTERM', () => { closeTerminal(); runtime.stop().then(() => process.exit(0)); });
 
   // 收集启动信息传入 UI
-  const msgs = await session.getMessages();
   await runReplMode(runtime, {
     // ui页面展示的信息
     model: modelName,
     baseUrl,
-    sessionMsgs: msgs.length,
+    sessionMsgs: await runtime.getSessionMsgCount(),
     toolCount: runtime.tools.getLLMTools().length,
     cmdCount: runtime.listCommands().length,
     skillCount: runtime.getSkillLoader().getAll().length,

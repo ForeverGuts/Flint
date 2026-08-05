@@ -11,14 +11,16 @@ export interface AgentConfig {
 }
 
 /**
- * Session 存储接口。
- * 调用方：session.ts（InMemorySession 实现此接口）
- * 服务于：定义消息存取的契约，方便后续替换为 JSONL / mock 存储
+ * Session 存储接口（最小契约）。
+ * 调用方：session.ts（InMemorySession 实现此接口）、runtime.ts（通过接口调用）
+ * 服务于：定义消息存取的通用契约。
+ * 注意：entry 树能力（leaf/fork/compaction）属于 JsonlSessionStorage 的具体方法，
+ *       不在此接口内，Runtime 通过 instanceof 分支调用，避免污染 InMemory/Mock。
  */
 export interface SessionStorage {
   /** 追加一条消息 */
   appendMessage(role: string, content: string): Promise<void>;
-  /** 读取全部消息 */
+  /** 读取当前会话全部消息（JSONL 实现=当前分支路径） */
   getMessages(): Promise<Array<{ role: string; content: string }>>;
   /** 清空会话 */
   clear(): Promise<void>;

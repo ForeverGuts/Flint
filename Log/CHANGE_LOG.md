@@ -14,6 +14,10 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-05 15:17 | [Refactor♻️] 会话存储重构为 entry 树 + leaf + fork（对齐 Pi）：消息带 parentId、leaf 指针持久化、摘要入树为 compaction entry
+2026-08-05 15:17 | [Feature✨] /history 改为分叉（fork 复制前缀，原历史保留）+ 移除编辑；新增 /sessions（切换/新建会话）
+2026-08-05 15:17 | [Config⚙️] 旧 v1 线性会话格式废弃（open 拒绝），旧文件归档到 sessions/archive-v1/
+
 2026-08-04 16:40 | [Feature✨] 新增 /history 命令（查看/回溯/编辑对话历史）+ 存储层 truncateAfter/updateMessage
 2026-08-04 16:31 | [Fix🐛] wrapText 中文标点禁排：折行时行首不出现标点（标点吸附行尾）
 2026-08-04 16:19 | [Fix🐛] 回复/用户框内容统一 4 空格缩进 + 新增 wrapText 按可见宽度折行，避免长回复顶格/串行

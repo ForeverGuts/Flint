@@ -15,7 +15,6 @@ import { parseToolCalls, estimateTokenUsage, createToolCallFilter } from './util
 import { PermissionManager } from './permission.js';
 import { promptPermission } from '../io/ui/permission.js';
 import { selectFromList } from '../io/ui/selector.js';
-import { readLine } from '../io/terminal.js';
 /* ── 类型定义 ── */
 
 /** 命令处理函数签名 */
@@ -162,9 +161,9 @@ export class Runtime {
   }
 
   /**
-   * 获取全部历史消息（含 msgId）。
+   * 获取当前分支上的全部历史消息（含 msgId）。
    * 调用方：/history 命令
-   * 服务于：展示会话历史、定位回溯/编辑点
+   * 服务于：展示会话历史、定位 fork 点
    */
   async getHistoryMessages(): Promise<Array<{ msgId: string; role: string; content: string }>> {
     if (this.session instanceof JsonlSessionStorage) {
@@ -176,41 +175,64 @@ export class Runtime {
   }
 
   /**
-   * 截断会话：删除某条消息之后的所有消息（含该条之后的全部内容）。
+   * fork 出新分支：从某条消息之前复制前缀到新会话，原历史不动。
    * 调用方：/history 命令（"从此继续"）
+   * 服务于：不破坏原历史，长出新分支，并把当前会话切到新分支
+   *
+   * @param msgId 分叉点消息 id（新分支复制到它为止）
+   * @returns 新会话文件名
    */
-  async truncateSessionAfter(msgId: string): Promise<void> {
-    if (this.session instanceof JsonlSessionStorage) {
-      await this.session.truncateAfter(msgId);
-    }
+  async forkSessionAt(msgId: string): Promise<string> {
+    if (!(this.session instanceof JsonlSessionStorage)) return '';
+    const { fileName, storage } = await this.session.forkTo(msgId);
+    this.session = storage;
+    return fileName;
   }
 
   /**
-   * 替换某条历史消息的内容。
-   * 调用方：/history 命令（"编辑"）
+   * 列出 sessions/ 下所有会话文件。
+   * 调用方：/sessions 命令
    */
-  async updateSessionMessage(msgId: string, content: string): Promise<void> {
-    if (this.session instanceof JsonlSessionStorage) {
-      await this.session.updateMessage(msgId, content);
-    }
+  async listSessions(): Promise<Array<{ fileName: string; msgCount: number; updatedAt: number }>> {
+    return JsonlSessionStorage.listAll(this.sessionDir());
   }
 
   /**
-   * 读取一行输入（临时让渡 raw mode，供 /history 编辑等场景）。
-   * 调用方：/history 命令
-   * 服务于：让用户输入修正后的消息文本（readline 依赖 cooked mode，故需先退 raw）
+   * 切换到指定会话文件。
+   * 调用方：/sessions 命令
    */
-  async readLineInput(prompt?: string): Promise<string> {
-    if (process.stdin.isTTY && process.stdin.setRawMode) {
-      process.stdin.setRawMode(false);
+  async switchSession(fileName: string): Promise<boolean> {
+    const dir = this.sessionDir();
+    const storage = await JsonlSessionStorage.open(`${dir}/${fileName}`);
+    if (!storage) return false;
+    this.session = storage;
+    return true;
+  }
+
+  /**
+   * 新建一个空会话并切换过去。
+   * 调用方：/sessions 命令（"新建会话"）
+   */
+  async createSession(name?: string): Promise<string> {
+    const dir = this.sessionDir();
+    const fileName = name?.endsWith('.jsonl') ? name : `${name ?? `session-${Date.now().toString(36)}`}.jsonl`;
+    const storage = await JsonlSessionStorage.create(dir, fileName);
+    this.session = storage;
+    return fileName;
+  }
+
+  /** 当前会话目录（供列表/切换/新建复用） */
+  private sessionDir(): string {
+    if (this.session instanceof JsonlSessionStorage) {
+      return this.session.getDir();
     }
-    try {
-      return await readLine(prompt);
-    } finally {
-      if (process.stdin.isTTY && process.stdin.setRawMode) {
-        process.stdin.setRawMode(true);
-      }
-    }
+    return './sessions';
+  }
+
+  /** 当前会话消息数（供 banner 展示，读取当前分支路径长度） */
+  async getSessionMsgCount(): Promise<number> {
+    if (this.session instanceof JsonlSessionStorage) return this.session.getAllStored().length;
+    return (await this.session?.getMessages())?.length ?? 0;
   }
 
   getSkillLoader(): SkillLoader {
@@ -359,28 +381,36 @@ export class Runtime {
     // 发射 thinking 事件（告诉 UI 开始旋转）
     this.events.emit({ type: 'thinking', phase: 'analyzing' });
 
-    // ⑦: 上下文压缩 —— 历史超限时用 LLM 总结，记录被压缩的消息 ID
+    // ⑦: 上下文压缩 —— 历史超限时用 LLM 总结，压缩结果作为 compaction entry 入树
     let history = this.session ? await this.session.getMessages() : [];
-    let compressedSummary = '';
-    let summaryIds: string[] = [];
     const jsonlSession = this.session as JsonlSessionStorage | undefined;
-    const summaryPath = jsonlSession?.getFilePath()?.replace('.jsonl', '_summary.jsonl');
 
-    if (summaryPath) {
-      const { readFileSync, existsSync } = await import('node:fs');
-      if (existsSync(summaryPath)) {
-        try {
-          const data = JSON.parse(readFileSync(summaryPath, 'utf-8'));
-          compressedSummary = data.text;
-          summaryIds = data.ids ?? [];
-        } catch { /* 摘要文件损坏忽略 */ }
+    // 增量压缩判断：已压缩过的消息 id = 各 compaction entry 的 firstKeptId 之前（历史路径上的）
+    // 简化：已压缩消息 = 所有 compaction 出现前的那批；这里用 getAllMsgIds 里在 firstKeptId 之前的消息
+    let compressedSummary = '';
+    if (jsonlSession) {
+      const compactions = jsonlSession.getCompactions();
+      if (compactions.length > 0) {
+        // 取最后一个 compaction：它之前的消息已被摘要顶替
+        const last = compactions[compactions.length - 1];
+        compressedSummary = last.summary;
       }
     }
 
     if (history.length > 20) {
       const allIds: string[] = jsonlSession?.getAllMsgIds() ?? [];
-      // 只压缩尚未压缩过的消息（增量压缩）
-      const uncompressedIds = allIds.slice(0, -10).filter((id: string) => !summaryIds.includes(id));
+      // 已压缩消息 id = 被某个 compaction 覆盖的（firstKeptId 之前）；取最新的 firstKeptId 作为分界
+      const compactions = jsonlSession?.getCompactions() ?? [];
+      // 只压缩尚未压缩过的早期消息（每个 compaction 的 firstKeptId 之前的都算已压缩）
+      const summarizedIds = new Set<string>();
+      for (const c of compactions) {
+        // firstKeptId 之前的所有消息 id 都算已压缩
+        const keptIdx = allIds.indexOf(c.firstKeptId);
+        if (keptIdx !== -1) {
+          for (let i = 0; i < keptIdx; i++) summarizedIds.add(allIds[i]);
+        }
+      }
+      const uncompressedIds = allIds.slice(0, -10).filter((id: string) => !summarizedIds.has(id));
       if (uncompressedIds.length > 0) {
         this.events.emit({ type: 'thinking', phase: 'compressing' });
         const toSummarize = uncompressedIds.map((id: string) => {
@@ -392,10 +422,9 @@ export class Runtime {
             { role: 'system', content: '将以下对话压缩为一段摘要（50 字内），保留关键信息。只输出摘要。' },
             { role: 'user', content: toSummarize },
           ]);
-          const { writeFileSync } = await import('node:fs');
-          // 合并新旧 ID，写入摘要文件
-          const mergedIds = [...summaryIds, ...uncompressedIds];
-          writeFileSync(summaryPath!, JSON.stringify({ ids: mergedIds, text: summary }), 'utf-8');
+          // 压缩结果作为 compaction entry 入树（firstKeptId = 第一条保留消息）
+          const firstKeptId = allIds[allIds.length - 10] ?? allIds[allIds.length - 1] ?? '';
+          await jsonlSession?.appendCompaction(summary, firstKeptId);
           compressedSummary = summary;
           history = history.slice(-10);
         } catch {
