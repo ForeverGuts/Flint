@@ -278,22 +278,36 @@ export class TreeUI {
       }
 
       case 'tool_execution_start': {
-        const args = event.args ? JSON.stringify(event.args).slice(0, 60) : '';
+        const argsStr = event.args ? JSON.stringify(event.args) : '';
         const box = new Container();
-        box.addChild(new Text(`  ${C.yellow}┌── ${C.bold}${event.name.toUpperCase()}${C.reset}${C.yellow}${'─'.repeat(38)}┐${C.reset}`));
-        if (args) box.addChild(new Text(`      ${C.dim}${args}${C.reset}`));
+        // 顶部框线与正常回复框同一 BOX_WIDTH 对齐
+        box.addChild(new Text(`  ${C.yellow}┌──${C.reset}${C.bold}${C.yellow}${event.name.toUpperCase()}${C.reset}${C.yellow}${'─'.repeat(BOX_WIDTH - 6 - event.name.length)}┐${C.reset}`));
+        if (argsStr) {
+          // 参数按框内宽折行 + 统一 4 空格缩进（最多 3 行）
+          for (const line of wrapText(argsStr, BOX_INNER_WIDTH).slice(0, 3)) {
+            box.addChild(new Text(`    ${C.dim}${line}${C.reset}`));
+          }
+        }
         this.chat.addChild(box);
         break;
       }
 
       case 'tool_execution_end': {
-        const resultStr = typeof event.result === 'string' ? event.result.slice(0, 80) : '';
+        const resultStr = typeof event.result === 'string' ? event.result : String(event.result);
         const isOk = resultStr.includes('✅') || resultStr.includes('[OK]');
         const isErr = resultStr.includes('❌') || resultStr.includes('失败') || resultStr.includes('[ERROR]');
         const color = isErr ? C.red : isOk ? C.green : C.dim;
         const box = new Container();
-        box.addChild(new Text(`      ${color}${resultStr}${C.reset}`));
-        box.addChild(new Text(`  ${C.yellow}└${'─'.repeat(48 - 2)}┘${C.reset}`));
+        // 结果按框内宽折行 + 统一 4 空格缩进（最多 8 行，超长提示截断）
+        const resultLines = wrapText(resultStr, BOX_INNER_WIDTH);
+        const MAX_LINES = 8;
+        for (const line of resultLines.slice(0, MAX_LINES)) {
+          box.addChild(new Text(`    ${color}${line}${C.reset}`));
+        }
+        if (resultLines.length > MAX_LINES) {
+          box.addChild(new Text(`    ${C.dim}… 输出过长，已截断（共 ${resultLines.length} 行）${C.reset}`));
+        }
+        box.addChild(new Text(`  ${C.yellow}└${'─'.repeat(BOX_WIDTH - 4)}┘${C.reset}`));
         this.chat.addChild(box);
         break;
       }

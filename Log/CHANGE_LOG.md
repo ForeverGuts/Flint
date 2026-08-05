@@ -14,6 +14,8 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-05 18:25 | [Fix🐛] bash 工具描述补 Windows 环境提示（勿用 pwd/ls/cat，用 cd/dir/type）
+2026-08-05 18:25 | [Fix🐛] 工具执行框美化：参数/结果改用 wrapText 折行 + 统一 4 空格缩进 + BOX_WIDTH 对齐，替代 80 字符硬截断
 2026-08-05 17:45 | [Refactor♻️] 工具调用升级为 function calling（结构化）：API tools 参数 + tool_calls 事件，废弃 <tool_call> 标签解析
 2026-08-05 17:45 | [Feature✨] stream/chat 支持结构化工具调用（分片累积、ChatResult 返回）；存储消息支持 tool_calls 往返
 2026-08-05 17:45 | [Refactor♻️] 删除 parseToolCalls/createToolCallFilter/fixJSON；系统提示词移除标签引导；修复纯 append 场景 leaf 恢复
