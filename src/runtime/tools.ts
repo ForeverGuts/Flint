@@ -210,7 +210,7 @@ export function registerBuiltinTools(runtime: Runtime): void {
   /* ── Bash：执行命令 ── */
   runtime.tools.register({
     name: 'bash',
-    description: '执行 shell 命令。可用于文件操作、编译、运行脚本等。命令在当前工作目录执行。注意 Windows 路径中的反斜杠需转义或使用正斜杠。',
+    description: '执行 shell 命令。仅当用户明确要求执行命令/运行脚本/编译时才使用；不要为"了解环境"或"随便试试"而主动调用。命令在当前工作目录执行。注意 Windows 路径中的反斜杠需转义或使用正斜杠。',
     requirePermission: true,
     parameters: {
       type: 'object',

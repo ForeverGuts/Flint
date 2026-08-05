@@ -447,11 +447,12 @@ export class Runtime {
 
     const toolMessages: LLMMessage[] = [
       { role: 'system' as const, content: `你有以下工具：\n${toolDescriptions}\n\n规则：
+【最优先】普通对话、闲聊、提问建议、讨论概念时，直接回答，绝不调用任何工具。
+工具只在你明确需要操作文件、执行命令、搜索代码时才调用——用户没明确要求时，禁止调用。
 - 需要操作文件/执行命令时，用 <tool_call>{"name":"工具名","arguments":{...}}</tool_call>
 - 工具结果会返回给你
 - 如果任务还没完成（如刚创建完文件需要运行测试），继续调下一个工具
 - 全部做完后再给用户最终回答
-- 普通对话不需要调工具
 - ⚠️ 口述"我创建了文件"不等于真的创建了文件，必须调工具才算
 - 不要在调工具之前就回复"已创建"——工具没执行，文件不存在` },
       ...history.map((m) => ({ role: m.role as LLMMessage['role'], content: m.content })),
