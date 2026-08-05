@@ -26,3 +26,4 @@ sessions/
 
 # 测试产物
 xxx.test
+debug-*.log
