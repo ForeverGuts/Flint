@@ -1,0 +1,46 @@
+[handleData] raw="h" | onSelectKey=false | buffer=""
+  → 追加 "h"
+[handleData] raw="e" | onSelectKey=false | buffer="h"
+  → 追加 "e"
+[handleData] raw="l" | onSelectKey=false | buffer="he"
+  → 追加 "l"
+[handleData] raw="l" | onSelectKey=false | buffer="hel"
+  → 追加 "l"
+[handleData] raw="o" | onSelectKey=false | buffer="hell"
+  → 追加 "o"
+[handleData] raw="\r" | onSelectKey=false | buffer="hello"
+  → Enter 提交 ("\r")
+[handleData] raw="\r" | onSelectKey=false | buffer=""
+  → Enter 提交 ("\r")
+[handleData] raw="\r" | onSelectKey=false | buffer=""
+  → Enter 提交 ("\r")
+[handleData] raw="\r" | onSelectKey=false | buffer=""
+  → Enter 提交 ("\r")
+[handleData] raw="\r" | onSelectKey=false | buffer=""
+  → Enter 提交 ("\r")
+[handleData] raw="\r" | onSelectKey=false | buffer=""
+  → Enter 提交 ("\r")
+[handleData] raw="\r" | onSelectKey=false | buffer=""
+  → Enter 提交 ("\r")
+[handleData] raw="n" | onSelectKey=false | buffer=""
+  → 追加 "n"
+[handleData] raw="i" | onSelectKey=false | buffer="n"
+  → 追加 "i"
+[handleData] raw="" | onSelectKey=false | buffer="ni"
+  → 退格
+[handleData] raw="" | onSelectKey=false | buffer="n"
+  → 退格
+[handleData] raw="一直" | onSelectKey=false | buffer=""
+  → 追加 "一直"
+[handleData] raw="enter" | onSelectKey=false | buffer="一直"
+  → 追加 "enter"
+[handleData] raw="一直" | onSelectKey=false | buffer="一直enter"
+  → 追加 "一直"
+[handleData] raw="向下面" | onSelectKey=false | buffer="一直enter一直"
+  → 追加 "向下面"
+[handleData] raw="移动" | onSelectKey=false | buffer="一直enter一直向下面"
+  → 追加 "移动"
+[handleData] raw="光标" | onSelectKey=false | buffer="一直enter一直向下面移动"
+  → 追加 "光标"
+[handleData] raw="\u0003" | onSelectKey=false | buffer="一直enter一直向下面移动光标"
+  → Ctrl+C，退出

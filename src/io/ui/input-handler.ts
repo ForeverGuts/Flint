@@ -199,13 +199,13 @@ export class InputHandler {
     return true;
   }
 
-  /** 提交当前输入 */
+  /** 提交当前输入（空 buffer 的 Enter 完全 no-op，不触发渲染——避免 Windows 一次 Enter 发多个 \r 导致多余重绘） */
   private submit(mode: 'enter' | 'alt-enter'): void {
     const text = this.buffer.trim();
     this.buffer = '';
-    this.onChange?.();
-    if (text && this.onSubmit) {
-      this.onSubmit(text, mode);
+    if (text) {
+      this.onChange?.();
+      this.onSubmit?.(text, mode);
     }
   }
 }

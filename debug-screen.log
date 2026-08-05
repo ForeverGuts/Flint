@@ -1,0 +1,76 @@
+render#: 旧0→新10 firstDiff=0 cursorLine=9 cols=80
+  out="\r\u001b[2K  \u001b[42m\u001b[1m   ◆  Ts Agent v0.1.0  ◆   \u001b[0m\r\n\u001b[2K  \u001b[2mBackend       \u001b[0m   OpenCode Go\r\n\u001b[2K  \u001b[2mModel         \u001b[0m   \u001b[1mdeepseek-v4-flash\u001b[0m\r\n\u001b[2K  \u001b[2mMode          \u001b[0m   \u001b[1mREPL\u001b[0m  │  \u001b[2mtools\u001b[0m 4  \u001b[2mskills\u001b[0m 0  \u001b[2mcmds\u001b[0m 7\r\n\u001b[2K  \u001b[2mSession       \u001b[0m   \u001b[1m14\u001b[0m msgs  │  \u001b[2m8月5日 20:17\u001b[0m\r\n\u001b[2K  \u001b[2mRuntime       \u001b[0m   Nodev24.12.0  ·  Windows  ·  \u001b[2mTs_Agent\u001b[0m\r\n\u001b[2K  \u001b[32m──────────────────────────────────────\r\n\u001b[2K  \u001b[2m\u001b[3m  /help  ·  /exit  ·  /clear  ·  /model  ·  /usage\u001b[0m\r\n\u001b[2K  \u001b[32m──────────────────────────────────────\r\n\u001b[2K  > \u001b[0m\r\u001b[4C"
+  firstDiff行="  [42m[1m   ◆  Ts Agent v0.1.0  ◆   [0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,4]
+render#: 旧10→新10 firstDiff=9 cursorLine=9 cols=80
+  out="\r\u001b[2K  > h\u001b[0m\r\u001b[5C"
+  firstDiff行="  > h[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,5]
+render#: 旧10→新10 firstDiff=9 cursorLine=9 cols=80
+  out="\r\u001b[2K  > he\u001b[0m\r\u001b[6C"
+  firstDiff行="  > he[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,6]
+render#: 旧10→新10 firstDiff=9 cursorLine=9 cols=80
+  out="\r\u001b[2K  > hel\u001b[0m\r\u001b[7C"
+  firstDiff行="  > hel[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,7]
+render#: 旧10→新10 firstDiff=9 cursorLine=9 cols=80
+  out="\r\u001b[2K  > hell\u001b[0m\r\u001b[8C"
+  firstDiff行="  > hell[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,8]
+render#: 旧10→新10 firstDiff=9 cursorLine=9 cols=80
+  out="\r\u001b[2K  > hello\u001b[0m\r\u001b[9C"
+  firstDiff行="  > hello[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,9]
+render#: 旧10→新10 firstDiff=9 cursorLine=9 cols=80
+  out="\r\u001b[2K  > \u001b[0m\r\u001b[4C"
+  firstDiff行="  > [0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,4]
+render#: 旧10→新13 firstDiff=9 cursorLine=12 cols=80
+  out="\r\u001b[2K  \u001b[34m┌──\u001b[0m\u001b[1m\u001b[34m YOU \u001b[0m\u001b[34m─────────────────────────────────\r\n\u001b[2K    \u001b[97mhello\u001b[0m\r\n\u001b[2K  \u001b[34m└─────────────────────────────────────\r\n\u001b[2K  > \u001b[0m\r\u001b[4C"
+  firstDiff行="  [34m┌──[0m[1m[34m YOU [0m[34m─────────────────────────────────"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,4]
+render#: 旧13→新21 firstDiff=12 cursorLine=20 cols=80
+  out="\r\u001b[2K  \u001b[32m┌──\u001b[0m\u001b[1m\u001b[32m TS AGENT \u001b[0m\u001b[32m──────────────────────────────\r\n\u001b[2K    Hello! \u001b[0m\r\n\u001b[2K    \u001b[0m\r\n\u001b[2K    有什么我可以帮您的吗？无论是继续 entry leaf f\u001b[0m\r\n\u001b[2K    ork 测试相关的工作，还是其他任务，随时告诉我\u001b[0m\r\n\u001b[2K    即可。\u001b[0m\r\n\u001b[2K  \u001b[32m└─────────────────────────────────────\r\n\u001b[2K    \u001b[2m⚡ 45 tokens  · 累计 45\u001b[0m\r\n\u001b[2K  > \u001b[0m\r\u001b[4C"
+  firstDiff行="  [32m┌──[0m[1m[32m TS AGENT [0m[32m──────────────────────────────"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,4]
+render#: 旧21→新21 firstDiff=20 cursorLine=20 cols=80
+  out="\r\u001b[2K  > n\u001b[0m\r\u001b[5C"
+  firstDiff行="  > n[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,5]
+render#: 旧21→新21 firstDiff=20 cursorLine=20 cols=80
+  out="\r\u001b[2K  > ni\u001b[0m\r\u001b[6C"
+  firstDiff行="  > ni[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,6]
+render#: 旧21→新21 firstDiff=20 cursorLine=20 cols=80
+  out="\r\u001b[2K  > n\u001b[0m\r\u001b[5C"
+  firstDiff行="  > n[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,5]
+render#: 旧21→新21 firstDiff=20 cursorLine=20 cols=80
+  out="\r\u001b[2K  > \u001b[0m\r\u001b[4C"
+  firstDiff行="  > [0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,4]
+render#: 旧21→新21 firstDiff=20 cursorLine=20 cols=80
+  out="\r\u001b[2K  > 一直\u001b[0m\r\u001b[8C"
+  firstDiff行="  > 一直[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,8]
+render#: 旧21→新21 firstDiff=20 cursorLine=20 cols=80
+  out="\r\u001b[2K  > 一直enter\u001b[0m\r\u001b[13C"
+  firstDiff行="  > 一直enter[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,13]
+render#: 旧21→新21 firstDiff=20 cursorLine=20 cols=80
+  out="\r\u001b[2K  > 一直enter一直\u001b[0m\r\u001b[17C"
+  firstDiff行="  > 一直enter一直[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,17]
+render#: 旧21→新21 firstDiff=20 cursorLine=20 cols=80
+  out="\r\u001b[2K  > 一直enter一直向下面\u001b[0m\r\u001b[23C"
+  firstDiff行="  > 一直enter一直向下面[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,23]
+render#: 旧21→新21 firstDiff=20 cursorLine=20 cols=80
+  out="\r\u001b[2K  > 一直enter一直向下面移动\u001b[0m\r\u001b[27C"
+  firstDiff行="  > 一直enter一直向下面移动[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,27]
+render#: 旧21→新21 firstDiff=20 cursorLine=20 cols=80
+  out="\r\u001b[2K  > 一直enter一直向下面移动光标\u001b[0m\r\u001b[31C"
+  firstDiff行="  > 一直enter一直向下面移动光标[0m"
+  newLine宽度=[31,30,36,54,44,56,78,52,78,79,9,78,78,11,4,49,48,10,78,27,31]
