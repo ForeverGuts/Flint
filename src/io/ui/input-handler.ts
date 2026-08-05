@@ -115,15 +115,15 @@ export class InputHandler {
       return;
     }
 
-    // Alt+Enter：\x1b\r
-    if (str === '\x1b\r' || str === '\x1b\n') {
+    // Alt+Enter：\x1b\r（Windows 下可能带 \n，组合送达）
+    if (str === '\x1b\r' || str === '\x1b\n' || str === '\x1b\r\n' || str === '\x1b\n\r') {
       this.debugLog('  → Alt+Enter 提交');
       this.submit('alt-enter');
       return;
     }
 
-    // Enter：\r 或 \n
-    if (str === '\r' || str === '\n') {
+    // Enter：\r、\n，或 Windows raw mode 下整块送达的 \r\n / \n\r
+    if (str === '\r' || str === '\n' || str === '\r\n' || str === '\n\r') {
       this.debugLog('  → Enter 提交');
       this.submit('enter');
       return;
@@ -158,10 +158,13 @@ export class InputHandler {
       return;
     }
 
-    // 普通字符：追加到输入行
+    // 普通字符：追加到输入行（剔除残留的换行控制符，防止输入行翻行）
     this.debugLog(`  → 追加 "${str}"`);
-    this.buffer += str;
-    this.onChange?.();
+    const safe = str.replace(/[\r\n]/g, '');
+    if (safe) {
+      this.buffer += safe;
+      this.onChange?.();
+    }
   }
 
   /**
