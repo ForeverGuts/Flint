@@ -94,12 +94,17 @@ export class InputHandler {
 
     // ── 转义序列缓冲：累积 \x1b 开头的序列直到完整（CSI 序列以字母结尾） ──
     if (this.escapeBuf) {
-      // 正在累积转义序列
-      this.escapeBuf += str;
-      const complete = this.tryCompleteEscape();
-      if (!complete) return; // 序列不完整，等下一个 chunk
-      str = this.escapeBuf;
-      this.escapeBuf = '';
+      // 孤立 ESC：累积的是单个 \x1b 且新数据不是 CSI（[）→ 丢弃 ESC，只处理新数据
+      // （防止 ESC 残留污染后续普通字符/Enter）
+      if (this.escapeBuf === '\x1b' && !str.startsWith('[')) {
+        this.escapeBuf = '';
+      } else {
+        this.escapeBuf += str;
+        const complete = this.tryCompleteEscape();
+        if (!complete) return; // 序列不完整，等下一个 chunk
+        str = this.escapeBuf;
+        this.escapeBuf = '';
+      }
     } else if (str.startsWith('\x1b')) {
       // 新转义序列开始：可能是完整（\x1b[A）或拆包（\x1b + [A）
       this.escapeBuf = str;
@@ -122,9 +127,9 @@ export class InputHandler {
       return;
     }
 
-    // Enter：\r、\n，或 Windows raw mode 下整块送达的 \r\n / \n\r
-    if (str === '\r' || str === '\n' || str === '\r\n' || str === '\n\r') {
-      this.debugLog('  → Enter 提交');
+    // Enter：含 \r 或 \n 即视为提交（覆盖 \r、\n、\r\n、\n\r 及 Windows 下任意混合分片）
+    if (/[\r\n]/.test(str)) {
+      this.debugLog(`  → Enter 提交 (${JSON.stringify(str)})`);
       this.submit('enter');
       return;
     }
