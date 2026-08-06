@@ -14,6 +14,10 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-06 20:17 | [Refactor♻️] 配置系统重构：删 provider-registry，新建 config/manager（配置分层 + 供应商管理）
+2026-08-06 20:17 | [Refactor♻️] 命令合并：/provider + /model → 单一 /model（一级供应商、二级模型）
+2026-08-06 20:17 | [Feature✨] 配置分层：环境变量 > 全局 ~/.ts-agent > 项目 keys > 项目 active；active-config 不再含 apiKey
+2026-08-06 20:17 | [Config⚙️] 新增 config/global-config.example.json（全局配置模板）
 2026-08-06 17:37 | [Feature✨] 错误日志与诊断（可靠性工程）：ErrorEvent 结构化（level/item）+ runtime 诊断队列 + getDiagnostics
 2026-08-06 17:37 | [Feature✨] 诊断落盘 debug-runtime.log（TS_AGENT_DEBUG_DIAG 开关）+ 新增 /diagnostics 命令查看历史
 2026-08-06 17:37 | [Fix🐛] 上下文压缩的 jsonlSession 从 cast 改为 instanceof 判断，InMemory/Mock session 不再崩溃

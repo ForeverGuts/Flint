@@ -1,0 +1,10 @@
+{
+  "//": "全局配置模板（跨项目共享）。实际使用：复制到 ~/.ts-agent/config.json",
+  "apiKeys": {
+    "opencode-go": "sk-your-opencode-go-key",
+    "deepseek": "sk-your-deepseek-key"
+  },
+  "baseUrls": {
+    "deepseek": "https://api.deepseek.com"
+  }
+}

@@ -632,10 +632,10 @@ export class Runtime {
     const msg = error instanceof Error ? error.message.split('\n')[0] : String(error);
     console.log(`\n  ❌ LLM 调用失败: ${msg}`);
 
-    const { getProviderRegistry } = await import('../runtime/provider-registry.js');
+    const { getConfigManager } = await import('../config/manager.js');
     const { createProvider } = await import('../llm/index.js');
-    const registry = await getProviderRegistry();
-    const fallback = registry.getFallback();
+    const mgr = await getConfigManager();
+    const fallback = mgr.getFallback();
 
     if (!fallback) return false;
 

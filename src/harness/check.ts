@@ -10,13 +10,10 @@
  *
  * 设计：诊断结果用公共 Diagnostic 类型，启动检查与运行时错误统一结构（见 types.ts）。
  */
-import { readFileSync } from 'node:fs';
 import { createProvider } from '../llm/index.js';
+import { getConfigManager } from '../config/manager.js';
 import type { LLMConfig } from '../llm/types.js';
 import type { CheckResult, Diagnostic } from '../types.js';
-
-/** 配置文件路径。默认 config/active-config.json；测试可用环境变量 TS_AGENT_CONFIG 指向临时文件 */
-const CONFIG_PATH = process.env.TS_AGENT_CONFIG || 'config/active-config.json';
 
 /**
  * 启动检查失败错误 —— 配置坏到无法创建 Provider 时抛出。
@@ -42,16 +39,18 @@ export async function check(): Promise<CheckResult> {
   // ── ① 配置读取 + 完整性（fail 级：无法继续） ──
   let config: LLMConfig;
   try {
-    const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) as LLMConfig;
+    const mgr = await getConfigManager();
+    const merged = mgr.getMergedConfig();
+    if (!merged) throw new Error('无激活的供应商，请先配置 config/active-config.json');
     const missing: string[] = [];
-    if (!raw.provider) missing.push('provider');
-    if (!raw.baseUrl) missing.push('baseUrl');
-    if (!raw.model) missing.push('model');
+    if (!merged.provider) missing.push('provider');
+    if (!merged.baseUrl) missing.push('baseUrl');
+    if (!merged.model) missing.push('model');
     if (missing.length > 0) {
       throw new Error(`配置缺少字段: ${missing.join(', ')}`);
     }
-    config = raw;
-    diagnostics.push(pass('config', `配置读取成功（${raw.provider}/${raw.model}）`));
+    config = merged;
+    diagnostics.push(pass('config', `配置读取成功（${merged.provider}/${merged.model}）`));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     diagnostics.push({ level: 'fail', item: 'config', message: `配置读取失败: ${msg}` });
