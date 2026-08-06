@@ -63,6 +63,8 @@ export interface TreeUIInfo {
   toolCount: number;
   cmdCount: number;
   skillCount: number;
+  /** 启动自检诊断（可靠性工程），有 warn/fail 时在 banner 下方展示 */
+  diagnostics?: import('../../types.js').Diagnostic[];
 }
 
 export class TreeUI {
@@ -165,6 +167,12 @@ export class TreeUI {
     box.addChild(new Text(`  ${C.dim}${pad('Session')}${C.reset}   ${C.bold}${this.info.sessionMsgs}${C.reset} msgs  │  ${C.dim}${dateStr} ${timeStr}${C.reset}`));
     box.addChild(new Text(`  ${C.dim}${pad('Runtime')}${C.reset}   Node${process.version}  ·  ${platform}  ·  ${C.dim}${cwd}${C.reset}`));
     box.addChild(new Text(`  ${C.green}${'─'.repeat(48)}${C.reset}`));
+    // 启动自检诊断：有 warn/fail 才展示（全 pass 不打扰）
+    const warns = this.info.diagnostics?.filter((d) => d.level !== 'pass') ?? [];
+    for (const d of warns) {
+      const icon = d.level === 'fail' ? C.red + '❌' : C.yellow + '⚠️';
+      box.addChild(new Text(`  ${icon}${C.reset} ${C.dim}[${d.item}]${C.reset} ${d.message}`));
+    }
     box.addChild(new Text(`  ${C.dim}${C.italic}  /help  ·  /exit  ·  /clear  ·  /model  ·  /usage${C.reset}`));
     box.addChild(new Text(`  ${C.green}${'─'.repeat(48)}${C.reset}`));
     this.refreshHeader();

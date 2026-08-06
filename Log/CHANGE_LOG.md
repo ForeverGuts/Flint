@@ -14,6 +14,9 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-06 17:03 | [Feature✨] 启动自检增强（可靠性工程）：Diagnostic 公共类型 + check 逐项检查（配置/API key/连通性/模型列表）+ 严重度分级
+2026-08-06 17:03 | [Feature✨] Harness 发射 check_start/check_done 事件；CheckFailureError 配置坏时红字诊断优雅退出
+2026-08-06 17:03 | [Docs📝] ROADMAP P4 命名"生产化"→"可靠性工程"
 2026-08-06 16:42 | [Docs📝] ROADMAP 更新：P1-P3 已完成项打勾，新增 P5 架构演进（多系统拆分）
 
 2026-08-05 20:26 | [Fix🐛] 输入按 Enter 翻行（根治）：Windows 一次 Enter 发 7 个 \r，空 buffer 的 \r 不再触发渲染/提交

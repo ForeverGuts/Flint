@@ -94,10 +94,22 @@ export type AgentEvent =
 // TODO: 上下文构建
 // export interface ContextEvent      { type: 'context'; messages: unknown[] }
 
+/** 启动自检开始（Harness.run 调 check() 前发射） */
+export interface CheckStartEvent {
+  type: 'check_start';
+}
+
+/** 启动自检完成（携带逐项诊断结果，供 UI/订阅者展示） */
+export interface CheckDoneEvent {
+  type: 'check_done';
+  /** 各检查项诊断（配置/API key/连通性/模型列表等） */
+  diagnostics: import('../types.js').Diagnostic[];
+}
+
 /** Harness 层事件联合 */
 export type HarnessEvent =
-  // 当前为空，后续按需添加
-  never;
+  | CheckStartEvent
+  | CheckDoneEvent;
 
 /* ===================================================================== */
 /*  联合类型 — 订阅者接收的总类型                                        */

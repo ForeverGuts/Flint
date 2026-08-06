@@ -90,6 +90,7 @@ export async function main(checkResult: CheckResult): Promise<void> {
     toolCount: runtime.tools.getLLMTools().length,
     cmdCount: runtime.listCommands().length,
     skillCount: runtime.getSkillLoader().getAll().length,
+    diagnostics: checkResult.diagnostics ?? [],
   });
 
   closeTerminal();
@@ -104,6 +105,8 @@ interface ReplInfo {
   toolCount: number;
   cmdCount: number;
   skillCount: number;
+  /** 启动自检诊断（可靠性工程），banner 下方展示 */
+  diagnostics: import('../types.js').Diagnostic[];
 }
 
 async function runReplMode(runtime: Runtime, info: ReplInfo): Promise<void> {

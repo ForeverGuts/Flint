@@ -36,12 +36,35 @@ export enum Mode {
   Rpc = 'rpc',
 }
 
+/**
+ * 诊断级别。
+ * 调用方：check.ts（启动检查）、runtime.ts（运行时错误）、UI（展示）
+ * 服务于：统一"启动检查结果"与"运行时错误"的结构，UI 一套渲染
+ */
+export type DiagnosticLevel = 'pass' | 'warn' | 'fail';
+
+/**
+ * 通用诊断条目 —— 启动自检与运行时错误共用。
+ * 调用方：check() 生成启动诊断；runtime 错误事件复用同一结构
+ * 服务于：结构化的错误/检查结果，供 banner 展示、debug 落盘、后续导出报告
+ */
+export interface Diagnostic {
+  /** 级别：pass=通过 / warn=警告（可继续，明示）/ fail=失败（阻断） */
+  level: DiagnosticLevel;
+  /** 来源标识：config / apikey / network / models / model / tool / llm */
+  item: string;
+  /** 人类可读说明 */
+  message: string;
+}
+
 /** Check 检查结果，由 check() 返回，供 main() 注入 Runtime */
 export interface CheckResult {
   /** 已初始化的 LLM Provider */
   llm: import('./llm/types.js').LLMProvider;
   /** LLM 配置信息（模型名等，用于 UI 展示） */
   config?: import('./llm/types.js').LLMConfig;
+  /** 启动自检诊断列表（逐项检查结果） */
+  diagnostics: Diagnostic[];
 }
 
 /**
