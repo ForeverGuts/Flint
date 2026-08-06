@@ -14,6 +14,9 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-06 17:37 | [Feature✨] 错误日志与诊断（可靠性工程）：ErrorEvent 结构化（level/item）+ runtime 诊断队列 + getDiagnostics
+2026-08-06 17:37 | [Feature✨] 诊断落盘 debug-runtime.log（TS_AGENT_DEBUG_DIAG 开关）+ 新增 /diagnostics 命令查看历史
+2026-08-06 17:37 | [Fix🐛] 上下文压缩的 jsonlSession 从 cast 改为 instanceof 判断，InMemory/Mock session 不再崩溃
 2026-08-06 17:03 | [Feature✨] 启动自检增强（可靠性工程）：Diagnostic 公共类型 + check 逐项检查（配置/API key/连通性/模型列表）+ 严重度分级
 2026-08-06 17:03 | [Feature✨] Harness 发射 check_start/check_done 事件；CheckFailureError 配置坏时红字诊断优雅退出
 2026-08-06 17:03 | [Docs📝] ROADMAP P4 命名"生产化"→"可靠性工程"

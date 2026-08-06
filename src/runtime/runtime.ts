@@ -5,7 +5,8 @@
  */
 import type { LLMMessage } from '../llm/types.js';
 import type { LLMProvider } from '../llm/types.js';
-import type { RuntimeOptions } from '../types.js';
+import type { Diagnostic, RuntimeOptions } from '../types.js';
+import { appendFileSync } from 'node:fs';
 import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from './jsonl-storage.js';
@@ -55,6 +56,8 @@ export class Runtime {
   currentBaseUrl: string = '';
   /** 选择器钩子（TTY 由 TreeUI 注册，管道用默认 selectFromList） */
   private selectHook: ((items: SelectItem[], title?: string) => Promise<string | undefined>) | null = null;
+  /** 运行时诊断队列（错误/警告收集，/diagnostics 查询 + debug 落盘） */
+  private diagnostics: import('../types.js').Diagnostic[] = [];
   /* ── 事件发射器（组合模式，Runtime 只持自己的事件） ── */
 
   /** Runtime 运行时事件（stream_text、message_end、agent_end 等） */
@@ -239,6 +242,28 @@ export class Runtime {
     return this.skills;
   }
 
+  /** 获取历史诊断列表（供 /diagnostics 命令查看、外部导出） */
+  getDiagnostics(): Diagnostic[] {
+    return [...this.diagnostics];
+  }
+
+  /**
+   * 记录一条运行时诊断：入队 + emit 事件 + 落盘（debug-runtime.log）。
+   * 调用方：runtime 内部错误点（LLM/工具失败）
+   * 服务于：结构化收集错误（复用启动检查的 Diagnostic），供查询/展示/回放
+   */
+  private recordDiagnostic(level: Diagnostic['level'], item: string, message: string): void {
+    const diag: Diagnostic = { level, item, message };
+    this.diagnostics.push(diag);
+    this.events.emit({ type: 'error', level, item, message });
+    // 落盘（env TS_AGENT_DEBUG_DIAG=1 时写入 debug-runtime.log，便于回放）
+    if (process.env.TS_AGENT_DEBUG_DIAG === '1') {
+      try {
+        appendFileSync('debug-runtime.log', `${new Date().toISOString()} [${level}] [${item}] ${message}\n`);
+      } catch { /* 落盘失败不阻塞 */ }
+    }
+  }
+
   /** 获取当前 LLM Provider（用于 /model 命令读取） */
   getLLM(): LLMProvider {
     return this.llm;
@@ -383,7 +408,8 @@ export class Runtime {
 
     // ⑦: 上下文压缩 —— 历史超限时用 LLM 总结，压缩结果作为 compaction entry 入树
     let history = this.session ? await this.session.getMessages() : [];
-    const jsonlSession = this.session as JsonlSessionStorage | undefined;
+    // 只有真正的 JSONL 树存储才有 compaction/getAllMsgIds（InMemory/Mock 走纯文本）
+    const jsonlSession = this.session instanceof JsonlSessionStorage ? this.session : undefined;
 
     // 增量压缩判断：已压缩过的消息 id = 各 compaction entry 的 firstKeptId 之前（历史路径上的）
     // 简化：已压缩消息 = 所有 compaction 出现前的那批；这里用 getAllMsgIds 里在 firstKeptId 之前的消息
@@ -398,9 +424,9 @@ export class Runtime {
     }
 
     if (history.length > 20) {
-      const allIds: string[] = jsonlSession?.getAllMsgIds() ?? [];
+      const allIds: string[] = jsonlSession ? jsonlSession.getAllMsgIds() : [];
       // 已压缩消息 id = 被某个 compaction 覆盖的（firstKeptId 之前）；取最新的 firstKeptId 作为分界
-      const compactions = jsonlSession?.getCompactions() ?? [];
+      const compactions = jsonlSession ? jsonlSession.getCompactions() : [];
       // 只压缩尚未压缩过的早期消息（每个 compaction 的 firstKeptId 之前的都算已压缩）
       const summarizedIds = new Set<string>();
       for (const c of compactions) {
@@ -499,14 +525,15 @@ export class Runtime {
             }
           }
         } catch (err) {
-          // 流异常 → 询问是否切兜底
-          this.events.emit({ type: 'error', message: String(err) });
+          // 流异常 → 记录诊断 + 询问是否切兜底
+          const msg = err instanceof Error ? err.message : String(err);
+          this.recordDiagnostic('fail', 'llm', msg.split('\n')[0]);
           const switched = await this.tryFallbackOnError(err);
           if (switched) {
             // 切换后重试本轮
             continue;
           } else {
-            finalText = `❌ LLM 调用失败: ${err instanceof Error ? err.message : String(err)}`;
+            finalText = `❌ LLM 调用失败: ${msg}`;
             break;
           }
         }
@@ -554,7 +581,7 @@ export class Runtime {
             this.events.emit({ type: 'tool_execution_end', name: tc.function.name, result });
           } catch (err) {
             toolMessages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: `[工具 ${tc.function.name} 执行失败]\n${err}` });
-            this.events.emit({ type: 'error', message: String(err) });
+            this.recordDiagnostic('fail', 'tool', `工具 ${tc.function.name} 执行失败: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
         // ④ 工具执行完 → 进入下一轮 for，stream() 带着工具结果重新生成

@@ -333,8 +333,13 @@ export class TreeUI {
       }
 
       case 'error': {
+        // 按级别着色：fail 红 / warn 黄（默认红）
+        const isWarn = event.level === 'warn';
+        const icon = isWarn ? '⚠️' : '❌';
+        const color = isWarn ? C.yellow : C.red;
+        const tag = event.item ? ` [${event.item}]` : '';
         const box = new Container();
-        box.addChild(new Text(`  ${C.red}❌ ${event.message}${C.reset}`));
+        box.addChild(new Text(`  ${color}${icon}${tag} ${event.message}${C.reset}`));
         this.chat.addChild(box);
         break;
       }

@@ -62,9 +62,14 @@ export interface ThinkingEvent {
   phase: string;
 }
 
-/** 错误 */
+/** 错误（结构化，复用 Diagnostic 语义；level 可选，默认 warn） */
 export interface ErrorEvent {
   type: 'error';
+  /** 级别：fail=阻断 / warn=警告 */
+  level?: import('../types.js').DiagnosticLevel;
+  /** 来源标识：llm / tool / config / network 等 */
+  item?: string;
+  /** 人类可读错误说明 */
   message: string;
 }
 
