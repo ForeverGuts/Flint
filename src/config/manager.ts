@@ -12,6 +12,11 @@
  *   - config/provider-keys.json        项目级密钥（敏感，.gitignore）
  *   - config/active-config.json        当前激活 provider/model/baseUrl（不含 key）
  *   - ~/.ts-agent/config.json          全局密钥 + 常用 baseUrl（用户目录）
+ *
+ * TODO: 不同存在域的配置设置 —— 目前仅"密钥"分了环境变量/全局/项目三层，
+ *       供应商定义（providers.json）与 baseUrl 等仍只存在于本项目单一域。
+ *       后续规划：让供应商定义、baseUrl、默认模型等也支持按存在域分层
+ *       （全局 ~/.ts-agent 追加供应商、项目追加、环境变量覆盖），统一配置模型。
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';

@@ -14,6 +14,7 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-07 00:34 | [Docs📝] config/manager 顶部注释加 TODO：不同存在域的配置设置（供应商定义/baseUrl 也支持分层）
 2026-08-06 20:17 | [Refactor♻️] 配置系统重构：删 provider-registry，新建 config/manager（配置分层 + 供应商管理）
 2026-08-06 20:17 | [Refactor♻️] 命令合并：/provider + /model → 单一 /model（一级供应商、二级模型）
 2026-08-06 20:17 | [Feature✨] 配置分层：环境变量 > 全局 ~/.ts-agent > 项目 keys > 项目 active；active-config 不再含 apiKey
