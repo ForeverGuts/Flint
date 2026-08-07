@@ -127,14 +127,48 @@ export class TreeUI {
           this.requestRender();
         }
         if (result.done !== undefined) {
-          // 选择完成：清理 + 恢复输入 + resolve
-          this.finishSelect(resolve, result.done === 'cancel' ? undefined : result.done);
+          // 选择完成：清理 + 恢复输入 + resolve（单选模式 done 只可能是 string）
+          this.finishSelect(resolve, result.done === 'cancel' || Array.isArray(result.done) ? undefined : result.done);
         }
         // 消费所有按键（方向键/Enter/Ctrl+C 都不走普通输入）
         return true;
       };
 
       // 立即渲染（显示选择器）
+      this.requestRender();
+    });
+  }
+
+  /**
+   * 多选选择器（Space 勾选，Enter 确认返回勾选集）。
+   * 调用方：runtime.selectMulti（命令系统）
+   * 服务于：批量选择场景（如多选会话删除）
+   */
+  showMultiSelect(
+    items: Array<{ value: string; label: string; description?: string; disabled?: boolean; selected?: boolean; group?: string }>,
+    title?: string,
+  ): Promise<string[] | undefined> {
+    // 创建多选选择器
+    const list = new SelectList(items, title, 8, true);
+    this.selectBox.clear();
+    this.selectBox.addChild(list);
+    this.input.onSelectKey = null;
+
+    return new Promise((resolve) => {
+      this.input.onSelectKey = (data) => {
+        const result = list.handleInput(data);
+        if (result.changed) {
+          this.requestRender();
+        }
+        if (result.done !== undefined) {
+          this.input.onSelectKey = null;
+          this.selectBox.clear();
+          process.stdin.resume();
+          this.requestRender();
+          resolve(result.done === 'cancel' ? undefined : (result.done as string[]));
+        }
+        return true;
+      };
       this.requestRender();
     });
   }
@@ -195,6 +229,8 @@ export class TreeUI {
   start(): void {
     // 注册选择器钩子（命令系统调 runtime.select 时走组件树选择器）
     this.runtime.registerSelect((items, title) => this.showSelect(items, title));
+    // 注册多选选择器钩子
+    this.runtime.registerMultiSelect((items, title) => this.showMultiSelect(items, title));
 
     // 首次渲染
     this.requestRender();

@@ -43,7 +43,11 @@ export function activate(runtime: Runtime): void {
 
     // ── ③ 若无 API Key，交互输入 ──
     if (!provider.getApiKey()) {
-      const key = await promptInput(`请粘贴 ${provider.name} 的 API Key：`, provider.apiKeyEnv);
+      const key = await promptInput(
+        `请粘贴 ${provider.name} 的 API Key：`,
+        '',
+        provider.apiKeyEnv ? `(也可以设置环境变量 ${provider.apiKeyEnv} 后重启)` : undefined,
+      );
       if (!key) return '❌ 已取消（未配置 API Key）';
       mgr.setKey(chosen, key.trim());
       await mgr.refreshModels(chosen); // 输入密钥后重新拉取模型
@@ -72,26 +76,34 @@ export function activate(runtime: Runtime): void {
   });
 }
 
-/** 交互输入一行（带提示和环境变量提示） */
-async function promptInput(label: string, envHint?: string): Promise<string> {
+/** 交互输入一行（带提示 + 可选默认值；留空回车返回默认值） */
+async function promptInput(label: string, defaultVal = '', hint?: string): Promise<string> {
   console.log('');
   console.log(`  ${label}`);
-  console.log(`  ${envHint ? `(也可以设置环境变量 ${envHint} 后重启)` : ''}`);
-  return (await readLine('  > ')).trim();
+  if (hint) console.log(`  ${hint}`);
+  if (defaultVal) console.log(`  (默认: ${defaultVal}，直接回车沿用)`);
+  const input = (await readLine('  > ')).trim();
+  return input || defaultVal;
 }
 
 /**
- * 自定义供应商：交互收集 baseUrl/type/key/模型 → 运行时注册 Provider + 持久化到 providers.json。
+ * 交互表单：收集供应商配置（名称/地址/协议/key/模型）。
+ * 调用方：/model 自定义入口、/edit_model 命令
+ * 服务于：新增和编辑复用同一套表单，避免重复代码
+ * @returns 供应商配置（不含 key）或 null（取消）
  */
-async function addCustomProvider(runtime: Runtime, mgr: Awaited<ReturnType<typeof getConfigManager>>): Promise<string> {
+export async function promptProviderForm(
+  runtime: Runtime,
+  defaults?: { name?: string; baseUrl?: string; type?: string; model?: string },
+): Promise<{ cfg: ProviderConfigJson; apiKey: string } | null> {
   console.log('');
-  console.log('  ── 自定义供应商 ──');
+  console.log('  ── 供应商配置 ──');
   console.log('  (可随时 Ctrl+C 取消)');
 
-  const name = await promptInput('供应商名称（如 "我的 DeepSeek"）：');
-  if (!name) return '❌ 已取消';
-  const baseUrl = await promptInput('API 地址（如 https://api.deepseek.com）：');
-  if (!baseUrl) return '❌ 已取消';
+  const name = await promptInput('供应商名称：', defaults?.name);
+  if (!name) return null;
+  const baseUrl = await promptInput('API 地址（如 https://api.deepseek.com）：', defaults?.baseUrl);
+  if (!baseUrl) return null;
   // 协议类型用选择器（↑↓ 选 openai / anthropic，避免手输打错）
   const type = await runtime.select(
     [
@@ -100,33 +112,48 @@ async function addCustomProvider(runtime: Runtime, mgr: Awaited<ReturnType<typeo
     ],
     '选择协议类型（↑↓ 切换  Enter 确认）',
   );
-  if (!type) return '❌ 已取消';
-  const apiKey = await promptInput('API Key：');
-  if (!apiKey) return '❌ 已取消';
-  const modelId = await promptInput('默认模型 ID（如 deepseek-chat）：');
-  if (!modelId) return '❌ 已取消';
+  if (!type) return null;
+  const apiKey = await promptInput('API Key（留空则沿用现有）：', '');
+  const modelId = await promptInput('默认模型 ID（如 deepseek-chat）：', defaults?.model);
+  if (!modelId) return null;
+
+  return {
+    cfg: {
+      id: '', // 调用方填 id
+      name,
+      baseUrl,
+      type,
+      staticModels: [{ id: modelId, label: modelId }],
+    },
+    apiKey,
+  };
+}
+
+/**
+ * 自定义供应商：交互收集 baseUrl/type/key/模型 → 运行时注册 Provider + 持久化到 providers.json。
+ */
+async function addCustomProvider(runtime: Runtime, mgr: Awaited<ReturnType<typeof getConfigManager>>): Promise<string> {
+  const form = await promptProviderForm(runtime);
+  if (!form) return '❌ 已取消';
+  const { cfg, apiKey } = form;
 
   // 生成唯一 id（时间戳后缀）
   const id = `custom-${Date.now().toString(36).slice(-5)}`;
-
-  const cfg: ProviderConfigJson = {
-    id,
-    name,
-    baseUrl,
-    type,
-    staticModels: [{ id: modelId, label: modelId }],
-  };
+  cfg.id = id;
 
   // ① 持久化到 providers.json（不含 key，密钥走 provider-keys.json）
   mgr.saveCustomProvider(cfg);
   // ② key 存项目密钥文件（注意：需先 setKey 再 createProviderObject，让 getApiKey 能命中）
-  mgr.setKey(id, apiKey);
+  if (apiKey) mgr.setKey(id, apiKey);
   // ③ 运行时实例化 Provider 对象（用 manager 的标准 key 解析），注册
   const provider = mgr.createProviderObject(cfg);
   mgr.registerProvider(provider);
 
-  // ③ 应用：激活 + 热替换
-  const chosenModelId = modelId;
+  // ④ 远程拉取模型列表（失败/不兼容自动保留静态模型兜底）
+  await provider.refreshModels();
+
+  // ⑤ 应用：激活 + 热替换
+  const chosenModelId = cfg.staticModels?.[0]?.id ?? '';
   mgr.activate(id, chosenModelId);
   try {
     const llm = provider.createLLM(chosenModelId);
@@ -138,7 +165,7 @@ async function addCustomProvider(runtime: Runtime, mgr: Awaited<ReturnType<typeo
   runtime.currentBaseUrl = provider.baseUrl;
   runtime.currentModel = chosenModelId;
 
-  return `✅ 已添加并切换到自定义供应商「${name}」/ ${modelId}（已持久化到 providers.json）`;
+  return `✅ 已添加并切换到自定义供应商「${cfg.name}」/ ${chosenModelId}（已持久化到 providers.json）`;
 }
 
 /** 应用选择：激活状态 + 热替换 LLM + 更新 runtime 当前信息 */

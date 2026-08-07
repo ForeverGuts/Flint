@@ -14,6 +14,9 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-07 18:49 | [Feature✨] 新增 /edit_model 命令（修改已有供应商配置）+ 抽 promptProviderForm 公共表单
+2026-08-07 18:49 | [Feature✨] 自定义供应商注册后远程拉取模型列表（失败/不兼容自动兜底静态模型）
+2026-08-07 18:49 | [Feature✨] SelectList 增强：分组显示（group header）+ 搜索过滤（input）+ 多选（Space 勾选）
 2026-08-07 18:08 | [Fix🐛] /model 自定义供应商的"协议类型"从手输改选择器（↑↓ 选 openai/anthropic，避免打错）
 2026-08-07 17:59 | [Refactor♻️] 协议层抽象：Provider 对象集合（数据+行为自包含）+ ProviderRegistry + createProviderFromConfig
 2026-08-07 17:59 | [Feature✨] /model 加"自定义供应商"入口：填 baseUrl+type+key+模型，运行时注册 + 持久化到 providers.json

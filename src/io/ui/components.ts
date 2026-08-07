@@ -90,27 +90,44 @@ export interface SelectItem {
   label: string;
   description?: string;
   disabled?: boolean;
+  /** 分组名（如 "内置" / "自定义"），渲染时组前插标题 */
+  group?: string;
+  /** 多选模式下该项是否已勾选 */
+  selected?: boolean;
 }
 
 export class SelectList implements Component {
-  /** 当前选中项索引 */
+  /** 当前选中项索引（相对过滤后的列表） */
   private selected = 0;
   /** 当前页偏移 */
   private pageOffset = 0;
   /** 每页显示条数 */
   readonly pageSize: number;
+  /** 搜索词（非空时过滤选项） */
+  private search = '';
+  /** 是否多选（默认单选，向后兼容） */
+  private multi: boolean;
 
   constructor(
     private items: SelectItem[],
     private title?: string,
     pageSize = 8,
+    multi = false,
   ) {
     this.pageSize = pageSize;
+    this.multi = multi;
+  }
+
+  /** 当前可见列表（搜索过滤后的子集） */
+  private get visibleItems(): SelectItem[] {
+    if (!this.search) return this.items;
+    const q = this.search.toLowerCase();
+    return this.items.filter((it) => it.label.toLowerCase().includes(q));
   }
 
   /** 当前选中的值 */
   get value(): string {
-    return this.items[this.selected]?.value ?? '';
+    return this.visibleItems[this.selected]?.value ?? '';
   }
 
   /** 当前选中索引 */
@@ -118,19 +135,64 @@ export class SelectList implements Component {
     return this.selected;
   }
 
+  /** 多选模式：获取所有已勾选值 */
+  get selectedValues(): string[] {
+    return this.items.filter((it) => it.selected).map((it) => it.value);
+  }
+
   /**
    * 处理按键。
-   * 返回 { changed: boolean, done?: string }：
-   *   - changed=true 表示选中项/页面变化，需重绘
-   *   - done 为选中值（Enter 确认）或 'cancel'（Ctrl+C 取消）
+   * 返回 { changed: boolean, done?: string | string[] }：
+   *   - changed=true 表示选中项/页面/搜索变化，需重绘
+   *   - done 为选中值（Enter 确认，多选时为数组）或 'cancel'（Ctrl+C 取消）
    */
-  handleInput(data: string): { changed: boolean; done?: string } {
+  handleInput(data: string): { changed: boolean; done?: string | string[] } {
+    const list = this.visibleItems;
+
+    // 多选模式：空格切换勾选（优先于搜索字符判定）
+    if (data === ' ' && this.multi) {
+      const item = list[this.selected];
+      if (item && !item.disabled) {
+        item.selected = !item.selected;
+        return { changed: true };
+      }
+      return { changed: false };
+    }
+
+    // 搜索模式：普通字符进搜索词（过滤列表；空格在多选时已被上方消费）
+    if (data.length === 1 && data.charCodeAt(0) >= 0x20 && data !== '\x7f') {
+      this.search += data;
+      this.selected = 0;
+      this.pageOffset = 0;
+      return { changed: true };
+    }
+    // 退格：删搜索词最后一个字符
+    if (data === '\x7f' || data === '\x08') {
+      if (this.search) {
+        this.search = this.search.slice(0, -1);
+        this.selected = 0;
+        this.pageOffset = 0;
+        return { changed: true };
+      }
+      return { changed: false };
+    }
+    // 清空搜索（Esc）
+    if (data === '\x1b') {
+      if (this.search) {
+        this.search = '';
+        this.selected = 0;
+        this.pageOffset = 0;
+        return { changed: true };
+      }
+      return { changed: false };
+    }
+
     if (data === '\x1b[A') {
-      // ↑
+      // ↑（在过滤后的列表里导航）
       const old = this.selected;
       do {
-        this.selected = (this.selected - 1 + this.items.length) % this.items.length;
-      } while (this.items[this.selected].disabled && this.selected !== old);
+        this.selected = (this.selected - 1 + list.length) % list.length;
+      } while (list[this.selected]?.disabled && this.selected !== old);
       this.ensureSelectedVisible();
       return { changed: true };
     }
@@ -138,8 +200,8 @@ export class SelectList implements Component {
       // ↓
       const old = this.selected;
       do {
-        this.selected = (this.selected + 1) % this.items.length;
-      } while (this.items[this.selected].disabled && this.selected !== old);
+        this.selected = (this.selected + 1) % list.length;
+      } while (list[this.selected]?.disabled && this.selected !== old);
       this.ensureSelectedVisible();
       return { changed: true };
     }
@@ -154,17 +216,21 @@ export class SelectList implements Component {
     }
     if (data === '\x1b[C') {
       // → 下一页
-      if (this.pageOffset + this.pageSize < this.items.length) {
+      if (this.pageOffset + this.pageSize < list.length) {
         this.pageOffset += this.pageSize;
         this.selected = this.pageOffset;
         return { changed: true };
       }
       return { changed: false };
     }
-    // Enter 确认
+    // Enter 确认（多选返回勾选集，单选返回选中值）
     if (data === '\r' || data === '\n') {
-      if (!this.items[this.selected].disabled) {
-        return { changed: false, done: this.value };
+      const item = list[this.selected];
+      if (item && !item.disabled) {
+        if (this.multi) {
+          return { changed: false, done: this.selectedValues };
+        }
+        return { changed: false, done: item.value };
       }
       return { changed: false };
     }
@@ -181,15 +247,18 @@ export class SelectList implements Component {
    * 旧逻辑只查 selected < pageOffset，导致不翻页、箭头消失、按久循环回原页。
    */
   private ensureSelectedVisible(): void {
+    const list = this.visibleItems;
     if (this.selected < this.pageOffset || this.selected >= this.pageOffset + this.pageSize) {
       this.pageOffset = Math.floor(this.selected / this.pageSize) * this.pageSize;
     }
+    void list;
   }
 
   /** 按数字键跳转（全局序号） */
   handleNumber(num: number): boolean {
+    const list = this.visibleItems;
     const idx = num - 1;
-    if (idx < this.items.length && !this.items[idx].disabled) {
+    if (idx < list.length && !list[idx].disabled) {
       this.selected = idx;
       return true;
     }
@@ -199,34 +268,52 @@ export class SelectList implements Component {
   render(width: number): string[] {
     const lines: string[] = [];
     const maxLineWidth = Math.max(1, width - 1);
+    const list = this.visibleItems;
 
     if (this.title) {
       lines.push(fitWidth(`  ${this.title}`, maxLineWidth));
       lines.push(fitWidth(`  ${'─'.repeat(40)}`, maxLineWidth));
     }
 
+    // 搜索框（搜索激活时显示）
+    if (this.search) {
+      lines.push(fitWidth(`  🔍 ${this.search}`, maxLineWidth));
+    }
+
+    // 分组渲染：遍历可见项，组切换时插组标题
     const startIdx = this.pageOffset;
-    const endIdx = Math.min(startIdx + this.pageSize, this.items.length);
+    const endIdx = Math.min(startIdx + this.pageSize, list.length);
+    let lastGroup: string | undefined;
     for (let i = startIdx; i < endIdx; i++) {
-      const item = this.items[i];
+      const item = list[i];
+      // 分组标题（组变化时插一行）
+      if (item.group && item.group !== lastGroup) {
+        lines.push(fitWidth(`  \x1b[2m─ ${item.group} ─\x1b[0m`, maxLineWidth));
+        lastGroup = item.group;
+      }
       const marker = i === this.selected ? '❯' : ' ';
       const num = String(i + 1).padStart(2);
+      // 多选勾选标记
+      const check = this.multi ? (item.selected ? '☑ ' : '☐ ') : '';
       const label = item.disabled
         ? `${item.label} (不可用)`
         : i === this.selected
-          ? `\x1b[36m${item.label}\x1b[0m`
-          : item.label;
+          ? `\x1b[36m${check}${item.label}\x1b[0m`
+          : `${check}${item.label}`;
       const desc = item.description ? ` \x1b[2m${item.description.slice(0, 30)}\x1b[0m` : '';
       lines.push(fitWidth(`  ${marker} ${num} ${label}${desc}`, maxLineWidth));
     }
 
-    if (this.items.length > this.pageSize) {
-      const totalPages = Math.ceil(this.items.length / this.pageSize);
+    if (list.length > this.pageSize) {
+      const totalPages = Math.ceil(list.length / this.pageSize);
       const curPage = Math.floor(this.pageOffset / this.pageSize) + 1;
       lines.push(fitWidth(`  \x1b[2m第 ${curPage}/${totalPages} 页\x1b[0m`, maxLineWidth));
     }
 
-    lines.push(fitWidth(`  \x1b[2m↑↓ 切换  Enter 确认  Ctrl+C 取消\x1b[0m`, maxLineWidth));
+    const hint = this.multi
+      ? '↑↓ 移动  Space 勾选  Enter 确认  Ctrl+C 取消'
+      : '↑↓ 切换  Enter 确认  Ctrl+C 取消';
+    lines.push(fitWidth(`  \x1b[2m${hint}${this.search ? '  输入搜索' : ''}\x1b[0m`, maxLineWidth));
     return lines;
   }
 }

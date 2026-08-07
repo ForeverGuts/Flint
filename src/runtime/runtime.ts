@@ -139,9 +139,17 @@ export class Runtime {
     return [...this.commands.entries()].map(([name, cmd]) => ({ name, description: cmd.description }));
   }
 
+  /** 选择器钩子（单选） */
+  private selectMultiHook: ((items: SelectItem[], title?: string) => Promise<string[] | undefined>) | null = null;
+
   /** 注册选择器实现（TTY 由 TreeUI 提供组件树选择器，管道用默认） */
   registerSelect(fn: (items: SelectItem[], title?: string) => Promise<string | undefined>): void {
     this.selectHook = fn;
+  }
+
+  /** 注册多选选择器实现（TTY 由 TreeUI 提供） */
+  registerMultiSelect(fn: (items: SelectItem[], title?: string) => Promise<string[] | undefined>): void {
+    this.selectMultiHook = fn;
   }
 
   /** 运行选择器（命令系统调用；TTY 走 TreeUI 组件树，否则用默认 selectFromList） */
@@ -149,6 +157,13 @@ export class Runtime {
     if (this.selectHook) return this.selectHook(items, title);
     // 未注册钩子（管道模式）→ 用默认选择器
     return selectFromList(items as any, title);
+  }
+
+  /** 运行多选选择器（Space 勾选，Enter 确认返回勾选集） */
+  selectMulti(items: SelectItem[], title?: string): Promise<string[] | undefined> {
+    if (this.selectMultiHook) return this.selectMultiHook(items, title);
+    // 管道模式无多选 → 退回单选单个
+    return selectFromList(items as any, title).then((v) => (v ? [v] : undefined));
   }
 
   /* ── Input 事件 ── */
