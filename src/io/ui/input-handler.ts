@@ -37,6 +37,11 @@ export class InputHandler {
     this.buffer = text;
   }
 
+  /** 清空转义缓冲（选择器激活前调用，防止 init 期间的残留按键误触发选择器） */
+  resetInput(): void {
+    this.escapeBuf = '';
+  }
+
   /** 暂停输入（选择器接管时调用，停止消费按键） */
   pause(): void {
     this.paused = true;

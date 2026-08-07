@@ -115,6 +115,8 @@ export class TreeUI {
     this.selectBox.clear();
     this.selectBox.addChild(list);
 
+    // 清残留转义缓冲：防止 init 耗时期间用户按的键在选择器激活后误触发
+    this.input.resetInput();
     // 注意：不调用 input.pause()！onSelectKey 拦截已足够（返回 true 消费所有按键）。
     // 若 pause，handleData 开头 return，onSelectKey 收不到按键。
     this.input.onSelectKey = null;
@@ -152,6 +154,8 @@ export class TreeUI {
     const list = new SelectList(items, title, 8, true);
     this.selectBox.clear();
     this.selectBox.addChild(list);
+    // 清残留转义缓冲（同上）
+    this.input.resetInput();
     this.input.onSelectKey = null;
 
     return new Promise((resolve) => {
