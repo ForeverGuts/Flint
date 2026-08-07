@@ -1,55 +1,61 @@
 /**
- * /model 命令 —— 选择 AI 供应商及模型（两级 ↑↓ 导航）。
+ * /model 命令 —— 选择 AI 供应商及模型（两级 ↑↓ 导航）+ 自定义供应商。
  * 调用方：commands.ts（自动扫描器加载）
- * 服务于：合并原 /provider + /model —— 一级选供应商，二级选该供应商的模型，应用切换并持久化
+ * 服务于：一级选供应商，二级选该供应商的模型，应用切换并持久化；
+ *        支持"➕ 自定义供应商"入口：填 baseUrl+type+key+模型，运行时注册 + 持久化
  *
  * 交互流程：
- *   ① 列出所有供应商（标注 API key 状态）
+ *   ① 列出所有供应商（标注 API key 状态）+ 末尾"➕ 自定义供应商"
  *   ② 选供应商；若未配置 key → 交互输入并保存
  *   ③ 列出该供应商的模型（↑↓ 选择）
  *   ④ 应用切换：写激活状态 + 热替换 LLM
  */
 import type { Runtime } from '../runtime.js';
 import { getConfigManager } from '../../config/manager.js';
-import { createProvider } from '../../llm/index.js';
+import type { ProviderConfigJson } from '../../llm/provider.js';
 import { readLine } from '../../io/terminal.js';
 
 export function activate(runtime: Runtime): void {
-  runtime.registerCommand('model', '选择 AI 供应商及模型（↑↓ 导航）', async () => {
+  runtime.registerCommand('model', '选择 AI 供应商及模型 / 自定义供应商（↑↓ 导航）', async () => {
     const mgr = await getConfigManager();
-    const providers = mgr.getAll().filter((p) => p.models.length > 0);
+    const providers = mgr.getAll().filter((p) => p.getModels().length > 0);
 
-    // ── ① 一级：选择供应商 ──
+    // ── ① 一级：选择供应商（含"自定义"入口） ──
     const providerChoices = providers.map((p) => ({
       value: p.id,
       label: p.name,
-      description: p.apiKey
-        ? `${p.models.length} 个模型可用`
+      description: p.getApiKey()
+        ? `${p.getModels().length} 个模型可用`
         : `⚠️ 无 API Key${p.apiKeyEnv ? `（环境变量 ${p.apiKeyEnv}）` : ''}，选择后可输入`,
-      // 无 key 也能选（选了再提示输入），所以不禁用
     }));
+    providerChoices.push({ value: '__custom__', label: '➕ 自定义供应商', description: '填入 baseUrl / API Key / 模型，运行时新增' });
 
-    const chosenProviderId = await runtime.select(providerChoices, '选择 AI 供应商（↑↓ 切换  Enter 确认）');
-    if (!chosenProviderId) return '❌ 已取消选择';
+    const chosen = await runtime.select(providerChoices, '选择 AI 供应商（↑↓ 切换  Enter 确认）');
+    if (!chosen) return '❌ 已取消选择';
 
-    const provider = mgr.get(chosenProviderId);
-    if (!provider) return '❌ 供应商不存在';
-
-    // ── ② 若无 API Key，交互输入 ──
-    if (!provider.apiKey) {
-      const key = await promptApiKey(provider.name, provider.apiKeyEnv ?? '');
-      if (!key) return '❌ 已取消（未配置 API Key）';
-      mgr.setKey(chosenProviderId, key.trim());
-      await mgr.refreshModels(chosenProviderId); // 输入密钥后重新拉取模型
+    // ── ② 自定义供应商流程 ──
+    if (chosen === '__custom__') {
+      return await addCustomProvider(runtime, mgr);
     }
 
-    const refreshed = mgr.get(chosenProviderId);
-    if (!refreshed || refreshed.models.length === 0) {
+    const provider = mgr.get(chosen);
+    if (!provider) return '❌ 供应商不存在';
+
+    // ── ③ 若无 API Key，交互输入 ──
+    if (!provider.getApiKey()) {
+      const key = await promptInput(`请粘贴 ${provider.name} 的 API Key：`, provider.apiKeyEnv);
+      if (!key) return '❌ 已取消（未配置 API Key）';
+      mgr.setKey(chosen, key.trim());
+      await mgr.refreshModels(chosen); // 输入密钥后重新拉取模型
+    }
+
+    const refreshed = mgr.get(chosen);
+    if (!refreshed || refreshed.getModels().length === 0) {
       return '❌ 该供应商没有可用模型';
     }
 
-    // ── ③ 二级：选择模型 ──
-    const modelChoices = refreshed.models.map((m) => ({
+    // ── ④ 二级：选择模型 ──
+    const modelChoices = refreshed.getModels().map((m) => ({
       value: m.id,
       label: m.isStatic ? `${m.label} (静态模型)` : m.label,
       description: m.description ?? '',
@@ -61,18 +67,71 @@ export function activate(runtime: Runtime): void {
     );
     if (!chosenModelId) return '❌ 已取消选择';
 
-    // ── ④ 应用切换 ──
-    return applyModelSelection(runtime, mgr, chosenProviderId, chosenModelId);
+    // ── ⑤ 应用切换 ──
+    return applyModelSelection(runtime, mgr, chosen, chosenModelId);
   });
 }
 
-/** 提示用户输入 API Key（环境变量未设置时的兜底途径） */
-async function promptApiKey(providerName: string, envHint: string): Promise<string> {
+/** 交互输入一行（带提示和环境变量提示） */
+async function promptInput(label: string, envHint?: string): Promise<string> {
   console.log('');
-  console.log(`  请粘贴 ${providerName} 的 API Key：`);
+  console.log(`  ${label}`);
   console.log(`  ${envHint ? `(也可以设置环境变量 ${envHint} 后重启)` : ''}`);
-  const key = await readLine('  > ');
-  return key.trim();
+  return (await readLine('  > ')).trim();
+}
+
+/**
+ * 自定义供应商：交互收集 baseUrl/type/key/模型 → 运行时注册 Provider + 持久化到 providers.json。
+ */
+async function addCustomProvider(runtime: Runtime, mgr: Awaited<ReturnType<typeof getConfigManager>>): Promise<string> {
+  console.log('');
+  console.log('  ── 自定义供应商 ──');
+  console.log('  (可随时 Ctrl+C 取消)');
+
+  const name = await promptInput('供应商名称（如 "我的 DeepSeek"）：');
+  if (!name) return '❌ 已取消';
+  const baseUrl = await promptInput('API 地址（如 https://api.deepseek.com）：');
+  if (!baseUrl) return '❌ 已取消';
+  const type = await promptInput('协议类型（openai / anthropic）：');
+  if (type !== 'openai' && type !== 'anthropic') return `❌ 不支持的协议类型: ${type}（仅 openai / anthropic）`;
+  const apiKey = await promptInput('API Key：');
+  if (!apiKey) return '❌ 已取消';
+  const modelId = await promptInput('默认模型 ID（如 deepseek-chat）：');
+  if (!modelId) return '❌ 已取消';
+
+  // 生成唯一 id（时间戳后缀）
+  const id = `custom-${Date.now().toString(36).slice(-5)}`;
+
+  const cfg: ProviderConfigJson = {
+    id,
+    name,
+    baseUrl,
+    type,
+    staticModels: [{ id: modelId, label: modelId }],
+  };
+
+  // ① 持久化到 providers.json（不含 key，密钥走 provider-keys.json）
+  mgr.saveCustomProvider(cfg);
+  // ② key 存项目密钥文件（注意：需先 setKey 再 createProviderObject，让 getApiKey 能命中）
+  mgr.setKey(id, apiKey);
+  // ③ 运行时实例化 Provider 对象（用 manager 的标准 key 解析），注册
+  const provider = mgr.createProviderObject(cfg);
+  mgr.registerProvider(provider);
+
+  // ③ 应用：激活 + 热替换
+  const chosenModelId = modelId;
+  mgr.activate(id, chosenModelId);
+  try {
+    const llm = provider.createLLM(chosenModelId);
+    runtime.setLLM(llm);
+  } catch (err) {
+    return `❌ 模型加载失败: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  runtime.currentProvider = provider.type;
+  runtime.currentBaseUrl = provider.baseUrl;
+  runtime.currentModel = chosenModelId;
+
+  return `✅ 已添加并切换到自定义供应商「${name}」/ ${modelId}（已持久化到 providers.json）`;
 }
 
 /** 应用选择：激活状态 + 热替换 LLM + 更新 runtime 当前信息 */
@@ -88,12 +147,7 @@ function applyModelSelection(
   mgr.activate(providerId, modelId);
 
   try {
-    const newProvider = createProvider({
-      provider: provider.type,
-      baseUrl: provider.baseUrl,
-      apiKey: provider.apiKey,
-      model: modelId,
-    });
+    const newProvider = provider.createLLM(modelId);
     runtime.setLLM(newProvider);
   } catch (err) {
     return `❌ 模型加载失败: ${err instanceof Error ? err.message : String(err)}`;
@@ -103,6 +157,6 @@ function applyModelSelection(
   runtime.currentBaseUrl = provider.baseUrl;
   runtime.currentModel = modelId;
 
-  const modelLabel = provider.models.find((m) => m.id === modelId)?.label ?? modelId;
+  const modelLabel = provider.getModels().find((m) => m.id === modelId)?.label ?? modelId;
   return `✅ 已切换到 ${provider.name} / ${modelLabel}`;
 }

@@ -633,13 +633,12 @@ export class Runtime {
     console.log(`\n  ❌ LLM 调用失败: ${msg}`);
 
     const { getConfigManager } = await import('../config/manager.js');
-    const { createProvider } = await import('../llm/index.js');
     const mgr = await getConfigManager();
     const fallback = mgr.getFallback();
 
     if (!fallback) return false;
 
-    const fallbackLabel = `${fallback.provider.name} (${fallback.provider.models.find(m => m.id === fallback.modelId)?.label ?? fallback.modelId})`;
+    const fallbackLabel = `${fallback.provider.name} (${fallback.provider.getModels().find(m => m.id === fallback.modelId)?.label ?? fallback.modelId})`;
     const choice = await this.select(
       [
         { value: 'switch', label: `切换到 ${fallbackLabel}` },
@@ -650,12 +649,7 @@ export class Runtime {
 
     if (choice === 'switch') {
       const p = fallback.provider;
-      const newProvider = createProvider({
-        provider: p.type,
-        baseUrl: p.baseUrl,
-        apiKey: p.apiKey,
-        model: fallback.modelId,
-      });
+      const newProvider = p.createLLM(fallback.modelId);
       this.setLLM(newProvider);
       this.currentProvider = p.type;
       this.currentBaseUrl = p.baseUrl;

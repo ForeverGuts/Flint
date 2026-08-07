@@ -1,5 +1,5 @@
 /**
- * 配置管理 —— 统一管理配置分层（项目/全局/环境变量）+ 供应商（模型/密钥/激活）。
+ * 配置管理 —— 统一管理配置分层（项目/全局/环境变量）+ 供应商（Provider 对象集合）。
  * 调用方：/model 命令、check.ts、runtime.ts（兜底）、main.ts
  * 服务于：收敛原 provider-registry 的能力 + 增加全局配置层，让配置/供应商管理有单一入口
  *
@@ -22,62 +22,11 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { LLMConfig } from '../llm/types.js';
-
-/* ════════════════════════════════════════════════════════════════════════════
-   类型定义
-   ════════════════════════════════════════════════════════════════════════════ */
-
-/** 供应商可用的模型信息 */
-export interface ProviderModel {
-  /** 模型 ID（传给 API 的 model 参数） */
-  id: string;
-  /** 显示名称 */
-  label: string;
-  /** 简短描述 */
-  description?: string;
-  /** 是否来自静态列表（远程拉取失败时合并的兜底模型，选择器标注"静态模型"） */
-  isStatic?: boolean;
-}
-
-/** providers.json 中的原始定义（可编辑） */
-interface ProviderConfigJson {
-  /** 唯一标识 */
-  id: string;
-  /** 显示名称 */
-  name: string;
-  /** API 基础地址 */
-  baseUrl: string;
-  /** 厂商类型（对应 LLMConfig.provider：deepseek/openai/anthropic/opencode-go） */
-  type: string;
-  /** 环境变量名（优先从此读取 API Key，如 "OPENCODE_GO_KEY"） */
-  apiKeyEnv?: string;
-  /** 兜底供应商标记（LLM 报错时切到它） */
-  isDefault?: boolean;
-  /** 静态模型列表（远程拉取失败时使用） */
-  staticModels?: ProviderModel[];
-}
-
-/** 运行时供应商定义（含解析后的 apiKey 和最终 models） */
-export interface ProviderDefinition {
-  /** 唯一标识 */
-  id: string;
-  /** 显示名称 */
-  name: string;
-  /** API 基础地址 */
-  baseUrl: string;
-  /** 厂商类型 */
-  type: string;
-  /** 解析后的 API Key（环境变量 > 全局 > 项目） */
-  apiKey: string;
-  /** 环境变量名（提示用户设置用） */
-  apiKeyEnv?: string;
-  /** 是否兜底供应商 */
-  isDefault: boolean;
-  /** 静态模型列表（providers.json 中人工维护的精选，合并时作为兜底补充） */
-  staticModels: ProviderModel[];
-  /** 最终可用模型列表（远程 + 静态合并后的结果） */
-  models: ProviderModel[];
-}
+import {
+  ProviderRegistry,
+  createProviderFromConfig,
+} from '../llm/provider.js';
+import type { Provider, ProviderConfigJson } from '../llm/provider.js';
 
 /** 全局配置结构（~/.ts-agent/config.json） */
 interface GlobalConfig {
@@ -128,7 +77,8 @@ interface PathOverrides {
    ════════════════════════════════════════════════════════════════════════════ */
 
 export class ConfigManager {
-  private providers: Map<string, ProviderDefinition> = new Map();
+  /** Provider 对象集合（数据 + 行为自包含，运行时注册表） */
+  private registry = new ProviderRegistry();
   /** 项目级密钥（config/provider-keys.json） */
   private projectKeys: ProviderKeys = { apiKeys: {} };
   /** 全局配置（~/.ts-agent/config.json） */
@@ -152,27 +102,26 @@ export class ConfigManager {
 
   async init(): Promise<void> {
     const tasks = this.getAll().map(async (p) => {
-      if (!p.apiKey) return; // 无密钥用 staticModels
-      const remote = await this.fetchRemoteModels(p);
-      this.providers.set(p.id, { ...p, models: this.mergeModels(remote, p.staticModels) });
+      if (!p.getApiKey()) return; // 无密钥用 staticModels
+      await p.refreshModels();
     });
     await Promise.all(tasks);
   }
 
   /* ── 查询 ── */
 
-  getAll(): ProviderDefinition[] {
-    return [...this.providers.values()];
+  getAll(): Provider[] {
+    return this.registry.getAll();
   }
 
-  get(id: string): ProviderDefinition | undefined {
-    return this.providers.get(id);
+  get(id: string): Provider | undefined {
+    return this.registry.get(id);
   }
 
   /** 获取当前激活的供应商（读 active-config.json） */
-  getActive(): ProviderDefinition | undefined {
+  getActive(): Provider | undefined {
     const cfg = this.loadActive();
-    return this.providers.get(cfg.provider ?? '');
+    return this.registry.get(cfg.provider ?? '');
   }
 
   /** 获取当前激活的模型 ID */
@@ -181,30 +130,36 @@ export class ConfigManager {
   }
 
   /** 获取兜底供应商 + 模型（isDefault 且有 key） */
-  getFallback(): { provider: ProviderDefinition; modelId: string } | undefined {
-    const def = this.getAll().find((p) => p.isDefault && p.apiKey);
-    if (!def || def.models.length === 0) return undefined;
-    const modelId = def.models.some((m) => m.id === 'deepseek-v4-flash')
+  getFallback(): { provider: Provider; modelId: string } | undefined {
+    const def = this.getAll().find((p) => p.isDefault && p.getApiKey());
+    if (!def || def.getModels().length === 0) return undefined;
+    const modelId = def.getModels().some((m) => m.id === 'deepseek-v4-flash')
       ? 'deepseek-v4-flash'
-      : def.models[0].id;
+      : def.getModels()[0].id;
     return { provider: def, modelId };
   }
 
   /* ── 修改 ── */
 
+  /** 运行时注册 Provider（自定义供应商） */
+  registerProvider(p: Provider): void {
+    this.registry.register(p);
+  }
+
+  /** 运行时删除 Provider */
+  unregisterProvider(id: string): void {
+    this.registry.unregister(id);
+  }
+
   /** 设置某供应商的项目级 API Key（写 provider-keys.json） */
   setKey(providerId: string, apiKey: string): void {
-    const p = this.providers.get(providerId);
-    if (p) {
-      p.apiKey = apiKey;
-      this.projectKeys.apiKeys[providerId] = apiKey;
-      this.saveProjectKeys();
-    }
+    this.projectKeys.apiKeys[providerId] = apiKey;
+    this.saveProjectKeys();
   }
 
   /** 激活供应商 + 模型（写 active-config.json，不含 key） */
-  activate(providerId: string, modelId: string): ProviderDefinition | undefined {
-    const p = this.providers.get(providerId);
+  activate(providerId: string, modelId: string): Provider | undefined {
+    const p = this.registry.get(providerId);
     if (!p) return undefined;
     this.saveActive(providerId, modelId, p.baseUrl);
     return p;
@@ -212,43 +167,66 @@ export class ConfigManager {
 
   /** 运行中重新拉取某供应商模型（输入 key 后调用） */
   async refreshModels(providerId: string): Promise<void> {
-    const p = this.providers.get(providerId);
-    if (!p || !p.apiKey) return;
-    const remote = await this.fetchRemoteModels(p);
-    this.providers.set(providerId, { ...p, models: this.mergeModels(remote, p.staticModels) });
+    const p = this.registry.get(providerId);
+    if (!p || !p.getApiKey()) return;
+    await p.refreshModels();
+  }
+
+  /**
+   * 从配置构造 Provider 对象（用 manager 的标准 key 解析 + 模型拉取）。
+   * 调用方：/model 自定义供应商入口
+   * 服务于：让自定义 Provider 也能用统一的 getApiKey/getModels/refreshModels 行为
+   */
+  createProviderObject(cfg: ProviderConfigJson): Provider {
+    return createProviderFromConfig(cfg, {
+      resolveApiKey: (c) => this.resolveApiKey(c),
+      fetchModels: (p) => this.fetchRemoteModels(p),
+    });
+  }
+
+  /** 持久化自定义供应商到 providers.json（追加到数组） */
+  saveCustomProvider(cfg: ProviderConfigJson): void {
+    try {
+      const raw = this.readProvidersFile();
+      raw.providers = raw.providers ?? [];
+      // 同 id 覆盖，否则追加
+      const idx = raw.providers.findIndex((p) => p.id === cfg.id);
+      if (idx !== -1) raw.providers[idx] = cfg;
+      else raw.providers.push(cfg);
+      writeFileSync(this.paths.providersPath, JSON.stringify(raw, null, 2), 'utf-8');
+    } catch { /* 写入失败不阻塞 */ }
   }
 
   /** 返回合并后的最终 LLMConfig（供 check.ts / main.ts 创建 Provider） */
   getMergedConfig(): LLMConfig | undefined {
     const active = this.loadActive();
-    const p = this.providers.get(active.provider ?? '');
+    const p = this.registry.get(active.provider ?? '');
     if (!p) return undefined;
     return {
       provider: p.type,
       baseUrl: this.globalConfig.baseUrls?.[p.id] ?? p.baseUrl,
-      apiKey: p.apiKey,
+      apiKey: p.getApiKey(),
       model: active.model ?? '',
     };
   }
 
   /* ── 私有：加载 ── */
 
-  /** 从 providers.json 载入供应商定义，key 由 resolveApiKey 解析 */
+  /** 读 providers.json 原始内容 */
+  private readProvidersFile(): { providers: ProviderConfigJson[] } {
+    return JSON.parse(readFileSync(this.paths.providersPath, 'utf-8'));
+  }
+
+  /** 从 providers.json 载入供应商定义，构造 Provider 对象（注入行为依赖） */
   private loadProviders(): void {
     try {
-      const raw = JSON.parse(readFileSync(this.paths.providersPath, 'utf-8')) as { providers: ProviderConfigJson[] };
+      const raw = this.readProvidersFile();
       for (const cfg of raw.providers ?? []) {
-        this.providers.set(cfg.id, {
-          id: cfg.id,
-          name: cfg.name,
-          baseUrl: cfg.baseUrl,
-          type: cfg.type,
-          apiKey: this.resolveApiKey(cfg),
-          ...(cfg.apiKeyEnv ? { apiKeyEnv: cfg.apiKeyEnv } : {}),
-          isDefault: !!cfg.isDefault,
-          staticModels: (cfg.staticModels ?? []).map((m) => ({ ...m, isStatic: true })),
-          models: (cfg.staticModels ?? []).map((m) => ({ ...m, isStatic: true })),
+        const provider = createProviderFromConfig(cfg, {
+          resolveApiKey: (c) => this.resolveApiKey(c),
+          fetchModels: (p) => this.fetchRemoteModels(p),
         });
+        this.registry.register(provider);
       }
     } catch (e) {
       console.warn(`[config] 读取 ${this.paths.providersPath} 失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -318,16 +296,16 @@ export class ConfigManager {
 
   /* ── 私有：模型拉取 ── */
 
-  /** 从 {baseUrl}/models 拉取模型列表 */
-  private async fetchRemoteModels(p: ProviderDefinition): Promise<ProviderModel[]> {
+  /** 从 {baseUrl}/models 拉取模型列表（Provider 的 refreshModels 注入用） */
+  private async fetchRemoteModels(p: Provider): Promise<import('../llm/provider.js').ProviderModel[]> {
     try {
       const url = `${p.baseUrl.replace(/\/+$/, '')}/models`;
       const headers: Record<string, string> = {};
       if (p.type === 'anthropic') {
-        headers['x-api-key'] = p.apiKey;
+        headers['x-api-key'] = p.getApiKey();
         headers['anthropic-version'] = '2023-06-01';
       } else {
-        headers['Authorization'] = `Bearer ${p.apiKey}`;
+        headers['Authorization'] = `Bearer ${p.getApiKey()}`;
       }
       const res = await fetch(url, { headers, signal: AbortSignal.timeout(10000) });
       if (!res.ok) return [];
@@ -340,23 +318,6 @@ export class ConfigManager {
     } catch {
       return [];
     }
-  }
-
-  /** 合并远程模型 + 静态模型（远程优先，静态缺失的追加并标 isStatic） */
-  private mergeModels(remote: ProviderModel[], staticModels: ProviderModel[]): ProviderModel[] {
-    const seen = new Set<string>();
-    const merged: ProviderModel[] = [];
-    for (const m of remote) {
-      seen.add(m.id);
-      merged.push(m);
-    }
-    for (const m of staticModels) {
-      if (!seen.has(m.id)) {
-        seen.add(m.id);
-        merged.push({ ...m, isStatic: true });
-      }
-    }
-    return merged;
   }
 }
 
