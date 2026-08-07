@@ -14,6 +14,8 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-07 19:59 | [Fix🐛] 表单输入污染根治：TTY 下表单走 InputHandler.readLineTTY，绕过 readline 的 lineBuffer 残留
+2026-08-07 19:59 | [Fix🐛] 清理 providers.json 残留的坏 custom 供应商（被污染写入的 custom-vcq6k）
 2026-08-07 19:26 | [Fix🐛] 选择器防竞态：激活前清残留转义缓冲（getConfigManager init 耗时期间按键不再误触发选择器）
 2026-08-07 18:49 | [Feature✨] 新增 /edit_model 命令（修改已有供应商配置）+ 抽 promptProviderForm 公共表单
 2026-08-07 18:49 | [Feature✨] 自定义供应商注册后远程拉取模型列表（失败/不兼容自动兜底静态模型）

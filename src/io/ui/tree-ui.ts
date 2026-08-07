@@ -235,6 +235,8 @@ export class TreeUI {
     this.runtime.registerSelect((items, title) => this.showSelect(items, title));
     // 注册多选选择器钩子
     this.runtime.registerMultiSelect((items, title) => this.showMultiSelect(items, title));
+    // 注册 TTY 读行钩子（表单输入走 InputHandler，绕过 readline 的 lineBuffer 污染）
+    this.runtime.registerReadLine((promptText) => this.input.readLineTTY(promptText));
 
     // 首次渲染
     this.requestRender();

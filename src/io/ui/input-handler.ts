@@ -213,4 +213,20 @@ export class InputHandler {
       this.onSubmit?.(text, mode);
     }
   }
+
+  /**
+   * TTY 模式读一行（表单输入用）——临时接管 onSubmit，返回一次 Enter 提交。
+   * 调用方：runtime.readLineInput（命令的表单输入）
+   * 服务于：绕过 readline 的 lineBuffer 污染（TTY 下 readline 会残留历史输入，readLine 会误返残留值）
+   */
+  readLineTTY(promptText?: string): Promise<string> {
+    if (promptText !== undefined) process.stdout.write(promptText);
+    return new Promise((resolve) => {
+      const saved = this.onSubmit;
+      this.onSubmit = (text, _mode) => {
+        this.onSubmit = saved;
+        resolve(text);
+      };
+    });
+  }
 }

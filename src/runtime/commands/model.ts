@@ -13,7 +13,6 @@
 import type { Runtime } from '../runtime.js';
 import { getConfigManager } from '../../config/manager.js';
 import type { ProviderConfigJson } from '../../llm/provider.js';
-import { readLine } from '../../io/terminal.js';
 
 export function activate(runtime: Runtime): void {
   runtime.registerCommand('model', '选择 AI 供应商及模型 / 自定义供应商（↑↓ 导航）', async () => {
@@ -44,6 +43,7 @@ export function activate(runtime: Runtime): void {
     // ── ③ 若无 API Key，交互输入 ──
     if (!provider.getApiKey()) {
       const key = await promptInput(
+        runtime,
         `请粘贴 ${provider.name} 的 API Key：`,
         '',
         provider.apiKeyEnv ? `(也可以设置环境变量 ${provider.apiKeyEnv} 后重启)` : undefined,
@@ -76,13 +76,13 @@ export function activate(runtime: Runtime): void {
   });
 }
 
-/** 交互输入一行（带提示 + 可选默认值；留空回车返回默认值） */
-async function promptInput(label: string, defaultVal = '', hint?: string): Promise<string> {
+/** 交互输入一行（带提示 + 可选默认值；留空回车返回默认值）。TTY 下走 runtime.readLineInput（绕过 readline 污染） */
+async function promptInput(runtime: Runtime, label: string, defaultVal = '', hint?: string): Promise<string> {
   console.log('');
   console.log(`  ${label}`);
   if (hint) console.log(`  ${hint}`);
   if (defaultVal) console.log(`  (默认: ${defaultVal}，直接回车沿用)`);
-  const input = (await readLine('  > ')).trim();
+  const input = (await runtime.readLineInput('  > ')).trim();
   return input || defaultVal;
 }
 
@@ -100,9 +100,9 @@ export async function promptProviderForm(
   console.log('  ── 供应商配置 ──');
   console.log('  (可随时 Ctrl+C 取消)');
 
-  const name = await promptInput('供应商名称：', defaults?.name);
+  const name = await promptInput(runtime, '供应商名称：', defaults?.name);
   if (!name) return null;
-  const baseUrl = await promptInput('API 地址（如 https://api.deepseek.com）：', defaults?.baseUrl);
+  const baseUrl = await promptInput(runtime, 'API 地址（如 https://api.deepseek.com）：', defaults?.baseUrl);
   if (!baseUrl) return null;
   // 协议类型用选择器（↑↓ 选 openai / anthropic，避免手输打错）
   const type = await runtime.select(
@@ -113,8 +113,8 @@ export async function promptProviderForm(
     '选择协议类型（↑↓ 切换  Enter 确认）',
   );
   if (!type) return null;
-  const apiKey = await promptInput('API Key（留空则沿用现有）：', '');
-  const modelId = await promptInput('默认模型 ID（如 deepseek-chat）：', defaults?.model);
+  const apiKey = await promptInput(runtime, 'API Key（留空则沿用现有）：', '');
+  const modelId = await promptInput(runtime, '默认模型 ID（如 deepseek-chat）：', defaults?.model);
   if (!modelId) return null;
 
   return {

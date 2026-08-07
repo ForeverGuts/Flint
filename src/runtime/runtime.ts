@@ -16,6 +16,7 @@ import { estimateTokenUsage } from './utils.js';
 import { PermissionManager } from './permission.js';
 import { promptPermission } from '../io/ui/permission.js';
 import { selectFromList } from '../io/ui/selector.js';
+import { readLine } from '../io/terminal.js';
 /* ── 类型定义 ── */
 
 /** 命令处理函数签名 */
@@ -56,6 +57,8 @@ export class Runtime {
   currentBaseUrl: string = '';
   /** 选择器钩子（TTY 由 TreeUI 注册，管道用默认 selectFromList） */
   private selectHook: ((items: SelectItem[], title?: string) => Promise<string | undefined>) | null = null;
+  /** TTY 读行钩子（由 TreeUI 注册，走 InputHandler；管道用 readLine） */
+  private readLineHook: ((prompt?: string) => Promise<string>) | null = null;
   /** 运行时诊断队列（错误/警告收集，/diagnostics 查询 + debug 落盘） */
   private diagnostics: import('../types.js').Diagnostic[] = [];
   /* ── 事件发射器（组合模式，Runtime 只持自己的事件） ── */
@@ -150,6 +153,22 @@ export class Runtime {
   /** 注册多选选择器实现（TTY 由 TreeUI 提供） */
   registerMultiSelect(fn: (items: SelectItem[], title?: string) => Promise<string[] | undefined>): void {
     this.selectMultiHook = fn;
+  }
+
+  /** 注册 TTY 读行实现（由 TreeUI 提供，走 InputHandler 而非 readline，避免 lineBuffer 污染） */
+  registerReadLine(fn: (prompt?: string) => Promise<string>): void {
+    this.readLineHook = fn;
+  }
+
+  /**
+   * 读取一行输入（命令表单用）。
+   * TTY 下走 InputHandler（绕过 readline 的 lineBuffer 污染）；
+   * 管道模式用 readLine。
+   */
+  readLineInput(prompt?: string): Promise<string> {
+    if (this.readLineHook) return this.readLineHook(prompt);
+    // 管道模式：用 readline
+    return readLine(prompt);
   }
 
   /** 运行选择器（命令系统调用；TTY 走 TreeUI 组件树，否则用默认 selectFromList） */
