@@ -14,6 +14,7 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-07 18:08 | [Fix🐛] /model 自定义供应商的"协议类型"从手输改选择器（↑↓ 选 openai/anthropic，避免打错）
 2026-08-07 17:59 | [Refactor♻️] 协议层抽象：Provider 对象集合（数据+行为自包含）+ ProviderRegistry + createProviderFromConfig
 2026-08-07 17:59 | [Feature✨] /model 加"自定义供应商"入口：填 baseUrl+type+key+模型，运行时注册 + 持久化到 providers.json
 2026-08-07 17:59 | [Refactor♻️] createProvider 去 switch（两协议直接判断）；config/manager 存 Provider 对象而非数据

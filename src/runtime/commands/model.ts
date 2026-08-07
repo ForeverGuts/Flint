@@ -92,8 +92,15 @@ async function addCustomProvider(runtime: Runtime, mgr: Awaited<ReturnType<typeo
   if (!name) return '❌ 已取消';
   const baseUrl = await promptInput('API 地址（如 https://api.deepseek.com）：');
   if (!baseUrl) return '❌ 已取消';
-  const type = await promptInput('协议类型（openai / anthropic）：');
-  if (type !== 'openai' && type !== 'anthropic') return `❌ 不支持的协议类型: ${type}（仅 openai / anthropic）`;
+  // 协议类型用选择器（↑↓ 选 openai / anthropic，避免手输打错）
+  const type = await runtime.select(
+    [
+      { value: 'openai', label: 'OpenAI 兼容协议', description: '覆盖 DeepSeek / OpenRouter / 通义等（/v1/chat/completions）' },
+      { value: 'anthropic', label: 'Anthropic 协议', description: 'Anthropic Messages 格式（/v1/messages）' },
+    ],
+    '选择协议类型（↑↓ 切换  Enter 确认）',
+  );
+  if (!type) return '❌ 已取消';
   const apiKey = await promptInput('API Key：');
   if (!apiKey) return '❌ 已取消';
   const modelId = await promptInput('默认模型 ID（如 deepseek-chat）：');
