@@ -155,20 +155,10 @@ async function addCustomProvider(runtime: Runtime, mgr: Awaited<ReturnType<typeo
   // ④ 远程拉取模型列表（失败/不兼容自动保留静态模型兜底）
   await provider.refreshModels();
 
-  // ⑤ 应用：激活 + 热替换
-  const chosenModelId = cfg.staticModels?.[0]?.id ?? '';
-  mgr.activate(id, chosenModelId);
-  try {
-    const llm = provider.createLLM(chosenModelId);
-    runtime.setLLM(llm);
-  } catch (err) {
-    return `❌ 模型加载失败: ${err instanceof Error ? err.message : String(err)}`;
-  }
-  runtime.currentProvider = provider.type;
-  runtime.currentBaseUrl = provider.baseUrl;
-  runtime.currentModel = chosenModelId;
-
-  return `✅ 已添加并切换到自定义供应商「${cfg.name}」/ ${chosenModelId}（已持久化到 providers.json）`;
+  // ⑤ 注意：创建后【不激活、不切换】——保持当前激活的供应商不变。
+  //    用户之后可用 /model 手动选择使用这个新供应商。
+  const modelLabel = cfg.staticModels?.[0]?.label ?? '';
+  return `✅ 已添加自定义供应商「${cfg.name}」（模型 ${modelLabel}），已持久化。当前未切换，可用 /model 选择使用。`;
 }
 
 /** 应用选择：激活状态 + 热替换 LLM + 更新 runtime 当前信息 */

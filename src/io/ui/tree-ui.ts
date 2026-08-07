@@ -205,13 +205,13 @@ export class TreeUI {
     box.addChild(new Text(`  ${C.dim}${pad('Session')}${C.reset}   ${C.bold}${this.info.sessionMsgs}${C.reset} msgs  │  ${C.dim}${dateStr} ${timeStr}${C.reset}`));
     box.addChild(new Text(`  ${C.dim}${pad('Runtime')}${C.reset}   Node${process.version}  ·  ${platform}  ·  ${C.dim}${cwd}${C.reset}`));
     box.addChild(new Text(`  ${C.green}${'─'.repeat(48)}${C.reset}`));
-    // 启动自检诊断：有 warn/fail 才展示（全 pass 不打扰）
-    const warns = this.info.diagnostics?.filter((d) => d.level !== 'pass') ?? [];
-    for (const d of warns) {
-      const icon = d.level === 'fail' ? C.red + '❌' : C.yellow + '⚠️';
+    // 启动自检诊断：显示全部检查项（✅ pass / ⚠️ warn / ❌ fail）
+    const diags = this.info.diagnostics ?? [];
+    for (const d of diags) {
+      const icon = d.level === 'fail' ? C.red + '❌' : d.level === 'warn' ? C.yellow + '⚠️' : C.green + '✅';
       box.addChild(new Text(`  ${icon}${C.reset} ${C.dim}[${d.item}]${C.reset} ${d.message}`));
     }
-    box.addChild(new Text(`  ${C.dim}${C.italic}  /help  ·  /exit  ·  /clear  ·  /model  ·  /usage${C.reset}`));
+    box.addChild(new Text(`  ${C.dim}${C.italic}  /help  ·  /exit  ·  /clear  ·  /model  ·  /edit_model  ·  /usage  ·  /history  ·  /sessions  ·  /diagnostics${C.reset}`));
     box.addChild(new Text(`  ${C.green}${'─'.repeat(48)}${C.reset}`));
     this.refreshHeader();
     return box;

@@ -16,12 +16,15 @@
 | **会话树存储（P0）** | JsonlSessionStorage 升级为 entry 树 + leaf + fork + compaction |
 | **上下文管理（P0）** | 超限压缩为 compaction entry 入树，增量判断 |
 | **命令系统（P1）** | 自动扫描加载：/help /clear /model /provider /usage /history /sessions |
-| **模型切换（P1）** | /provider 两级导航选供应商+模型，/model 切换，运行时热替换 LLM |
+| **模型切换（P1）** | /model 两级导航选供应商+模型，/edit_model 修改配置，运行时热替换 LLM |
 | **对话历史（P1）** | /history 查看/分叉，fork 复制前缀到新文件（不破坏原历史） |
 | **工具系统（P2）** | read/write/grep/bash 四工具 + function calling（结构化 tool_calls） |
 | **技能系统（P2）** | SkillLoader 加载 .pi/skills/*.md 模板 |
 | **事件订阅（P3）** | PromptEventEmitter subscribe/emit，stream_text/tool_call/error 等事件 |
 | **多会话管理（P3）** | /sessions 切换/新建，/history 分叉出多分支 |
+| **配置系统增强（P4）** | config/manager 配置分层（环境变量>全局>项目）+ Provider 对象抽象 + /model 自定义供应商 |
+| **错误日志与诊断（P4）** | Diagnostic 公共类型 + runtime 诊断队列 + /diagnostics 查看 + debug-runtime.log 落盘 |
+| **启动自检增强（P4）** | check() 逐项检查（配置/API key/连通性/模型列表）+ 严重度分级 + check 事件 |
 
 ---
 
@@ -64,9 +67,9 @@
 
 ### P4 — 可靠性工程
 
-- [ ] **配置系统增强** — 从 `config/api.json` 扩展到分层配置（全局/项目/会话级）
-- [ ] **错误日志与诊断** — 结构化的错误收集、诊断报告
-- [ ] **启动自检增强** — 网络连通检测、API key 有效性验证、模型列表拉取
+- [x] **配置系统增强** — 从 `config/api.json` 扩展到分层配置（全局/项目/会话级）
+- [x] **错误日志与诊断** — 结构化的错误收集、诊断报告
+- [x] **启动自检增强** — 网络连通检测、API key 有效性验证、模型列表拉取
 
 ### P5 — 架构演进（规模化）
 
