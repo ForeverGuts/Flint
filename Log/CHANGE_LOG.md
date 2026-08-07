@@ -14,6 +14,8 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-07 20:12 | [Fix🐛] 表单输入回显：TTY 下 readLineTTY 在 `> ` 提示符后实时回显输入内容，提交打印完整行
+2026-08-07 20:12 | [Feature✨] 协议选择器选完后打印确认（如"协议类型: OpenAI 兼容协议"）
 2026-08-07 19:59 | [Fix🐛] 表单输入污染根治：TTY 下表单走 InputHandler.readLineTTY，绕过 readline 的 lineBuffer 残留
 2026-08-07 19:59 | [Fix🐛] 清理 providers.json 残留的坏 custom 供应商（被污染写入的 custom-vcq6k）
 2026-08-07 19:26 | [Fix🐛] 选择器防竞态：激活前清残留转义缓冲（getConfigManager init 耗时期间按键不再误触发选择器）

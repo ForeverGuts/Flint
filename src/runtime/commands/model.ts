@@ -113,6 +113,9 @@ export async function promptProviderForm(
     '选择协议类型（↑↓ 切换  Enter 确认）',
   );
   if (!type) return null;
+  // 选择后打印确认（协议类型标签行）
+  const typeLabel = type === 'openai' ? 'OpenAI 兼容协议' : 'Anthropic 协议';
+  console.log(`  协议类型: ${typeLabel}`);
   const apiKey = await promptInput(runtime, 'API Key（留空则沿用现有）：', '');
   const modelId = await promptInput(runtime, '默认模型 ID（如 deepseek-chat）：', defaults?.model);
   if (!modelId) return null;

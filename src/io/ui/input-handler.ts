@@ -215,16 +215,26 @@ export class InputHandler {
   }
 
   /**
-   * TTY 模式读一行（表单输入用）——临时接管 onSubmit，返回一次 Enter 提交。
+   * TTY 模式读一行（表单输入用）——临时接管 onSubmit/onChange，返回一次 Enter 提交。
    * 调用方：runtime.readLineInput（命令的表单输入）
-   * 服务于：绕过 readline 的 lineBuffer 污染（TTY 下 readline 会残留历史输入，readLine 会误返残留值）
+   * 服务于：绕过 readline 的 lineBuffer 污染（TTY 下 readline 会残留历史输入，readLine 会误返残留值）；
+   *         并在表单标签旁的 `> ` 后实时回显输入内容（而非渲染到屏幕底部输入行）
    */
   readLineTTY(promptText?: string): Promise<string> {
     if (promptText !== undefined) process.stdout.write(promptText);
     return new Promise((resolve) => {
-      const saved = this.onSubmit;
+      const savedSubmit = this.onSubmit;
+      const savedChange = this.onChange;
+      this.buffer = '';
+      // 表单期间：输入内容回显到 `> ` 提示符后（\r 回行首 + 清行 + 重写）
+      this.onChange = () => {
+        process.stdout.write(`\r\x1b[2K  > ${this.buffer}`);
+      };
       this.onSubmit = (text, _mode) => {
-        this.onSubmit = saved;
+        // 提交：打印完整一行（含输入值）+ 换行
+        process.stdout.write(`\r\x1b[2K  > ${text}\n`);
+        this.onSubmit = savedSubmit;
+        this.onChange = savedChange;
         resolve(text);
       };
     });
