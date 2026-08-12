@@ -12,6 +12,7 @@ import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import type { EventHandler, HookHandler } from './events.js';
 import { ToolRegistry } from '../tools/registry.js';
+import { CompactionService } from '../context/compaction.js';
 import { estimateTokenUsage } from './utils.js';
 import { PermissionManager } from './permission.js';
 import { promptPermission } from '../io/ui/permission.js';
@@ -47,6 +48,8 @@ export class Runtime {
   private commands = new Map<string, RegisteredCommand>();
   private inputHandlers: InputHandler[] = [];
   private skills: SkillLoader;
+  /** 上下文管理子系统（压缩） */
+  private compaction: CompactionService;
   tools = new ToolRegistry();
   permission = new PermissionManager();
   /** 当前模型名（供 /model 命令读写） */
@@ -127,6 +130,12 @@ export class Runtime {
     this.session = options.session;
     this.skills = new SkillLoader('skills');
     this.skills.load();
+    // 上下文管理子系统（压缩）——依赖 llm + session + events
+    this.compaction = new CompactionService({
+      llm: this.llm,
+      storage: this.session,
+      events: this.events,
+    });
     if (options.model) this.currentModel = options.model;
     if (options.provider) this.currentProvider = options.provider;
     if (options.baseUrl) this.currentBaseUrl = options.baseUrl;
@@ -440,65 +449,9 @@ export class Runtime {
     // 发射 thinking 事件（告诉 UI 开始旋转）
     this.events.emit({ type: 'thinking', phase: 'analyzing' });
 
-    // ⑦: 上下文压缩 —— 历史超限时用 LLM 总结，压缩结果作为 compaction entry 入树
+    // ⑦: 上下文压缩 —— 委托给 CompactionService（历史超限时 LLM 摘要 + 入树）
     let history = this.session ? await this.session.getMessages() : [];
-    // 只有真正的 JSONL 树存储才有 compaction/getAllMsgIds（InMemory/Mock 走纯文本）
-    const jsonlSession = this.session instanceof JsonlSessionStorage ? this.session : undefined;
-
-    // 增量压缩判断：已压缩过的消息 id = 各 compaction entry 的 firstKeptId 之前（历史路径上的）
-    // 简化：已压缩消息 = 所有 compaction 出现前的那批；这里用 getAllMsgIds 里在 firstKeptId 之前的消息
-    let compressedSummary = '';
-    if (jsonlSession) {
-      const compactions = jsonlSession.getCompactions();
-      if (compactions.length > 0) {
-        // 取最后一个 compaction：它之前的消息已被摘要顶替
-        const last = compactions[compactions.length - 1];
-        compressedSummary = last.summary;
-      }
-    }
-
-    if (history.length > 20) {
-      const allIds: string[] = jsonlSession ? jsonlSession.getAllMsgIds() : [];
-      // 已压缩消息 id = 被某个 compaction 覆盖的（firstKeptId 之前）；取最新的 firstKeptId 作为分界
-      const compactions = jsonlSession ? jsonlSession.getCompactions() : [];
-      // 只压缩尚未压缩过的早期消息（每个 compaction 的 firstKeptId 之前的都算已压缩）
-      const summarizedIds = new Set<string>();
-      for (const c of compactions) {
-        // firstKeptId 之前的所有消息 id 都算已压缩
-        const keptIdx = allIds.indexOf(c.firstKeptId);
-        if (keptIdx !== -1) {
-          for (let i = 0; i < keptIdx; i++) summarizedIds.add(allIds[i]);
-        }
-      }
-      const uncompressedIds = allIds.slice(0, -10).filter((id: string) => !summarizedIds.has(id));
-      if (uncompressedIds.length > 0) {
-        this.events.emit({ type: 'thinking', phase: 'compressing' });
-        const toSummarize = uncompressedIds.map((id: string) => {
-          const msg = jsonlSession?.getMsgById(id);
-          return msg ? `${msg.role}: ${msg.content.slice(0, 200)}` : '';
-        }).filter(Boolean).join('\n');
-        try {
-          const result = await this.llm.chat([
-            { role: 'system', content: '将以下对话压缩为一段摘要（50 字内），保留关键信息。只输出摘要。' },
-            { role: 'user', content: toSummarize },
-          ]);
-          const summary = result.content;
-          // 压缩结果作为 compaction entry 入树（firstKeptId = 第一条保留消息）
-          const firstKeptId = allIds[allIds.length - 10] ?? allIds[allIds.length - 1] ?? '';
-          await jsonlSession?.appendCompaction(summary, firstKeptId);
-          compressedSummary = summary;
-          history = history.slice(-10);
-        } catch {
-          history = history.slice(-10);
-        }
-      }
-    }
-
-    if (compressedSummary) {
-      history.unshift({ role: 'system' as const, content: `[对话摘要] ${compressedSummary}` });
-    }
-
-    // 上下文准备完毕，更新 spinner
+    history = await this.compaction.maybeCompact(history);
     this.events.emit({ type: 'thinking', phase: 'streaming' });
 
     // ⑧: Agent Loop —— LLM 调用 → Tool 执行 → 循环
