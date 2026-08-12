@@ -15,6 +15,7 @@ import { registerBuiltinTools } from '../runtime/tools.js';
 import { demoInputHandler } from '../runtime/commands-handle.js';
 import { TreeUI } from '../io/ui/tree-ui.js';
 import { TerminalUI } from '../io/ui/index.js';
+import { runRpcMode } from './rpc.js';
 
 interface CreateRuntimeOptions {
   session?: SessionStorage | undefined;
@@ -80,6 +81,13 @@ export async function main(checkResult: CheckResult): Promise<void> {
     // TTY 下：Ctrl+C 交给 InputHandler（onSelectKey 消费），此处不退出
   });
   process.on('SIGTERM', () => { closeTerminal(); runtime.stop().then(() => process.exit(0)); });
+
+  // 模式分发：环境变量 TS_AGENT_MODE=rpc 时进入 RPC 模式（外部程序调用）
+  if (process.env.TS_AGENT_MODE === 'rpc') {
+    await runRpcMode(runtime);
+    closeTerminal();
+    return;
+  }
 
   // 收集启动信息传入 UI
   await runReplMode(runtime, {

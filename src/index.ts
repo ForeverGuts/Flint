@@ -6,7 +6,11 @@
 import { initTerminal } from './io/terminal.js';
 import { Harness } from './harness/index.js';
 
-initTerminal();
+// RPC 模式（管道 stdin）不初始化 readline 终端 —— initTerminal 的 readline 会干扰管道输入，
+// 导致顶层 await 无法 settle（exit 13）。RPC 由 runRpcMode 自建 readline 读 stdin。
+if (process.env.TS_AGENT_MODE !== 'rpc') {
+  initTerminal();
+}
 
 // stdout 关闭时的错误静默处理（避免 Windows UV_HANDLE_CLOSING）
 process.stdout.on('error', () => {});
@@ -25,7 +29,9 @@ process.on('exit', (code) => {
 });
 
 const harness = new Harness();
-await harness.run().then(() => process.exit(0)).catch((err) => {
+try {
+  await harness.run();
+} catch (err) {
   console.error('[FATAL]', err);
   process.exit(1);
-});
+}

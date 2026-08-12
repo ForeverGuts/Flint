@@ -67,6 +67,14 @@ export async function check(): Promise<CheckResult> {
     diagnostics.push(warn('apikey', `「${providerName}」API Key 未配置，首次对话可能失败。可在 /model 中选择并输入。`));
   }
 
+  // RPC 模式：跳过网络/模型测试（外部程序调用要快速启动，不阻塞）
+  // TODO(流式 RPC)：如需在 RPC 启动时校验，可改为异步后台检查不阻塞
+  if (process.env.TS_AGENT_MODE === 'rpc') {
+    diagnostics.push(pass('network', `「${providerName}」RPC 模式跳过网络检查（快速启动）`));
+    const llm = createProvider(config);
+    return { llm, config, diagnostics };
+  }
+
   // ── ③ 连通性：baseUrl 是否可达（warn 级：网络抖动不影响进入程序） ──
   const network = await testConnectivity(config, providerName);
   diagnostics.push(network);

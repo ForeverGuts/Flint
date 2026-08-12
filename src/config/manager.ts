@@ -330,6 +330,8 @@ export function getConfigManager(): Promise<ConfigManager> {
   if (!_instancePromise) {
     _instancePromise = (async () => {
       const mgr = new ConfigManager();
+      // RPC 模式：不拉远程模型（快速启动，外部程序调用不阻塞）；chat 用静态模型兜底
+      if (process.env.TS_AGENT_MODE === 'rpc') return mgr;
       await mgr.init();
       return mgr;
     })();

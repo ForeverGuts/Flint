@@ -14,6 +14,9 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-12 14:00 | [Feature✨] RPC 模式（P3）：JSON-RPC 2.0 over stdin/stdout，chat/ping/list_commands/get_diagnostics/list_sessions/switch_session/create_session/clear/get_session_info
+2026-08-12 14:00 | [Config⚙️] RPC 模式跳过 initTerminal（readline 干扰管道 stdin）+ check 跳过耗时网络检查，快速启动
+2026-08-12 14:00 | [Docs📝] RPC 流式（Pi 式 text_delta 通知）留 TODO
 2026-08-12 12:54 | [Fix🐛] 启动自检诊断信息更详细：所有检查项标注具体供应商名（如"供应商「test」无法连接..."）
 2026-08-07 20:34 | [Fix🐛] 创建自定义供应商后不再自动激活/切换（保持当前供应商不变，用户可 /model 手动选）
 2026-08-07 20:34 | [Fix🐛] 启动自检 banner 显示全部诊断项（含 pass ✅，不再只显示 warn/fail）

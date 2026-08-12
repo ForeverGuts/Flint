@@ -62,8 +62,9 @@
   - 驱动因素：UI 需要区分"正在输出"、"正在调工具"、"出错了"等状态
 - [x] **多会话管理** — `/new`（新会话）、`/fork`（分叉）、`/switch`（切换）
   - 依赖：持久化存储、命令系统
-- [ ] **RPC 模式** — JSON-RPC over stdin/stdout，供编辑器插件调用
+- [x] **RPC 模式** — JSON-RPC over stdin/stdout，供编辑器插件调用（非流式；流式 TODO）
   - 依赖：命令系统、事件订阅
+  - 注：非流式 chat 一次性返回；Pi 式流式（text_delta 通知）留 TODO
 
 ### P4 — 可靠性工程
 
