@@ -1,33 +1,17 @@
 /**
- * 工具系统 —— Skill + Function Calling 模式。
- * 调用方：runtime.ts（prompt 中执行 Agent Loop）
- * 服务于：LLM 可通过 Function Calling 调用工具（读文件、执行命令等）
+ * 工具注册表 —— 工具子系统实现。
+ * 调用方：Runtime（持有 ToolProvider）、loop/agent-loop.ts（执行工具）
+ * 服务于：实现 core 的 ToolProvider 接口——注册/查询/执行工具
  *
  * 每个工具包含：
  *   - 定义（name + description + JSON Schema），发给 LLM 让它知道怎么调
  *   - 处理器（handler），实际执行的函数
  */
+import type { ToolProvider, ToolDefinition } from '../core/tools.js';
 import type { LLMTool } from '../llm/types.js';
 
-/** 工具参数 Schema（JSON Schema 格式） */
-export interface ToolParameterSchema {
-  type: 'object';
-  properties: Record<string, unknown>;
-  required?: string[];
-}
-
-/** 工具定义 —— 注册到 Runtime，供 LLM 调用 */
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  parameters: ToolParameterSchema;
-  handler: (args: Record<string, unknown>) => Promise<string>;
-  /** 是否需要用户确认才能执行（写/改类工具为 true，只读类为 false） */
-  requirePermission?: boolean;
-}
-
-/** 工具注册表管理器 */
-export class ToolRegistry {
+/** 工具注册表管理器（实现 core ToolProvider） */
+export class ToolRegistry implements ToolProvider {
   private tools = new Map<string, ToolDefinition>();
 
   /** 注册一个工具 */

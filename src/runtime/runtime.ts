@@ -11,7 +11,7 @@ import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import type { EventHandler, HookHandler } from './events.js';
-import { ToolRegistry } from './tool.js';
+import { ToolRegistry } from '../tools/registry.js';
 import { estimateTokenUsage } from './utils.js';
 import { PermissionManager } from './permission.js';
 import { promptPermission } from '../io/ui/permission.js';

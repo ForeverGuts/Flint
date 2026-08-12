@@ -1,6 +1,6 @@
 /**
  * 内置工具注册 —— Read / Write / Grep / Bash 四个核心工具。
- * 调用方：main.ts（Runtime 创建后立即调用）
+ * 调用方：main.ts（组装工具子系统时调用）
  * 服务于：为 LLM 提供读文件、写文件、搜索内容、执行命令的能力
  *
  * 设计原则：
@@ -9,7 +9,7 @@
  * 3. 输出格式统一为 `[状态标识] 描述\n详情`
  * 4. 输入参数做运行时校验，非法参数不执行
  */
-import type { Runtime } from './runtime.js';
+import type { ToolProvider } from '../core/tools.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    参数提取与校验
@@ -54,9 +54,9 @@ function optionalPositiveInt(args: Record<string, unknown>, key: string, label: 
    工具注册
    ═══════════════════════════════════════════════════════════════════════════════ */
 
-export function registerBuiltinTools(runtime: Runtime): void {
+export function registerBuiltinTools(tools: ToolProvider): void {
   /* ── Read：读文件 ── */
-  runtime.tools.register({
+  tools.register({
     name: 'read',
     description: '读取文件内容。可指定行范围分段读取大文件。路径用 / 或 \\\\，如 "C:/Users/name/file.txt" 或 "src/utils/helper.ts"。',
     parameters: {
@@ -109,7 +109,7 @@ export function registerBuiltinTools(runtime: Runtime): void {
   });
 
   /* ── Write：写文件 ── */
-  runtime.tools.register({
+  tools.register({
     name: 'write',
     description: '创建新文件或覆盖已有文件的内容。自动创建不存在的父目录。路径用 / 或 \\\\。',
     requirePermission: true,
@@ -159,7 +159,7 @@ export function registerBuiltinTools(runtime: Runtime): void {
   });
 
   /* ── Grep：搜索文件内容 ── */
-  runtime.tools.register({
+  tools.register({
     name: 'grep',
     description: '在文件中搜索文本或正则模式，返回匹配行及行号。基于 ripgrep (rg) 或系统 grep。',
     parameters: {
@@ -208,7 +208,7 @@ export function registerBuiltinTools(runtime: Runtime): void {
   });
 
   /* ── Bash：执行命令 ── */
-  runtime.tools.register({
+  tools.register({
     name: 'bash',
     description: '执行 shell 命令。仅当用户明确要求执行命令/运行脚本/编译时才使用；不要为"了解环境"或"随便试试"而主动调用。命令在当前工作目录执行。注意 Windows 环境：不要用 pwd/ls/cat 等 Unix 命令（会报"不是内部或外部命令"），查看当前目录用 cd（无参数），列目录用 dir，读文件用 type。Windows 路径中的反斜杠需转义或使用正斜杠。',
     requirePermission: true,

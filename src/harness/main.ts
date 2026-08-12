@@ -12,7 +12,7 @@ import { existsSync } from 'node:fs';
 import { closeTerminal } from '../io/terminal.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import { registerBuiltinCommands } from '../runtime/commands.js';
-import { registerBuiltinTools } from '../runtime/tools.js';
+import { registerBuiltinTools } from '../tools/builtin.js';
 import { demoInputHandler } from '../runtime/commands-handle.js';
 import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
@@ -68,7 +68,7 @@ export async function main(checkResult: CheckResult): Promise<void> {
 
   // 注册命令 + 工具 + 事件处理器
   await registerBuiltinCommands(runtime);
-  registerBuiltinTools(runtime);
+  registerBuiltinTools(runtime.tools);
   runtime.onInput(demoInputHandler);
 
   // SIGINT/Ctrl+C：raw mode 下由 InputHandler 处理（选择器取消/输入），
