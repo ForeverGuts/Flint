@@ -13,6 +13,7 @@ import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import type { EventHandler, HookHandler } from './events.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { CompactionService } from '../context/compaction.js';
+import { AgentLoop } from '../loop/agent-loop.js';
 import { estimateTokenUsage } from './utils.js';
 import { PermissionManager } from './permission.js';
 import { promptPermission } from '../io/ui/permission.js';
@@ -50,6 +51,8 @@ export class Runtime {
   private skills: SkillLoader;
   /** 上下文管理子系统（压缩） */
   private compaction: CompactionService;
+  /** Agent Loop 子系统（LLM+工具循环） */
+  private agentLoop: AgentLoop;
   tools = new ToolRegistry();
   permission = new PermissionManager();
   /** 当前模型名（供 /model 命令读写） */
@@ -135,6 +138,16 @@ export class Runtime {
       llm: this.llm,
       storage: this.session,
       events: this.events,
+    });
+    // Agent Loop 子系统——依赖 llm/tools/permission/events + 回调（权限弹窗/诊断/兜底）
+    this.agentLoop = new AgentLoop({
+      llm: this.llm,
+      tools: this.tools,
+      permission: this.permission,
+      events: this.events,
+      onPermission: (toolName, detail) => this.askPermission(toolName, detail),
+      onDiagnostic: (level, item, message) => this.recordDiagnostic(level as 'fail' | 'warn', item, message),
+      onFallback: (err) => this.tryFallbackOnError(err),
     });
     if (options.model) this.currentModel = options.model;
     if (options.provider) this.currentProvider = options.provider;
@@ -474,113 +487,10 @@ export class Runtime {
     ];
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ⑧: Agent Loop —— 单一 stream() 循环（合并文本生成 + 结构化工具调用）
-    //
-    // 升级说明（function calling）：
-    //   旧版从回复文本里抠 <tool_call> 标签 → 脆、空参数、token 浪费。
-    //   新版通过 API tools 参数，模型返回结构化 tool_calls（名称+参数由 API 保证）。
-    //   stream() 事件：
-    //     - token      → 纯文本，推给用户
-    //     - tool_call  → 结构化调用，累积后执行
-    //     - end        → 流结束（含完整文本）
-    //
-    //   每轮输出：
-    //     ① 有 tool_call → 执行工具 → assistant 的 tool_calls + tool 结果塞回 toolMessages → 下一轮
-    //     ② 只有文本     → turnText 就是最终答案，结束
-    //     ③ 文本+工具并存 → 文本展示 + 工具执行，下一轮带上工具结果再生成最终答案
+    // ⑧: Agent Loop —— 委托给 AgentLoop 子系统（LLM 生成 + 工具执行循环）
     // ═══════════════════════════════════════════════════════════════════════════
-
-    let finalText = '';
-    // 注：isStreaming 由外层循环（prompt）管理，这里不设置。
-    // 单循环：最多 5 轮，每轮 stream() 一次
-    const tools = this.tools.getLLMTools();
-    for (let turn = 0; turn < 5; turn++) {
-        // ── ① 唯一 LLM 调用：stream() 流式生成 + 收集结构化工具调用 ──
-        let turnText = '';
-        const turnCalls: import('../llm/types.js').LLMToolCall[] = [];
-        try {
-          const eventStream = this.llm.stream(toolMessages, tools);
-          for await (const event of eventStream) {
-            if (event.type === 'token') {
-              turnText += event.text;
-              onToken?.(event.text);
-              this.events.emit({ type: 'stream_text', text: event.text });
-            } else if (event.type === 'tool_call') {
-              turnCalls.push(...event.toolCalls);
-            } else if (event.type === 'end') {
-              turnText = event.fullText;
-            }
-          }
-        } catch (err) {
-          // 流异常 → 记录诊断 + 询问是否切兜底
-          const msg = err instanceof Error ? err.message : String(err);
-          this.recordDiagnostic('fail', 'llm', msg.split('\n')[0]);
-          const switched = await this.tryFallbackOnError(err);
-          if (switched) {
-            // 切换后重试本轮
-            continue;
-          } else {
-            finalText = `❌ LLM 调用失败: ${msg}`;
-            break;
-          }
-        }
-
-        // ── ② 无工具调用 → 这就是最终答案 ──
-        if (turnCalls.length === 0) {
-          finalText = turnText;
-          break;
-        }
-
-        // ── ③ 有工具调用 → 逐个执行，结果塞回 toolMessages ──
-        //     先记录 assistant 的 tool_calls（保持对话一致性），再 push tool 结果
-        toolMessages.push({
-          role: 'assistant',
-          content: turnText,
-          tool_calls: turnCalls,
-        });
-        for (const tc of turnCalls) {
-          // 解析结构化参数（API 返回的 JSON 字符串）
-          let args: Record<string, unknown> = {};
-          try {
-            args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
-          } catch {
-            args = {};
-          }
-          this.events.emit({ type: 'tool_execution_start', name: tc.function.name, args });
-          try {
-            // 权限检查
-            if (this.tools.requiresPermission(tc.function.name)) {
-              const detail = JSON.stringify(args).slice(0, 80);
-              if (!this.permission.isAutoAllowed(tc.function.name, detail)) {
-                const choice = await promptPermission(tc.function.name, detail);
-                if (choice === 'deny') {
-                  toolMessages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: `[工具 ${tc.function.name} 被用户拒绝]` });
-                  this.events.emit({ type: 'tool_execution_end', name: tc.function.name, result: '❌ 已拒绝' });
-                  continue;
-                }
-                if (choice === 'always') {
-                  this.permission.grantAutoAllow(tc.function.name, detail);
-                }
-              }
-            }
-            const result = await this.tools.execute(tc.function.name, args);
-            toolMessages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: result });
-            this.events.emit({ type: 'tool_execution_end', name: tc.function.name, result });
-          } catch (err) {
-            toolMessages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: `[工具 ${tc.function.name} 执行失败]\n${err}` });
-            this.recordDiagnostic('fail', 'tool', `工具 ${tc.function.name} 执行失败: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
-        // ④ 工具执行完 → 进入下一轮 for，stream() 带着工具结果重新生成
-      }
-
-      // ⑤ 5 轮内没得到最终回复 → 用最后一次流式文本兜底
-      if (!finalText) {
-        const last = toolMessages[toolMessages.length - 1];
-        finalText = typeof last?.content === 'string' ? last.content : '';
-      }
-
-      this.events.emit({ type: 'message_end' });
+    const { finalText } = await this.agentLoop.run(toolMessages, onToken);
+    this.events.emit({ type: 'message_end' });
 
     await this.session?.appendMessage('user', currentText);
     await this.session?.appendMessage('assistant', finalText);
@@ -607,6 +517,16 @@ export class Runtime {
 
     const skillBlock = `<skill name="${skill.name}" path="${skill.filePath}">\n${skill.body}\n</skill>`;
     return args ? `${skillBlock}\n\n${args}` : skillBlock;
+  }
+
+  /**
+   * 工具权限确认（AgentLoop 的 onPermission 回调）—— 弹窗询问用户。
+   * 返回 'allow' | 'deny' | 'always'。
+   */
+  private async askPermission(toolName: string, detail: string): Promise<'allow' | 'deny' | 'always'> {
+    const choice = await promptPermission(toolName, detail);
+    // promptPermission 返回 'deny' | 'always' | undefined（undefined=允许本次）
+    return choice === 'deny' ? 'deny' : choice === 'always' ? 'always' : 'allow';
   }
 
   /**
