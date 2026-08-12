@@ -75,18 +75,18 @@ export interface CheckResult {
 export interface RuntimeOptions {
   /** 运行模式，默认 repl */
   mode?: Mode;
-  /** LLM 模型调用 */
-  llm?: import('./llm/types.js').LLMProvider;
-  /** LLM 对话管理 */
-  session?: SessionStorage;
-  /** 工具子系统（缺省用默认 ToolRegistry） */
-  tools?: import('./core/tools.js').ToolProvider;
-  /** 权限子系统（缺省用默认 PermissionManager） */
-  permission?: import('./core/permission.js').PermissionProvider;
-  /** 技能加载器（缺省用默认 SkillLoader） */
-  skills?: import('./runtime/skill.js').SkillLoader;
-  /** 事件总线（缺省用默认 PromptEventEmitter） */
-  events?: import('./runtime/events.js').PromptEventEmitter;
+  /** LLM 模型调用（必注入） */
+  llm: import('./llm/types.js').LLMProvider;
+  /** 会话存储（必注入） */
+  session: SessionStorage;
+  /** 工具子系统（必注入） */
+  tools: import('./core/tools.js').ToolProvider;
+  /** 权限子系统（必注入） */
+  permission: import('./core/permission.js').PermissionProvider;
+  /** 技能加载器（必注入） */
+  skills: import('./runtime/skill.js').SkillLoader;
+  /** 事件总线（必注入） */
+  events: import('./runtime/events.js').PromptEventEmitter;
   /** TODO: 配置 / 扩展 / 资源管理 */
   services?: unknown;
   /** 当前模型名（供 /model 命令查看和切换） */

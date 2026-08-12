@@ -14,6 +14,10 @@ import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import { registerBuiltinCommands } from '../runtime/commands.js';
 import { registerBuiltinTools } from '../tools/builtin.js';
 import { demoInputHandler } from '../runtime/commands-handle.js';
+import { ToolRegistry } from '../tools/registry.js';
+import { PermissionManager } from '../runtime/permission.js';
+import { SkillLoader } from '../runtime/skill.js';
+import { PromptEventEmitter } from '../runtime/events.js';
 import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
 
@@ -52,11 +56,21 @@ export async function main(checkResult: CheckResult): Promise<void> {
     }
   }
 
+  // 显式组装子系统（多系统分离：Runtime 不创建任何子系统，全部注入）
+  const tools = new ToolRegistry();
+  const permission = new PermissionManager();
+  const skills = new SkillLoader('skills');
+  const events = new PromptEventEmitter();
+
   const createRuntime = async (options: CreateRuntimeOptions): Promise<CreateRuntimeResult> => {
     const runtime = new Runtime({
       mode: Mode.Repl,
       llm,
       session: options.session ?? session,
+      tools,
+      permission,
+      skills,
+      events,
       model: modelName,
       provider: checkResult.config?.provider ?? '',
       baseUrl,

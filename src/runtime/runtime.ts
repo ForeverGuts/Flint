@@ -11,11 +11,9 @@ import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import type { EventHandler, HookHandler } from './events.js';
-import { ToolRegistry } from '../tools/registry.js';
 import { CompactionService } from '../context/compaction.js';
 import { AgentLoop } from '../loop/agent-loop.js';
 import { estimateTokenUsage } from './utils.js';
-import { PermissionManager } from './permission.js';
 import { promptPermission } from '../io/ui/permission.js';
 import { selectFromList } from '../io/ui/selector.js';
 import { readLine } from '../io/terminal.js';
@@ -130,13 +128,13 @@ export class Runtime {
   }
 
   constructor(options: RuntimeOptions) {
-    this.llm = options.llm!;
+    this.llm = options.llm;
     this.session = options.session;
-    // 子系统：优先用注入的，缺省用默认实现
-    this.tools = options.tools ?? new ToolRegistry();
-    this.permission = options.permission ?? new PermissionManager();
-    this.events = options.events ?? new PromptEventEmitter();
-    this.skills = options.skills ?? new SkillLoader('skills');
+    // 子系统：全部必注入（多系统分离——Runtime 不创建任何子系统，只编排）
+    this.tools = options.tools;
+    this.permission = options.permission;
+    this.events = options.events;
+    this.skills = options.skills;
     this.skills.load();
     // 上下文管理子系统（压缩）——依赖 llm + session + events
     this.compaction = new CompactionService({
