@@ -53,8 +53,12 @@ export class Runtime {
   private compaction: CompactionService;
   /** Agent Loop 子系统（LLM+工具循环） */
   private agentLoop: AgentLoop;
-  tools = new ToolRegistry();
-  permission = new PermissionManager();
+  /** 工具子系统（构造注入，缺省默认） */
+  tools: import('../core/tools.js').ToolProvider;
+  /** 权限子系统（构造注入，缺省默认） */
+  permission: import('../core/permission.js').PermissionProvider;
+  /** 事件总线（构造注入，缺省默认 PromptEventEmitter） */
+  private events: PromptEventEmitter;
   /** 当前模型名（供 /model 命令读写） */
   currentModel: string = '';
   /** 当前 provider 类型（供 /model 命令读写） */
@@ -68,9 +72,6 @@ export class Runtime {
   /** 运行时诊断队列（错误/警告收集，/diagnostics 查询 + debug 落盘） */
   private diagnostics: import('../types.js').Diagnostic[] = [];
   /* ── 事件发射器（组合模式，Runtime 只持自己的事件） ── */
-
-  /** Runtime 运行时事件（stream_text、message_end、agent_end 等） */
-  private events = new PromptEventEmitter();
 
   /** 订阅运行时事件 */
   subscribe(handler: EventHandler): () => void {
@@ -131,7 +132,11 @@ export class Runtime {
   constructor(options: RuntimeOptions) {
     this.llm = options.llm!;
     this.session = options.session;
-    this.skills = new SkillLoader('skills');
+    // 子系统：优先用注入的，缺省用默认实现
+    this.tools = options.tools ?? new ToolRegistry();
+    this.permission = options.permission ?? new PermissionManager();
+    this.events = options.events ?? new PromptEventEmitter();
+    this.skills = options.skills ?? new SkillLoader('skills');
     this.skills.load();
     // 上下文管理子系统（压缩）——依赖 llm + session + events
     this.compaction = new CompactionService({

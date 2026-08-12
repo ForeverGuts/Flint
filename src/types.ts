@@ -79,6 +79,14 @@ export interface RuntimeOptions {
   llm?: import('./llm/types.js').LLMProvider;
   /** LLM 对话管理 */
   session?: SessionStorage;
+  /** 工具子系统（缺省用默认 ToolRegistry） */
+  tools?: import('./core/tools.js').ToolProvider;
+  /** 权限子系统（缺省用默认 PermissionManager） */
+  permission?: import('./core/permission.js').PermissionProvider;
+  /** 技能加载器（缺省用默认 SkillLoader） */
+  skills?: import('./runtime/skill.js').SkillLoader;
+  /** 事件总线（缺省用默认 PromptEventEmitter） */
+  events?: import('./runtime/events.js').PromptEventEmitter;
   /** TODO: 配置 / 扩展 / 资源管理 */
   services?: unknown;
   /** 当前模型名（供 /model 命令查看和切换） */
