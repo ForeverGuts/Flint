@@ -1,20 +1,20 @@
 /**
  * Agent 启动逻辑。
  * 调用方：harness/index.ts（check 通过后由 Harness.run 调用）
- * 服务于：接收 check 结果 → 创建闭包工厂 → 注入 Runtime → 按模式交互
+ * 服务于：接收 check 结果 → 创建闭包工厂 → 注入 Runtime → 按模式分发（REPL / RPC）
+ *
+ * 模式：REPL（交互界面，见 repl.ts）/ RPC（外部程序 JSON-RPC，见 rpc.ts）
  */
-
 import { Runtime } from '../runtime/runtime.js';
 import { Mode } from '../types.js';
 import type { CheckResult, SessionStorage } from '../types.js';
 import { existsSync } from 'node:fs';
-import { closeTerminal, isClosed, readLine } from '../io/terminal.js';
+import { closeTerminal } from '../io/terminal.js';
 import { JsonlSessionStorage } from '../runtime/jsonl-storage.js';
 import { registerBuiltinCommands } from '../runtime/commands.js';
 import { registerBuiltinTools } from '../runtime/tools.js';
 import { demoInputHandler } from '../runtime/commands-handle.js';
-import { TreeUI } from '../io/ui/tree-ui.js';
-import { TerminalUI } from '../io/ui/index.js';
+import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
 
 interface CreateRuntimeOptions {
@@ -82,16 +82,14 @@ export async function main(checkResult: CheckResult): Promise<void> {
   });
   process.on('SIGTERM', () => { closeTerminal(); runtime.stop().then(() => process.exit(0)); });
 
-  // 模式分发：环境变量 TS_AGENT_MODE=rpc 时进入 RPC 模式（外部程序调用）
+  // 模式分发：RPC（外部程序调用）或 REPL（交互界面）
   if (process.env.TS_AGENT_MODE === 'rpc') {
     await runRpcMode(runtime);
     closeTerminal();
     return;
   }
 
-  // 收集启动信息传入 UI
   await runReplMode(runtime, {
-    // ui页面展示的信息
     model: modelName,
     baseUrl,
     sessionMsgs: await runtime.getSessionMsgCount(),
@@ -100,50 +98,4 @@ export async function main(checkResult: CheckResult): Promise<void> {
     skillCount: runtime.getSkillLoader().getAll().length,
     diagnostics: checkResult.diagnostics ?? [],
   });
-
-  closeTerminal();
-}
-
-/* ── REPL 模式 ── */
-
-interface ReplInfo {
-  model: string;
-  baseUrl: string;
-  sessionMsgs: number;
-  toolCount: number;
-  cmdCount: number;
-  skillCount: number;
-  /** 启动自检诊断（可靠性工程），banner 下方展示 */
-  diagnostics: import('../types.js').Diagnostic[];
-}
-
-async function runReplMode(runtime: Runtime, info: ReplInfo): Promise<void> {
-  // TTY 模式：组件树 UI（方案 C）—— pi-tui 接管终端，Input 组件接收输入
-  if (process.stdin.isTTY) {
-    const ui = new TreeUI(runtime, info);
-    ui.start();
-    // TUI 启动后常驻，直到进程退出（Input.onSubmit 处理 /exit）
-    await new Promise<void>(() => {}); // 挂起，等待 /exit 或 SIGINT
-    ui.stop();
-    return;
-  }
-
-  // 非 TTY（管道模式）：用轻量文本 UI（TerminalUI）顺序输出，一次处理一条输入
-  const ui = new TerminalUI();
-  ui.showBanner(info);
-  ui.attach(runtime);
-  while (true) {
-    const input = await readLine();
-    const trimmed = input.trim();
-    // 注意：管道模式下 stdin 关闭后 readLine 仍能返回缓冲中的最后一行，
-    // 此时 isClosed() 为 true 但数据有效 —— 先处理数据，再判断是否退出。
-    if (trimmed && trimmed !== '/exit') {
-      ui.showUserInput(trimmed);
-      await runtime.prompt(trimmed);
-    }
-    if (isClosed()) break;
-    if (!trimmed) continue;
-    if (trimmed === '/exit') break;
-  }
-  ui.detach();
 }

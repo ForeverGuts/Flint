@@ -14,6 +14,7 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-12 14:15 | [Refactor♻️] REPL 从 main.ts 抽离为 harness/repl.ts（与 rpc.ts 对称），main 只做组装+分发
 2026-08-12 14:00 | [Feature✨] RPC 模式（P3）：JSON-RPC 2.0 over stdin/stdout，chat/ping/list_commands/get_diagnostics/list_sessions/switch_session/create_session/clear/get_session_info
 2026-08-12 14:00 | [Config⚙️] RPC 模式跳过 initTerminal（readline 干扰管道 stdin）+ check 跳过耗时网络检查，快速启动
 2026-08-12 14:00 | [Docs📝] RPC 流式（Pi 式 text_delta 通知）留 TODO
