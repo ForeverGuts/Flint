@@ -9,7 +9,7 @@ import type { Diagnostic, RuntimeOptions } from '../types.js';
 import { appendFileSync } from 'node:fs';
 import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
-import { JsonlSessionStorage } from './jsonl-storage.js';
+import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import type { EventHandler, HookHandler } from './events.js';
 import { ToolRegistry } from './tool.js';
 import { estimateTokenUsage } from './utils.js';

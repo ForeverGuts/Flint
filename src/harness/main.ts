@@ -10,7 +10,7 @@ import { Mode } from '../types.js';
 import type { CheckResult, SessionStorage } from '../types.js';
 import { existsSync } from 'node:fs';
 import { closeTerminal } from '../io/terminal.js';
-import { JsonlSessionStorage } from '../runtime/jsonl-storage.js';
+import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import { registerBuiltinCommands } from '../runtime/commands.js';
 import { registerBuiltinTools } from '../runtime/tools.js';
 import { demoInputHandler } from '../runtime/commands-handle.js';

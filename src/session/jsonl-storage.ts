@@ -19,7 +19,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as fsSync from 'node:fs';
-import type { SessionStorage } from '../types.js';
+import type { SessionStorage } from '../core/storage.js';
 import type { LLMMessage, LLMToolCall } from '../llm/types.js';
 
 interface SessionHeader {

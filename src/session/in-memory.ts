@@ -3,7 +3,7 @@
  * 调用方：runtime.ts（通过 SessionStorage 接口调用）
  * 服务于：提供 InMemorySession 作为默认实现，预留 mock 空间
  */
-import type { SessionStorage } from '../types.js';
+import type { SessionStorage } from '../core/storage.js';
 
 export class InMemorySession implements SessionStorage {
   private messages: Array<{ role: string; content: string }> = [];

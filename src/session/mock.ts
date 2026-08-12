@@ -3,7 +3,7 @@
  * 调用方：测试文件
  * 服务于：替换 InMemorySession，隔离业务逻辑与存储实现
  */
-import type { SessionStorage } from '../types.js';
+import type { SessionStorage } from '../core/storage.js';
 
 export class MockSession implements SessionStorage {
   public messages: Array<{ role: string; content: string }> = [];
