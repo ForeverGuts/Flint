@@ -14,6 +14,7 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-12 16:07 | [Docs📝] 完整同步：目录.md 更新职责表+调用关系（反映 P5 子系统结构），核对 CHANGE_LOG 与 commit 无遗漏
 2026-08-12 15:54 | [Refactor♻️] P5 多系统分离：新建 core/（接口层）+ session/（存储）+ tools/（工具）+ context/（压缩）+ loop/（Agent Loop）
 2026-08-12 15:54 | [Refactor♻️] Runtime 构造注入所有子系统（不再 new），prompt 只剩编排；修复 instanceof 抽象破坏
 2026-08-12 14:15 | [Refactor♻️] REPL 从 main.ts 抽离为 harness/repl.ts（与 rpc.ts 对称），main 只做组装+分发
