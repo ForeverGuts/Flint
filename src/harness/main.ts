@@ -80,10 +80,10 @@ export async function main(checkResult: CheckResult): Promise<void> {
 
   const { runtime } = await createRuntime({});
 
-  // 注册命令 + 工具 + 事件处理器
-  await registerBuiltinCommands(runtime);
-  registerBuiltinTools(runtime.tools);
-  runtime.onInput(demoInputHandler);
+  // 构造后统一注册能力（命令 + 工具 + 输入处理）——时序一致
+  await registerBuiltinCommands(runtime);   // 装命令（动态 import 需 await）
+  registerBuiltinTools(tools);               // 装工具（直接用本地变量，不绕 runtime.tools）
+  runtime.onInput(demoInputHandler);         // 装输入处理器
 
   // SIGINT/Ctrl+C：raw mode 下由 InputHandler 处理（选择器取消/输入），
   // 这里只作兜底（非 TTY 或 InputHandler 未捕获时），优雅退出

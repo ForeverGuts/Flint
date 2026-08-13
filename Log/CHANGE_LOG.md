@@ -14,6 +14,7 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-13 14:40 | [Refactor♻️] main 注册能力用本地 tools 变量（不绕 runtime.tools），命令/工具/输入处理时序统一为构造后
 2026-08-12 17:07 | [Refactor♻️] 子系统全部必注入：RuntimeOptions tools/permission/skills/events/llm/session 必填，Runtime 无默认值
 2026-08-12 17:07 | [Refactor♻️] main.ts 显式组装所有子系统（ToolRegistry/PermissionManager/SkillLoader/PromptEventEmitter）注入 Runtime
 2026-08-12 16:07 | [Docs📝] 完整同步：目录.md 更新职责表+调用关系（反映 P5 子系统结构），核对 CHANGE_LOG 与 commit 无遗漏
