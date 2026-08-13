@@ -8,7 +8,7 @@
  * 不依赖具体存储实现（InMemory/Mock 无 compaction 能力时为 no-op）。
  */
 import type { LLMProvider } from '../llm/types.js';
-import type { SessionStorage } from '../core/storage.js';
+import type { CompactionStore } from '../core/compaction-store.js';
 import type { EventBus } from '../core/events.js';
 import type { CompactionProvider } from '../core/compaction.js';
 
@@ -21,8 +21,8 @@ const KEEP_RECENT = 10;
 export interface CompactionDeps {
   /** LLM（生成摘要） */
   llm: LLMProvider;
-  /** 会话存储（用 core 可选成员，无则跳过压缩） */
-  storage?: SessionStorage | undefined;
+  /** 压缩存储（支持压缩的存储实现，无则跳过压缩） */
+  storage?: CompactionStore | undefined;
   /** 事件总线（发射 thinking:compressing 事件） */
   events?: EventBus | undefined;
 }
@@ -42,13 +42,13 @@ export class CompactionService implements CompactionProvider {
 
     // 已有摘要：取最后一个 compaction 的 summary
     let compressedSummary = '';
-    const compactions = storage.getCompactions?.() ?? [];
+    const compactions = storage.getCompactions();
     if (compactions.length > 0) {
       compressedSummary = compactions[compactions.length - 1].summary;
     }
 
     if (history.length > COMPACT_THRESHOLD) {
-      const allIds = storage.getAllMsgIds?.() ?? [];
+      const allIds = storage.getAllMsgIds();
       // 已压缩消息 id = 每个 compaction 的 firstKeptId 之前
       const summarizedIds = new Set<string>();
       for (const c of compactions) {
@@ -61,7 +61,7 @@ export class CompactionService implements CompactionProvider {
       if (uncompressedIds.length > 0) {
         events?.emit({ type: 'thinking', phase: 'compressing' });
         const toSummarize = uncompressedIds.map((id) => {
-          const msg = storage.getMsgById?.(id);
+          const msg = storage.getMsgById(id);
           return msg ? `${msg.role}: ${msg.content.slice(0, 200)}` : '';
         }).filter(Boolean).join('\n');
         try {
@@ -71,7 +71,7 @@ export class CompactionService implements CompactionProvider {
           ]);
           const summary = result.content;
           const firstKeptId = allIds[allIds.length - KEEP_RECENT] ?? allIds[allIds.length - 1] ?? '';
-          await storage.appendCompaction?.(summary, firstKeptId);
+          await storage.appendCompaction(summary, firstKeptId);
           compressedSummary = summary;
           history = history.slice(-KEEP_RECENT);
         } catch {

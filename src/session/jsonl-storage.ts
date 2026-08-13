@@ -20,6 +20,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as fsSync from 'node:fs';
 import type { SessionStorage } from '../core/storage.js';
+import type { CompactionStore } from '../core/compaction-store.js';
 import type { LLMMessage, LLMToolCall } from '../llm/types.js';
 
 interface SessionHeader {
@@ -89,7 +90,7 @@ function isSessionFileName(name: string): boolean {
   return name.endsWith(SESSION_EXT) && !name.includes('_summary');
 }
 
-export class JsonlSessionStorage implements SessionStorage {
+export class JsonlSessionStorage implements SessionStorage, CompactionStore {
   private filePath: string;
   private header: SessionHeader;
   /** 全部 entry（按追加顺序） */

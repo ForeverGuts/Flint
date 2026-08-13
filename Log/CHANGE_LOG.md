@@ -14,6 +14,9 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-13 17:55 | [Refactor♻️] Compaction 独立：抽 CompactionStore 接口（压缩存储 4 方法），jsonl 双实现，InMemory/Mock 明确不支持
+2026-08-13 17:55 | [Refactor♻️] compaction 从 SessionStorage 可选成员改依赖 CompactionStore；SessionStorage 去 4 个压缩方法
+2026-08-13 17:55 | [Refactor♻️] main 组装 compaction（instanceof 判断 session 是否支持压缩）注入 Runtime，Runtime 不再内部 new
 2026-08-13 16:11 | [Refactor♻️] 多系统全对称：core/ 补 4 接口（compaction/loop/commands/diagnostics），8 子系统全部 implements core 接口
 2026-08-13 16:11 | [Refactor♻️] 迁移 PermissionManager 到 permission/manager.ts（修实现错位）；events 保留 runtime（类型+实现一体，评估后接受）
 2026-08-13 16:11 | [Refactor♻️] Runtime 字段改接口类型持有（compaction/agentLoop/commandSystem/diagnosticsService）

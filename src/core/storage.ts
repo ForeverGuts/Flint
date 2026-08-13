@@ -35,14 +35,6 @@ export interface SessionStorage {
 
   // ── 可选能力（entry 树存储实现；InMemory/Mock 可为 no-op） ──
 
-  /** 获取当前分支上的 compaction 摘要列表（上下文压缩用；无则空数组） */
-  getCompactions?(): Array<{ summary: string; firstKeptId: string }>;
-  /** 追加一个 compaction 摘要 */
-  appendCompaction?(summary: string, firstKeptId: string): Promise<void>;
-  /** 获取全部消息 ID（压缩增量判断用） */
-  getAllMsgIds?(): string[];
-  /** 按 ID 获取消息 */
-  getMsgById?(msgId: string): StoredMessage | undefined;
   /** 获取当前分支全部存储消息（/history 用） */
   getAllStored?(): StoredMessage[];
   /** fork：复制根→该 entry 前缀到新会话（/history 分叉用） */

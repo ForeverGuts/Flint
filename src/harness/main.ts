@@ -20,6 +20,7 @@ import { SkillLoader } from '../runtime/skill.js';
 import { PromptEventEmitter } from '../runtime/events.js';
 import { CommandSystem } from '../commands/system.js';
 import { DiagnosticsService } from '../diagnostics/service.js';
+import { CompactionService } from '../context/compaction.js';
 import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
 
@@ -67,16 +68,22 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const diagnosticsService = new DiagnosticsService({ events });
 
   const createRuntime = async (options: CreateRuntimeOptions): Promise<CreateRuntimeResult> => {
+    const actualSession = options.session ?? session;
+    // 压缩子系统：仅当 session 支持压缩（Jsonl 实现 CompactionStore）时启用
+    const compactionStore = actualSession instanceof JsonlSessionStorage ? actualSession : undefined;
+    const compaction = new CompactionService({ llm, storage: compactionStore, events });
+
     const runtime = new Runtime({
       mode: Mode.Repl,
       llm,
-      session: options.session ?? session,
+      session: actualSession,
       tools,
       permission,
       skills,
       events,
       commandSystem,
       diagnosticsService,
+      compaction,
       model: modelName,
       provider: checkResult.config?.provider ?? '',
       baseUrl,

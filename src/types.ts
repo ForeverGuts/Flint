@@ -91,6 +91,8 @@ export interface RuntimeOptions {
   commandSystem: import('./core/commands.js').CommandProvider;
   /** 诊断子系统（必注入，接口） */
   diagnosticsService: import('./core/diagnostics.js').DiagnosticsProvider;
+  /** 上下文管理子系统（必注入，接口） */
+  compaction: import('./core/compaction.js').CompactionProvider;
   /** TODO: 配置 / 扩展 / 资源管理 */
   services?: unknown;
   /** 当前模型名（供 /model 命令查看和切换） */

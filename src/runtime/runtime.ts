@@ -10,7 +10,6 @@ import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import type { EventHandler, HookHandler } from './events.js';
-import { CompactionService } from '../context/compaction.js';
 import { AgentLoop } from '../loop/agent-loop.js';
 import { estimateTokenUsage } from './utils.js';
 import { promptPermission } from '../io/ui/permission.js';
@@ -133,12 +132,8 @@ export class Runtime {
     this.skills.load();
     this.commandSystem = options.commandSystem;
     this.diagnosticsService = options.diagnosticsService;
-    // 上下文管理（压缩）——内部创建（依赖 llm/session/events）
-    this.compaction = new CompactionService({
-      llm: this.llm,
-      storage: this.session,
-      events: this.events,
-    });
+    // 上下文管理（压缩）——注入（main 组装，Jsonl 时启用）
+    this.compaction = options.compaction;
     // Agent Loop——内部创建（回调依赖 runtime 的权限弹窗/诊断/兜底）
     this.agentLoop = new AgentLoop({
       llm: this.llm,
