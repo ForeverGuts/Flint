@@ -6,7 +6,6 @@
 import type { LLMMessage } from '../llm/types.js';
 import type { LLMProvider } from '../llm/types.js';
 import type { Diagnostic, RuntimeOptions } from '../types.js';
-import { appendFileSync } from 'node:fs';
 import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
@@ -19,16 +18,11 @@ import { selectFromList } from '../io/ui/selector.js';
 import { readLine } from '../io/terminal.js';
 /* ── 类型定义 ── */
 
-/** 命令处理函数签名 */
-export type CommandHandler = (args: string) => string | Promise<string>;
+/** 命令处理函数签名（re-export 自命令子系统，保持兼容） */
+export type CommandHandler = import('../commands/system.js').CommandHandler;
 
 /** 选择器条目（命令系统调 runtime.select 用） */
 export type SelectItem = { value: string; label: string; description?: string; disabled?: boolean };
-
-interface RegisteredCommand {
-  description: string;
-  handler: CommandHandler;
-}
 
 /** Input 事件处理器返回结果 */
 export type InputEventResult =
@@ -44,7 +38,10 @@ export type InputHandler = (text: string) => InputEventResult | Promise<InputEve
 export class Runtime {
   private llm: LLMProvider;
   private session;
-  private commands = new Map<string, RegisteredCommand>();
+  /** 命令子系统（注入，存储/注册/分发） */
+  private commandSystem: import('../commands/system.js').CommandSystem;
+  /** 诊断子系统（注入，收集/查询/落盘） */
+  private diagnosticsService: import('../diagnostics/service.js').DiagnosticsService;
   private inputHandlers: InputHandler[] = [];
   private skills: SkillLoader;
   /** 上下文管理子系统（压缩） */
@@ -67,8 +64,6 @@ export class Runtime {
   private selectHook: ((items: SelectItem[], title?: string) => Promise<string | undefined>) | null = null;
   /** TTY 读行钩子（由 TreeUI 注册，走 InputHandler；管道用 readLine） */
   private readLineHook: ((prompt?: string) => Promise<string>) | null = null;
-  /** 运行时诊断队列（错误/警告收集，/diagnostics 查询 + debug 落盘） */
-  private diagnostics: import('../types.js').Diagnostic[] = [];
   /* ── 事件发射器（组合模式，Runtime 只持自己的事件） ── */
 
   /** 订阅运行时事件 */
@@ -136,6 +131,8 @@ export class Runtime {
     this.events = options.events;
     this.skills = options.skills;
     this.skills.load();
+    this.commandSystem = options.commandSystem;
+    this.diagnosticsService = options.diagnosticsService;
     // 上下文管理子系统（压缩）——依赖 llm + session + events
     this.compaction = new CompactionService({
       llm: this.llm,
@@ -157,14 +154,14 @@ export class Runtime {
     if (options.baseUrl) this.currentBaseUrl = options.baseUrl;
   }
 
-  /* ── 命令注册 ── */
+  /* ── 命令注册（委托给命令子系统） ── */
 
   registerCommand(name: string, description: string, handler: CommandHandler): void {
-    this.commands.set(name, { description, handler });
+    this.commandSystem.register(name, description, handler);
   }
 
   listCommands(): Array<{ name: string; description: string }> {
-    return [...this.commands.entries()].map(([name, cmd]) => ({ name, description: cmd.description }));
+    return this.commandSystem.list();
   }
 
   /** 选择器钩子（单选） */
@@ -301,26 +298,14 @@ export class Runtime {
     return this.skills;
   }
 
-  /** 获取历史诊断列表（供 /diagnostics 命令查看、外部导出） */
+  /** 获取历史诊断列表（供 /diagnostics 命令查看、外部导出）—— 委托诊断子系统 */
   getDiagnostics(): Diagnostic[] {
-    return [...this.diagnostics];
+    return this.diagnosticsService.getAll();
   }
 
-  /**
-   * 记录一条运行时诊断：入队 + emit 事件 + 落盘（debug-runtime.log）。
-   * 调用方：runtime 内部错误点（LLM/工具失败）
-   * 服务于：结构化收集错误（复用启动检查的 Diagnostic），供查询/展示/回放
-   */
+  /** 记录一条运行时诊断 —— 委托诊断子系统 */
   private recordDiagnostic(level: Diagnostic['level'], item: string, message: string): void {
-    const diag: Diagnostic = { level, item, message };
-    this.diagnostics.push(diag);
-    this.events.emit({ type: 'error', level, item, message });
-    // 落盘（env TS_AGENT_DEBUG_DIAG=1 时写入 debug-runtime.log，便于回放）
-    if (process.env.TS_AGENT_DEBUG_DIAG === '1') {
-      try {
-        appendFileSync('debug-runtime.log', `${new Date().toISOString()} [${level}] [${item}] ${message}\n`);
-      } catch { /* 落盘失败不阻塞 */ }
-    }
+    this.diagnosticsService.record(level, item, message);
   }
 
   /** 获取当前 LLM Provider（用于 /model 命令读取） */
@@ -572,11 +557,6 @@ export class Runtime {
   }
 
   private async tryExecuteCommand(text: string): Promise<string | null> {
-    const spaceIndex = text.indexOf(' ');
-    const cmdName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-    const args = spaceIndex === -1 ? '' : text.slice(spaceIndex + 1);
-    const cmd = this.commands.get(cmdName);
-    if (!cmd) return null;
-    return await cmd.handler(args);
+    return this.commandSystem.execute(text);
   }
 }

@@ -18,6 +18,8 @@ import { ToolRegistry } from '../tools/registry.js';
 import { PermissionManager } from '../runtime/permission.js';
 import { SkillLoader } from '../runtime/skill.js';
 import { PromptEventEmitter } from '../runtime/events.js';
+import { CommandSystem } from '../commands/system.js';
+import { DiagnosticsService } from '../diagnostics/service.js';
 import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
 
@@ -61,6 +63,8 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const permission = new PermissionManager();
   const skills = new SkillLoader('skills');
   const events = new PromptEventEmitter();
+  const commandSystem = new CommandSystem();
+  const diagnosticsService = new DiagnosticsService({ events });
 
   const createRuntime = async (options: CreateRuntimeOptions): Promise<CreateRuntimeResult> => {
     const runtime = new Runtime({
@@ -71,6 +75,8 @@ export async function main(checkResult: CheckResult): Promise<void> {
       permission,
       skills,
       events,
+      commandSystem,
+      diagnosticsService,
       model: modelName,
       provider: checkResult.config?.provider ?? '',
       baseUrl,
