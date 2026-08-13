@@ -14,6 +14,9 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-13 16:11 | [Refactor♻️] 多系统全对称：core/ 补 4 接口（compaction/loop/commands/diagnostics），8 子系统全部 implements core 接口
+2026-08-13 16:11 | [Refactor♻️] 迁移 PermissionManager 到 permission/manager.ts（修实现错位）；events 保留 runtime（类型+实现一体，评估后接受）
+2026-08-13 16:11 | [Refactor♻️] Runtime 字段改接口类型持有（compaction/agentLoop/commandSystem/diagnosticsService）
 2026-08-13 15:13 | [Refactor♻️] 新建 commands/ 命令子系统（CommandSystem：register/list/execute）+ diagnostics/ 诊断子系统（DiagnosticsService）
 2026-08-13 15:13 | [Refactor♻️] Runtime 命令/诊断委托给子系统，prompt 简化；main 注入 commandSystem/diagnosticsService
 2026-08-13 14:40 | [Refactor♻️] main 注册能力用本地 tools 变量（不绕 runtime.tools），命令/工具/输入处理时序统一为构造后

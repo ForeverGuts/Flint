@@ -15,7 +15,7 @@ import { registerBuiltinCommands } from '../runtime/commands.js';
 import { registerBuiltinTools } from '../tools/builtin.js';
 import { demoInputHandler } from '../runtime/commands-handle.js';
 import { ToolRegistry } from '../tools/registry.js';
-import { PermissionManager } from '../runtime/permission.js';
+import { PermissionManager } from '../permission/manager.js';
 import { SkillLoader } from '../runtime/skill.js';
 import { PromptEventEmitter } from '../runtime/events.js';
 import { CommandSystem } from '../commands/system.js';

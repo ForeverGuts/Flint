@@ -5,18 +5,16 @@
  *
  * 消费者：REPL（prompt 处理 /xxx）、RPC（chat 走 prompt）—— 两个消费者
  */
-
-/** 命令处理函数签名 */
-export type CommandHandler = (args: string) => string | Promise<string>;
+import type { CommandProvider, CommandHandler } from '../core/commands.js';
 
 /** 已注册的命令 */
-export interface RegisteredCommand {
+interface RegisteredCommand {
   description: string;
   handler: CommandHandler;
 }
 
 /** 命令子系统 */
-export class CommandSystem {
+export class CommandSystem implements CommandProvider {
   private commands = new Map<string, RegisteredCommand>();
 
   /** 注册一个命令 */

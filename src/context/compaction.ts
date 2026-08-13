@@ -10,6 +10,7 @@
 import type { LLMProvider } from '../llm/types.js';
 import type { SessionStorage } from '../core/storage.js';
 import type { EventBus } from '../core/events.js';
+import type { CompactionProvider } from '../core/compaction.js';
 
 /** 压缩阈值：历史超过此条数触发压缩 */
 const COMPACT_THRESHOLD = 20;
@@ -27,7 +28,7 @@ export interface CompactionDeps {
 }
 
 /** 上下文管理子系统 */
-export class CompactionService {
+export class CompactionService implements CompactionProvider {
   constructor(private deps: CompactionDeps) {}
 
   /**

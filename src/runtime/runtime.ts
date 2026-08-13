@@ -18,8 +18,8 @@ import { selectFromList } from '../io/ui/selector.js';
 import { readLine } from '../io/terminal.js';
 /* ── 类型定义 ── */
 
-/** 命令处理函数签名（re-export 自命令子系统，保持兼容） */
-export type CommandHandler = import('../commands/system.js').CommandHandler;
+/** 命令处理函数签名（re-export 自 core，保持兼容） */
+export type CommandHandler = import('../core/commands.js').CommandHandler;
 
 /** 选择器条目（命令系统调 runtime.select 用） */
 export type SelectItem = { value: string; label: string; description?: string; disabled?: boolean };
@@ -38,16 +38,16 @@ export type InputHandler = (text: string) => InputEventResult | Promise<InputEve
 export class Runtime {
   private llm: LLMProvider;
   private session;
-  /** 命令子系统（注入，存储/注册/分发） */
-  private commandSystem: import('../commands/system.js').CommandSystem;
-  /** 诊断子系统（注入，收集/查询/落盘） */
-  private diagnosticsService: import('../diagnostics/service.js').DiagnosticsService;
+  /** 命令子系统（接口注入，存储/注册/分发） */
+  private commandSystem: import('../core/commands.js').CommandProvider;
+  /** 诊断子系统（接口注入，收集/查询/落盘） */
+  private diagnosticsService: import('../core/diagnostics.js').DiagnosticsProvider;
   private inputHandlers: InputHandler[] = [];
   private skills: SkillLoader;
-  /** 上下文管理子系统（压缩） */
-  private compaction: CompactionService;
-  /** Agent Loop 子系统（LLM+工具循环） */
-  private agentLoop: AgentLoop;
+  /** 上下文管理子系统（接口注入，压缩） */
+  private compaction: import('../core/compaction.js').CompactionProvider;
+  /** Agent Loop 子系统（接口注入，LLM+工具循环） */
+  private agentLoop: import('../core/loop.js').AgentLoopProvider;
   /** 工具子系统（构造注入，缺省默认） */
   tools: import('../core/tools.js').ToolProvider;
   /** 权限子系统（构造注入，缺省默认） */
@@ -133,13 +133,13 @@ export class Runtime {
     this.skills.load();
     this.commandSystem = options.commandSystem;
     this.diagnosticsService = options.diagnosticsService;
-    // 上下文管理子系统（压缩）——依赖 llm + session + events
+    // 上下文管理（压缩）——内部创建（依赖 llm/session/events）
     this.compaction = new CompactionService({
       llm: this.llm,
       storage: this.session,
       events: this.events,
     });
-    // Agent Loop 子系统——依赖 llm/tools/permission/events + 回调（权限弹窗/诊断/兜底）
+    // Agent Loop——内部创建（回调依赖 runtime 的权限弹窗/诊断/兜底）
     this.agentLoop = new AgentLoop({
       llm: this.llm,
       tools: this.tools,

@@ -1,7 +1,7 @@
 /**
  * 权限子系统接口（core 层公共契约）。
  * 调用方：loop/agent-loop.ts（执行工具前权限检查）
- * 服务于：抽象权限管理，隔离具体实现（runtime/permission.ts 的 PermissionManager）
+ * 服务于：抽象权限管理，隔离具体实现（permission/manager.ts 的 PermissionManager）
  */
 export interface PermissionProvider {
   /** 检查某操作是否已被"本次全部允许"放过 */

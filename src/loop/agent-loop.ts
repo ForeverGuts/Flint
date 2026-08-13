@@ -15,6 +15,7 @@ import type { LLMProvider, LLMMessage, LLMToolCall } from '../llm/types.js';
 import type { ToolProvider } from '../core/tools.js';
 import type { PermissionProvider } from '../core/permission.js';
 import type { EventBus } from '../core/events.js';
+import type { AgentLoopProvider } from '../core/loop.js';
 
 /** 最大循环轮数（防死循环） */
 const MAX_TURNS = 5;
@@ -40,7 +41,7 @@ export interface AgentLoopResult {
 }
 
 /** Agent Loop 子系统 */
-export class AgentLoop {
+export class AgentLoop implements AgentLoopProvider {
   constructor(private deps: AgentLoopDeps) {}
 
   /**
