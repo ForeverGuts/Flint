@@ -5,8 +5,8 @@
  */
 import type { LLMMessage } from '../llm/types.js';
 
-/** Agent Loop 子系统接口 */
-export interface AgentLoopProvider {
+/** Agent Loop 子系统接口（执行类 → Service 后缀） */
+export interface AgentLoopService {
   /**
    * 运行一轮 Agent Loop：LLM 生成 → 工具执行 → 循环。
    * @param toolMessages 初始消息（含 system 工具描述 + 历史 + 用户消息）

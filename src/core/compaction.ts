@@ -4,8 +4,8 @@
  * 服务于：抽象会话压缩，隔离具体实现（context/compaction.ts）
  */
 
-/** 上下文管理子系统接口 */
-export interface CompactionProvider {
+/** 上下文管理子系统接口（执行类 → Service 后缀） */
+export interface CompactionService {
   /**
    * 上下文压缩：读当前 history，超限时生成摘要并压缩。
    * @param history 当前对话历史

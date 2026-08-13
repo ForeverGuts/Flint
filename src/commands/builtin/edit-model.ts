@@ -5,7 +5,7 @@
  *
  * 与 /model 区分：/model 是"选供应商+模型并切换"，/edit_model 是"改已有供应商配置"。
  */
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/runtime.js';
 import { getConfigManager } from '../../config/manager.js';
 import { promptProviderForm } from './model.js';
 

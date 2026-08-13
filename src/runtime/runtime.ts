@@ -10,9 +10,9 @@ import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import type { EventHandler, HookHandler } from './events.js';
-import { AgentLoop } from '../loop/agent-loop.js';
+import { AgentLoopServiceImpl } from '../loop/agent-loop.js';
 import { estimateTokenUsage } from './utils.js';
-import { promptPermission } from '../io/ui/permission.js';
+import { promptPermission } from '../io/ui/permission-prompt.js';
 import { selectFromList } from '../io/ui/selector.js';
 import { readLine } from '../io/terminal.js';
 /* ── 类型定义 ── */
@@ -38,15 +38,15 @@ export class Runtime {
   private llm: LLMProvider;
   private session;
   /** 命令子系统（接口注入，存储/注册/分发） */
-  private commandSystem: import('../core/commands.js').CommandProvider;
+  private commandSystem: import('../core/commands.js').CommandService;
   /** 诊断子系统（接口注入，收集/查询/落盘） */
-  private diagnosticsService: import('../core/diagnostics.js').DiagnosticsProvider;
+  private diagnosticsService: import('../core/diagnostics.js').DiagnosticsService;
   private inputHandlers: InputHandler[] = [];
   private skills: SkillLoader;
   /** 上下文管理子系统（接口注入，压缩） */
-  private compaction: import('../core/compaction.js').CompactionProvider;
+  private compaction: import('../core/compaction.js').CompactionService;
   /** Agent Loop 子系统（接口注入，LLM+工具循环） */
-  private agentLoop: import('../core/loop.js').AgentLoopProvider;
+  private agentLoop: import('../core/loop.js').AgentLoopService;
   /** 工具子系统（构造注入，缺省默认） */
   tools: import('../core/tools.js').ToolProvider;
   /** 权限子系统（构造注入，缺省默认） */
@@ -135,7 +135,7 @@ export class Runtime {
     // 上下文管理（压缩）——注入（main 组装，Jsonl 时启用）
     this.compaction = options.compaction;
     // Agent Loop——内部创建（回调依赖 runtime 的权限弹窗/诊断/兜底）
-    this.agentLoop = new AgentLoop({
+    this.agentLoop = new AgentLoopServiceImpl({
       llm: this.llm,
       tools: this.tools,
       permission: this.permission,

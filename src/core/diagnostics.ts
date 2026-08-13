@@ -5,8 +5,8 @@
  */
 import type { Diagnostic } from '../types.js';
 
-/** 诊断子系统接口 */
-export interface DiagnosticsProvider {
+/** 诊断子系统接口（执行类 → Service 后缀） */
+export interface DiagnosticsService {
   /** 记录一条运行时诊断（入队 + emit 事件 + 落盘） */
   record(level: Diagnostic['level'], item: string, message: string): void;
   /** 获取历史诊断列表 */

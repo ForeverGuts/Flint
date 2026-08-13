@@ -1,13 +1,13 @@
 /**
- * 命令加载器 —— 自动扫描 commands/ 目录，动态 import 所有扩展。
+ * 命令加载器 —— 自动扫描 commands/builtin/ 目录，动态 import 所有内置命令。
  *
  * 每个 .ts 文件只要导出 activate(runtime) 函数，就会被自动加载。
- * 新增命令不需要修改任何项目代码，只需在 commands/ 下新建文件。
+ * 新增命令不需要修改任何项目代码，只需在 commands/builtin/ 下新建文件。
  */
 import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { Runtime } from './runtime.js';
-import { Loader } from './loader.js';
+import type { Runtime } from '../runtime/runtime.js';
+import { Loader } from '../runtime/loader.js';
 
 interface ActivateModule {
   activate?: (runtime: Runtime) => void;
@@ -19,7 +19,7 @@ export class CommandLoader extends Loader<void> {
   }
 
   async load(): Promise<void> {
-    const files = this.scanFiles('commands', '.ts');
+    const files = this.scanFiles('builtin', '.ts');
     for (const file of files) {
       try {
         const mod: ActivateModule = await import(pathToFileURL(file).href);

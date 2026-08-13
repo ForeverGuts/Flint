@@ -10,7 +10,7 @@
  *   ③ 列出该供应商的模型（↑↓ 选择）
  *   ④ 应用切换：写激活状态 + 热替换 LLM
  */
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/runtime.js';
 import { getConfigManager } from '../../config/manager.js';
 import type { ProviderConfigJson } from '../../llm/provider.js';
 

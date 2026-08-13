@@ -8,7 +8,7 @@
  *   ② 选择切换到某会话，或"新建会话"开一条新线
  *   ③ 切换后 Runtime 换 session，后续对话/历史都在新会话上
  */
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/runtime.js';
 
 export function activate(runtime: Runtime): void {
   runtime.registerCommand('sessions', '切换/新建会话', async () => {

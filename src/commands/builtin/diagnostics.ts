@@ -6,7 +6,7 @@
  * 诊断由 runtime.recordDiagnostic 收集（emit error 事件 + 入队列），
  * 此命令只读展示，不修改。
  */
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/runtime.js';
 
 export function activate(runtime: Runtime): void {
   runtime.registerCommand('diagnostics', '查看运行时诊断历史（错误/警告）', async () => {

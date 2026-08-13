@@ -13,7 +13,7 @@
  *
  * 设计：树不可变，无"编辑/删除"。要改历史 = fork 到该点重新提问，原历史可审计。
  */
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/runtime.js';
 
 /** 角色显示名 + 图标 */
 const ROLE_LABEL: Record<string, string> = {

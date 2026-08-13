@@ -14,6 +14,10 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-13 20:25 | [Refactor♻️] 命名规范统一：执行类接口改 Service（CompactionService/AgentLoopService/CommandService/DiagnosticsService），实现改 Impl
+2026-08-13 20:25 | [Refactor♻️] 命令实现迁到 commands/builtin/，loader 迁 commands/loader.ts，edit_model → edit-model
+2026-08-13 20:25 | [Refactor♻️] io/ui/permission.ts → permission-prompt.ts（避免与 permission/ 重名）；commands-handle → input-handler-demo
+2026-08-13 20:25 | [Refactor♻️] 删除 TODO 空壳 persistence.ts / error-log.ts
 2026-08-13 17:55 | [Refactor♻️] Compaction 独立：抽 CompactionStore 接口（压缩存储 4 方法），jsonl 双实现，InMemory/Mock 明确不支持
 2026-08-13 17:55 | [Refactor♻️] compaction 从 SessionStorage 可选成员改依赖 CompactionStore；SessionStorage 去 4 个压缩方法
 2026-08-13 17:55 | [Refactor♻️] main 组装 compaction（instanceof 判断 session 是否支持压缩）注入 Runtime，Runtime 不再内部 new

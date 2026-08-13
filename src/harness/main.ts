@@ -11,16 +11,16 @@ import type { CheckResult, SessionStorage } from '../types.js';
 import { existsSync } from 'node:fs';
 import { closeTerminal } from '../io/terminal.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
-import { registerBuiltinCommands } from '../runtime/commands.js';
+import { registerBuiltinCommands } from '../commands/loader.js';
 import { registerBuiltinTools } from '../tools/builtin.js';
-import { demoInputHandler } from '../runtime/commands-handle.js';
+import { demoInputHandler } from '../runtime/input-handler-demo.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { PermissionManager } from '../permission/manager.js';
 import { SkillLoader } from '../runtime/skill.js';
 import { PromptEventEmitter } from '../runtime/events.js';
-import { CommandSystem } from '../commands/system.js';
-import { DiagnosticsService } from '../diagnostics/service.js';
-import { CompactionService } from '../context/compaction.js';
+import { CommandServiceImpl } from '../commands/system.js';
+import { DiagnosticsServiceImpl } from '../diagnostics/service.js';
+import { CompactionServiceImpl } from '../context/compaction.js';
 import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
 
@@ -64,14 +64,14 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const permission = new PermissionManager();
   const skills = new SkillLoader('skills');
   const events = new PromptEventEmitter();
-  const commandSystem = new CommandSystem();
-  const diagnosticsService = new DiagnosticsService({ events });
+  const commandSystem = new CommandServiceImpl();
+  const diagnosticsService = new DiagnosticsServiceImpl({ events });
 
   const createRuntime = async (options: CreateRuntimeOptions): Promise<CreateRuntimeResult> => {
     const actualSession = options.session ?? session;
     // 压缩子系统：仅当 session 支持压缩（Jsonl 实现 CompactionStore）时启用
     const compactionStore = actualSession instanceof JsonlSessionStorage ? actualSession : undefined;
-    const compaction = new CompactionService({ llm, storage: compactionStore, events });
+    const compaction = new CompactionServiceImpl({ llm, storage: compactionStore, events });
 
     const runtime = new Runtime({
       mode: Mode.Repl,

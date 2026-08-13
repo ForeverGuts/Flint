@@ -5,7 +5,7 @@
  *
  * 消费者：REPL（prompt 处理 /xxx）、RPC（chat 走 prompt）—— 两个消费者
  */
-import type { CommandProvider, CommandHandler } from '../core/commands.js';
+import type { CommandService, CommandHandler } from '../core/commands.js';
 
 /** 已注册的命令 */
 interface RegisteredCommand {
@@ -13,8 +13,8 @@ interface RegisteredCommand {
   handler: CommandHandler;
 }
 
-/** 命令子系统 */
-export class CommandSystem implements CommandProvider {
+/** 命令子系统实现 */
+export class CommandServiceImpl implements CommandService {
   private commands = new Map<string, RegisteredCommand>();
 
   /** 注册一个命令 */

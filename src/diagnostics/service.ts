@@ -7,7 +7,7 @@
  */
 import { appendFileSync } from 'node:fs';
 import type { Diagnostic } from '../types.js';
-import type { DiagnosticsProvider } from '../core/diagnostics.js';
+import type { DiagnosticsService } from '../core/diagnostics.js';
 
 /** DiagnosticsService 构造依赖 */
 export interface DiagnosticsDeps {
@@ -15,8 +15,8 @@ export interface DiagnosticsDeps {
   events: { emit(event: unknown): void };
 }
 
-/** 诊断子系统 */
-export class DiagnosticsService implements DiagnosticsProvider {
+/** 诊断子系统实现 */
+export class DiagnosticsServiceImpl implements DiagnosticsService {
   /** 诊断队列 */
   private diagnostics: Diagnostic[] = [];
 

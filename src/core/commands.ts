@@ -7,8 +7,8 @@
 /** 命令处理函数签名 */
 export type CommandHandler = (args: string) => string | Promise<string>;
 
-/** 命令子系统接口 */
-export interface CommandProvider {
+/** 命令子系统接口（执行类 → Service 后缀） */
+export interface CommandService {
   /** 注册一个命令 */
   register(name: string, description: string, handler: CommandHandler): void;
   /** 列出所有命令 */

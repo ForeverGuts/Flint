@@ -88,11 +88,11 @@ export interface RuntimeOptions {
   /** 事件总线（必注入） */
   events: import('./runtime/events.js').PromptEventEmitter;
   /** 命令子系统（必注入，接口） */
-  commandSystem: import('./core/commands.js').CommandProvider;
+  commandSystem: import('./core/commands.js').CommandService;
   /** 诊断子系统（必注入，接口） */
-  diagnosticsService: import('./core/diagnostics.js').DiagnosticsProvider;
+  diagnosticsService: import('./core/diagnostics.js').DiagnosticsService;
   /** 上下文管理子系统（必注入，接口） */
-  compaction: import('./core/compaction.js').CompactionProvider;
+  compaction: import('./core/compaction.js').CompactionService;
   /** TODO: 配置 / 扩展 / 资源管理 */
   services?: unknown;
   /** 当前模型名（供 /model 命令查看和切换） */
