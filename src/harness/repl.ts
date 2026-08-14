@@ -24,8 +24,23 @@ export interface ReplInfo {
   diagnostics: import('../types.js').Diagnostic[];
 }
 
+/** 基于 runtime 组装 REPL 展示信息（单一信息源，main 不需重复取） */
+async function buildReplInfo(runtime: Runtime, diagnostics: import('../types.js').Diagnostic[]): Promise<ReplInfo> {
+  return {
+    model: runtime.currentModel,
+    baseUrl: runtime.currentBaseUrl,
+    sessionMsgs: await runtime.getSessionMsgCount(),
+    toolCount: runtime.tools.getLLMTools().length,
+    cmdCount: runtime.listCommands().length,
+    skillCount: runtime.getSkillLoader().getAll().length,
+    diagnostics,
+  };
+}
+
 /** 运行 REPL 模式（TTY 组件树 UI 或管道 TerminalUI） */
-export async function runReplMode(runtime: Runtime, info: ReplInfo): Promise<void> {
+export async function runReplMode(runtime: Runtime, diagnostics: import('../types.js').Diagnostic[]): Promise<void> {
+  const info = await buildReplInfo(runtime, diagnostics);
+
   // TTY 模式：组件树 UI —— 接管终端，Input 组件接收输入
   if (process.stdin.isTTY) {
     const ui = new TreeUI(runtime, info);

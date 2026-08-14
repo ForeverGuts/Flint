@@ -14,6 +14,7 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-14 14:54 | [Refactor♻️] runReplMode 不再重复传 runtime 已知信息：main 只传 diagnostics，ReplInfo 由 repl.ts 基于 runtime 组装
 2026-08-13 20:25 | [Refactor♻️] 命名规范统一：执行类接口改 Service（CompactionService/AgentLoopService/CommandService/DiagnosticsService），实现改 Impl
 2026-08-13 20:25 | [Refactor♻️] 命令实现迁到 commands/builtin/，loader 迁 commands/loader.ts，edit_model → edit-model
 2026-08-13 20:25 | [Refactor♻️] io/ui/permission.ts → permission-prompt.ts（避免与 permission/ 重名）；commands-handle → input-handler-demo

@@ -116,13 +116,5 @@ export async function main(checkResult: CheckResult): Promise<void> {
     return;
   }
 
-  await runReplMode(runtime, {
-    model: modelName,
-    baseUrl,
-    sessionMsgs: await runtime.getSessionMsgCount(),
-    toolCount: runtime.tools.getLLMTools().length,
-    cmdCount: runtime.listCommands().length,
-    skillCount: runtime.getSkillLoader().getAll().length,
-    diagnostics: checkResult.diagnostics ?? [],
-  });
+  await runReplMode(runtime, checkResult.diagnostics ?? []);
 }
