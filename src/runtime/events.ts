@@ -167,8 +167,8 @@ export class PromptEventEmitter {
     }
   }
 
-  /** 发射钩子事件 —— 通知 on('xxx') 订阅者，收集返回结果 */
-  protected async emitHook(type: string, event: RuntimeEvent): Promise<unknown> {
+  /** 发射钩子事件 —— 通知 on('xxx') 订阅者，收集返回结果（供 SystemPromptService 等调用） */
+  async emitHook(type: string, event: RuntimeEvent): Promise<unknown> {
     const handlers = this.hooks.get(type);
     if (!handlers) return undefined;
 

@@ -93,6 +93,8 @@ export interface RuntimeOptions {
   diagnosticsService: import('./core/diagnostics.js').DiagnosticsService;
   /** 上下文管理子系统（必注入，接口） */
   compaction: import('./core/compaction.js').CompactionService;
+  /** 系统提示词子系统（必注入） */
+  systemPromptService: import('./context/system-prompt.js').SystemPromptService;
   /** TODO: 配置 / 扩展 / 资源管理 */
   services?: unknown;
   /** 当前模型名（供 /model 命令查看和切换） */

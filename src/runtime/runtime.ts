@@ -45,6 +45,8 @@ export class Runtime {
   private skills: SkillLoader;
   /** 上下文管理子系统（接口注入，压缩） */
   private compaction: import('../core/compaction.js').CompactionService;
+  /** 系统提示词子系统（注入，动态构建 + hook） */
+  private systemPromptService: import('../context/system-prompt.js').SystemPromptService;
   /** Agent Loop 子系统（接口注入，LLM+工具循环） */
   private agentLoop: import('../core/loop.js').AgentLoopService;
   /** 工具子系统（构造注入，缺省默认） */
@@ -134,6 +136,8 @@ export class Runtime {
     this.diagnosticsService = options.diagnosticsService;
     // 上下文管理（压缩）——注入（main 组装，Jsonl 时启用）
     this.compaction = options.compaction;
+    // 系统提示词——注入（main 组装，配置驱动 + hook）
+    this.systemPromptService = options.systemPromptService;
     // Agent Loop——内部创建（回调依赖 runtime 的权限弹窗/诊断/兜底）
     this.agentLoop = new AgentLoopServiceImpl({
       llm: this.llm,
@@ -455,16 +459,19 @@ export class Runtime {
       `  - ${t.function.name}: ${t.function.description}（参数: ${JSON.stringify(t.function.parameters)}）`
     ).join('\n');
 
+    // 系统提示词：动态构建（配置驱动 + hook 改写，含工具/技能/规则段落）
+    // 会话摘要从 history 开头的摘要 system 消息提取（[对话摘要] xxx）
+    const summaryMsg = history[0]?.role === 'system' ? history[0].content : undefined;
+    const systemPrompt = await this.systemPromptService.build({
+      tools: toolDescriptions,
+      skills: this.skills.getAll().map((s) => s.name),
+      model: this.currentModel,
+      summary: summaryMsg,
+      historyCount: history.length,
+    });
+
     const toolMessages: LLMMessage[] = [
-      { role: 'system' as const, content: `你有以下工具：\n${toolDescriptions}\n\n规则：
-【最优先】普通对话、闲聊、提问建议、讨论概念时，直接回答，绝不调用任何工具。
-工具只在你明确需要操作文件、执行命令、搜索代码时才调用——用户没明确要求时，禁止调用。
-- 需要工具时，通过 tool_calls 结构化调用（工具名 + JSON 参数会自动发给系统执行）
-- 工具结果会以 tool 消息返回给你
-- 如果任务还没完成（如刚创建完文件需要运行测试），继续调下一个工具
-- 全部做完后再给用户最终回答
-- ⚠️ 口述"我创建了文件"不等于真的创建了文件，必须调工具才算
-- 不要在调工具之前就回复"已创建"——工具没执行，文件不存在` },
+      { role: 'system' as const, content: systemPrompt },
       ...history.map((m) => ({ role: m.role as LLMMessage['role'], content: m.content })),
       { role: 'user' as const, content: currentText },
     ];

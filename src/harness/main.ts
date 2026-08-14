@@ -21,6 +21,10 @@ import { PromptEventEmitter } from '../runtime/events.js';
 import { CommandServiceImpl } from '../commands/system.js';
 import { DiagnosticsServiceImpl } from '../diagnostics/service.js';
 import { CompactionServiceImpl } from '../context/compaction.js';
+import { SystemPromptService } from '../context/system-prompt.js';
+import { coreSection } from '../context/sections/core-section.js';
+import { toolsSection } from '../context/sections/tools-section.js';
+import { skillsSection } from '../context/sections/skills-section.js';
 import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
 
@@ -66,6 +70,11 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const events = new PromptEventEmitter();
   const commandSystem = new CommandServiceImpl();
   const diagnosticsService = new DiagnosticsServiceImpl({ events });
+  // 系统提示词子系统（配置驱动：段落可插拔 + 兜底 + hook）
+  const systemPromptService = new SystemPromptService({
+    sections: [coreSection, toolsSection, skillsSection],
+    fallback: 'You are a helpful assistant.',
+  }, events);
 
   const createRuntime = async (options: CreateRuntimeOptions): Promise<CreateRuntimeResult> => {
     const actualSession = options.session ?? session;
@@ -84,6 +93,7 @@ export async function main(checkResult: CheckResult): Promise<void> {
       commandSystem,
       diagnosticsService,
       compaction,
+      systemPromptService,
       model: modelName,
       provider: checkResult.config?.provider ?? '',
       baseUrl,

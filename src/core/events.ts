@@ -14,4 +14,6 @@ export interface EventBus {
   on(type: string, handler: (event: unknown) => unknown): () => void;
   /** 发射事件 —— 通知所有 subscribe 订阅者 */
   emit(event: unknown): void;
+  /** 发射钩子事件 —— 通知 on('xxx') 订阅者，收集返回结果（供 SystemPromptService 等调用） */
+  emitHook?(type: string, event: unknown): Promise<unknown>;
 }
