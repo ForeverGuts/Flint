@@ -15,7 +15,7 @@
 | 流式输出 | SSE 解析 + async generator + onToken 回调逐字显示 |
 | **会话树存储（P0）** | JsonlSessionStorage 升级为 entry 树 + leaf + fork + compaction |
 | **上下文管理（P0）** | 超限压缩为 compaction entry 入树，增量判断 |
-| **命令系统（P1）** | 自动扫描加载：/help /clear /model /provider /usage /history /sessions |
+| **命令系统（P1）** | 自动扫描加载：/help /clear /model /edit_model /usage /history /sessions /diagnostics |
 | **模型切换（P1）** | /model 两级导航选供应商+模型，/edit_model 修改配置，运行时热替换 LLM |
 | **对话历史（P1）** | /history 查看/分叉，fork 复制前缀到新文件（不破坏原历史） |
 | **工具系统（P2）** | read/write/grep/bash 四工具 + function calling（结构化 tool_calls） |
@@ -74,11 +74,38 @@
 
 ### P5 — 架构演进（规模化）
 
-- [ ] **多系统拆分** — 从单 runtime 链拆分为独立子系统（存储/执行/检索等），按 Pi 模式：
-  - 每个子系统一个接口（定义在公共 types.ts）+ 实现在独立目录
-  - 错误统一为公共类 + code 字段（无需 Pi 的 normalize 层）
-  - 依赖注入组装（main.ts 注入各子系统，Runtime 只依赖接口）
-  - 触发信号：出现第 2 个消费者 / 想替换整个子系统 / 子系统间互相 import 实现
+- [x] **多系统拆分** — 从单 runtime 链拆分为独立子系统（存储/执行/检索等），按 Pi 模式：
+  - 每个子系统一个接口（core/ 9 接口：storage/tools/permission/events/compaction/loop/commands/diagnostics/compaction-store）
+  - 实现分类：执行类 Service（Impl）/ 能力提供类 Provider / 数据类 Storage/Store/Bus
+  - 依赖注入组装（main 组装，Runtime 只依赖接口，全部必注入）
+  - 命名规范统一：执行类 Service、提供类 Provider、命令迁 commands/builtin/
+
+### P6 — 成熟度补齐（对标 Cline / Pi）
+
+> 功能 P0-P5 已齐，以下为对标成熟 Agent 框架（Cline/Pi）缺失的能力，按价值排序。
+
+- [ ] **正式测试套件** — 引入 vitest，为 session/compaction/commands/rpc 等子系统建立正式单测（当前仅临时脚本）
+  - 理由：P5 大重构后零回归保护，改 bug 可能悄悄破坏别处
+  - 对标：Pi 有 vitest.config.ts + 完整测试
+- [ ] **系统提示词模板层** — 从 runtime.ts 硬编码字符串抽为模板（system-prompt.ts），支持按场景选择
+  - 理由：硬编码不可扩展，影响 Agent 能力演进
+  - 对标：Pi 的 prompt-templates.ts / system-prompt.ts
+- [ ] **分支摘要** — fork 后把旧分支摘要塞回新分支上下文
+  - 理由：当前 fork 只复制前缀，新分支 LLM 不知道旧线聊过什么
+  - 对标：Pi 的 branch-summarization.ts
+- [ ] **Hook 系统** — 工具调用/消息生命周期钩子（beforeToolCall/afterToolCall 等）
+  - 理由：扩展 Agent 行为（拦截/转换/记录），当前仅 inputHandlers 简单预处理
+  - 对标：Pi 的 hooks.md / Cline 任务生命周期钩子
+- [ ] **会话仓库层** — 从 jsonl-storage 抽出 repo 层（会话列表/管理/删除）
+  - 理由：区分"单会话存储"与"会话管理"，支持多会话完整操作
+  - 对标：Pi 的 jsonl-repo.ts
+- [ ] **技能系统补全** — SkillLoader 热重载 + 依赖追踪（当前 TODO）
+  - 对标：Pi 的 skills.ts
+- [ ] **工具参数校验框架** — 从手动 requireString 升级为 schema 自动校验
+  - 理由：工具参数校验标准化
+  - 对标：Cline 工具参数 schema 校验
+- [ ] **可观测性增强** — 结构化 trace/span 观测层（当前仅 Diagnostic + debug log）
+  - 对标：Pi 的 docs/observability.md
 
 ---
 
