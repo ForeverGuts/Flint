@@ -25,6 +25,7 @@ import { SystemPromptServiceImpl } from '../context/system-prompt.js';
 import { coreSection } from '../context/sections/core-section.js';
 import { toolsSection } from '../context/sections/tools-section.js';
 import { skillsSection } from '../context/sections/skills-section.js';
+import { loadExtensions } from '../context/extension-loader.js';
 import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
 
@@ -70,9 +71,11 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const events = new PromptEventEmitter();
   const commandSystem = new CommandServiceImpl();
   const diagnosticsService = new DiagnosticsServiceImpl({ events });
-  // 系统提示词子系统（配置驱动：段落可插拔 + 兜底 + hook）
+  // 装载用户扩展（段落 + hook）—— 自动扫描 src/extensions/
+  const ext = await loadExtensions(events);
+  // 系统提示词子系统（配置驱动：内置段落 + 用户扩展段落 + 兜底 + hook）
   const systemPromptService = new SystemPromptServiceImpl({
-    sections: [coreSection, toolsSection, skillsSection],
+    sections: [coreSection, toolsSection, skillsSection, ...ext.sections],
     fallback: 'You are a helpful assistant.',
   }, events);
 

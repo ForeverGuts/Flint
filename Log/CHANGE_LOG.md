@@ -14,6 +14,8 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-15 16:22 | [Feature✨] 扩展系统（层次3）：自动装载 extensions/ 段落+hook 扩展，用户 export 注册函数即生效
+2026-08-15 16:22 | [Feature✨] core/extension.ts 接口（SectionRegistrationCtx/HookRegistrationCtx）+ extension-loader + 示例扩展
 2026-08-15 15:15 | [Refactor♻️] 补漏接口：SystemPromptService 建 core 接口 + 实现改 Impl；PermissionManager implements PermissionProvider
 2026-08-15 14:59 | [Refactor♻️] EventBus 泛型化（EventBus<T>，默认 unknown）；PromptEventEmitter implements EventBus<RuntimeEvent>
 2026-08-15 00:30 | [Feature✨] 系统提示词子系统：SystemPromptService（配置驱动 + 动态计算 + hook 改写复用 EventBus）
