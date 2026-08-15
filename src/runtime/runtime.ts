@@ -45,8 +45,8 @@ export class Runtime {
   private skills: SkillLoader;
   /** 上下文管理子系统（接口注入，压缩） */
   private compaction: import('../core/compaction.js').CompactionService;
-  /** 系统提示词子系统（注入，动态构建 + hook） */
-  private systemPromptService: import('../context/system-prompt.js').SystemPromptService;
+  /** 系统提示词子系统（接口注入，动态构建 + hook） */
+  private systemPromptService: import('../core/system-prompt.js').SystemPromptService;
   /** Agent Loop 子系统（接口注入，LLM+工具循环） */
   private agentLoop: import('../core/loop.js').AgentLoopService;
   /** 工具子系统（构造注入，缺省默认） */

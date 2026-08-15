@@ -1,9 +1,11 @@
 /**
- * 权限管理器 —— 追踪用户已授权的操作。
+ * 权限管理器 —— 追踪用户已授权的操作（实现 core PermissionProvider）。
  * 调用方：runtime.ts（tool loop 中执行工具前检查）
  * 服务于：允许一次 / 本次全部允许 / 拒绝
  */
-export class PermissionManager {
+import type { PermissionProvider } from '../core/permission.js';
+
+export class PermissionManager implements PermissionProvider {
   /** "本次全部允许"的路径前缀列表 */
   private autoAllowed: string[] = [];
 

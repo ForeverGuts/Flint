@@ -21,7 +21,7 @@ import { PromptEventEmitter } from '../runtime/events.js';
 import { CommandServiceImpl } from '../commands/system.js';
 import { DiagnosticsServiceImpl } from '../diagnostics/service.js';
 import { CompactionServiceImpl } from '../context/compaction.js';
-import { SystemPromptService } from '../context/system-prompt.js';
+import { SystemPromptServiceImpl } from '../context/system-prompt.js';
 import { coreSection } from '../context/sections/core-section.js';
 import { toolsSection } from '../context/sections/tools-section.js';
 import { skillsSection } from '../context/sections/skills-section.js';
@@ -71,7 +71,7 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const commandSystem = new CommandServiceImpl();
   const diagnosticsService = new DiagnosticsServiceImpl({ events });
   // 系统提示词子系统（配置驱动：段落可插拔 + 兜底 + hook）
-  const systemPromptService = new SystemPromptService({
+  const systemPromptService = new SystemPromptServiceImpl({
     sections: [coreSection, toolsSection, skillsSection],
     fallback: 'You are a helpful assistant.',
   }, events);
