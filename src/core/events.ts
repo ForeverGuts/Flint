@@ -6,14 +6,14 @@
  * 事件类型定义保留在 runtime/events.ts（RuntimeEvent），这里只定义总线行为契约。
  */
 
-/** 事件总线接口 */
-export interface EventBus {
+/** 事件总线接口（泛型 T = 事件类型，默认 unknown） */
+export interface EventBus<T = unknown> {
   /** 注册通配监听 —— 收到所有事件，用于 UI 展示（只看不说） */
-  subscribe(handler: (event: unknown) => void): () => void;
+  subscribe(handler: (event: T) => void): () => void;
   /** 注册精确监听 —— 只收某类事件，可返回结果影响流程（看了还要改） */
-  on(type: string, handler: (event: unknown) => unknown): () => void;
+  on(type: string, handler: (event: T) => unknown): () => void;
   /** 发射事件 —— 通知所有 subscribe 订阅者 */
-  emit(event: unknown): void;
+  emit(event: T): void;
   /** 发射钩子事件 —— 通知 on('xxx') 订阅者，收集返回结果（供 SystemPromptService 等调用） */
-  emitHook?(type: string, event: unknown): Promise<unknown>;
+  emitHook?(type: string, event: T): Promise<unknown>;
 }

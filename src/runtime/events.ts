@@ -10,6 +10,7 @@
  *   1. subscribe(handler)       ← 通配：收到所有事件，用于 UI 展示（只看不说）
  *   2. on(type, handler)        ← 精确：只收某类事件，可返回结果影响流程（看了还要改）
  */
+import type { EventBus } from '../core/events.js';
 
 /* ===================================================================== */
 /*  第一层：AgentEvent — Agent Core 生命周期事件                          */
@@ -137,7 +138,7 @@ export type HookHandler = (event: RuntimeEvent) => unknown;
 /*  PromptEventEmitter                                                    */
 /* ===================================================================== */
 
-export class PromptEventEmitter {
+export class PromptEventEmitter implements EventBus<RuntimeEvent> {
   private subscribers = new Set<EventHandler>();
   private hooks = new Map<string, Set<HookHandler>>();
 
@@ -145,19 +146,19 @@ export class PromptEventEmitter {
    * 注册通配监听 —— 收到所有事件，用于 UI 展示。
    * 只看不说：能接收事件更新界面，但不能返回结果影响流程。
    */
-  subscribe(handler: EventHandler): () => void {
-    this.subscribers.add(handler);
-    return () => { this.subscribers.delete(handler); };
+  subscribe(handler: (event: RuntimeEvent) => void): () => void {
+    this.subscribers.add(handler as EventHandler);
+    return () => { this.subscribers.delete(handler as EventHandler); };
   }
 
   /**
    * 注册精确监听 —— 只收某类事件，可返回结果影响流程。
    * 看了还要改：能接收到特定事件，handler 返回值可被 Runtime 使用。
    */
-  on(type: string, handler: HookHandler): () => void {
+  on(type: string, handler: (event: RuntimeEvent) => unknown): () => void {
     if (!this.hooks.has(type)) this.hooks.set(type, new Set());
-    this.hooks.get(type)!.add(handler);
-    return () => { this.hooks.get(type)?.delete(handler); };
+    this.hooks.get(type)!.add(handler as HookHandler);
+    return () => { this.hooks.get(type)?.delete(handler as HookHandler); };
   }
 
   /** 发射事件 —— 通知所有 subscribe 订阅者 */

@@ -14,6 +14,7 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-15 14:59 | [Refactor♻️] EventBus 泛型化（EventBus<T>，默认 unknown）；PromptEventEmitter implements EventBus<RuntimeEvent>
 2026-08-15 00:30 | [Feature✨] 系统提示词子系统：SystemPromptService（配置驱动 + 动态计算 + hook 改写复用 EventBus）
 2026-08-15 00:30 | [Feature✨] 段落可插拔：core/tools/skills 三段落（用户 TS 模块扩展）+ 兜底提示词
 2026-08-15 00:30 | [Refactor♻️] emitHook 开放 public；Runtime 硬编码系统提示词替换为 SystemPromptService.build
