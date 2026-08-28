@@ -73,9 +73,12 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const diagnosticsService = new DiagnosticsServiceImpl({ events });
   // 装载用户扩展（段落 + hook）—— 自动扫描 src/extensions/
   const ext = await loadExtensions(events);
-  // 系统提示词子系统（配置驱动：内置段落 + 用户扩展段落 + 兜底 + hook）
+  // 系统提示词子系统（配置驱动 + 分层缓存友好：核心稳定层在前，工具/技能层独立）
+  // 用户扩展段落并入 core 稳定层（人设/规则补充，属稳定前缀）
   const systemPromptService = new SystemPromptServiceImpl({
-    sections: [coreSection, toolsSection, skillsSection, ...ext.sections],
+    core: [coreSection, ...ext.sections],
+    tools: [toolsSection],
+    skills: [skillsSection],
     fallback: 'You are a helpful assistant.',
   }, events);
 

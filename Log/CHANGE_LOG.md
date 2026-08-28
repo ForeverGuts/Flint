@@ -14,6 +14,13 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-28 16:47 | [Docs📝] ARCHITECTURE_LOG 补录 8 个历史架构演进主题（系统提示词子系统/多系统分离/配置重构/function calling/UI 组件树/协议路由/工具系统/结构分层）
+2026-08-28 16:40 | [Docs📝] 新增 Log/ARCHITECTURE_LOG.md（架构演进日志：重构/改良逐块记录，含问题/改动/解决/可优化 + 首条缓存优化记录）
+2026-08-28 15:21 | [Optimize⚡] Anthropic 提示词缓存断点：system 分层稳定段（core/tools/skills）手动加 cache_control，摘要段不设；tools 参数末工具设断点（共 4 个，达官方推荐上限）
+2026-08-28 15:21 | [Fix🐛] Anthropic 接入修正：system 分层消息改文本块数组（不再互相覆盖）；tools 参数改 name+input_schema 格式（原 OpenAI 格式会 400）；连续 tool_result 合并进单条 user 消息（符合交替约束）；is_error 按 [工具 前缀判断
+2026-08-28 15:11 | [Optimize⚡] 提示词缓存优化：SystemPromptService 分层返回（core→tools→skills→summary 独立 system 消息，稳定前缀在前）
+2026-08-28 15:11 | [Refactor♻️] CompactionService 摘要独立返回（{history, summary}），不再 unshift 进历史污染缓存前缀；runtime 拼装分层消息
+2026-08-28 15:11 | [Config⚙️] SystemPromptConfig 段落分组（core/tools/skills 三层）；用户扩展段落并入 core 稳定层；before_request hook 改改写消息数组
 2026-08-15 16:22 | [Feature✨] 扩展系统（层次3）：自动装载 extensions/ 段落+hook 扩展，用户 export 注册函数即生效
 2026-08-15 16:22 | [Feature✨] core/extension.ts 接口（SectionRegistrationCtx/HookRegistrationCtx）+ extension-loader + 示例扩展
 2026-08-15 15:15 | [Refactor♻️] 补漏接口：SystemPromptService 建 core 接口 + 实现改 Impl；PermissionManager implements PermissionProvider

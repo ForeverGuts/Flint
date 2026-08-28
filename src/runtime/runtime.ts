@@ -451,7 +451,8 @@ export class Runtime {
 
     // ⑦: 上下文压缩 —— 委托给 CompactionService（历史超限时 LLM 摘要 + 入树）
     let history = this.session ? await this.session.getMessages() : [];
-    history = await this.compaction.maybeCompact(history);
+    const compacted = await this.compaction.maybeCompact(history);
+    history = compacted.history;
     this.events.emit({ type: 'thinking', phase: 'streaming' });
 
     // ⑧: Agent Loop —— LLM 调用 → Tool 执行 → 循环
@@ -459,19 +460,18 @@ export class Runtime {
       `  - ${t.function.name}: ${t.function.description}（参数: ${JSON.stringify(t.function.parameters)}）`
     ).join('\n');
 
-    // 系统提示词：动态构建（配置驱动 + hook 改写，含工具/技能/规则段落）
-    // 会话摘要从 history 开头的摘要 system 消息提取（[对话摘要] xxx）
-    const summaryMsg = history[0]?.role === 'system' ? history[0].content : undefined;
-    const systemPrompt = await this.systemPromptService.build({
+    // 系统提示词：分层构建（稳定前缀缓存友好：core → tools → skills → summary）
+    // 每层独立 system 消息，越稳定越靠前；摘要来自 compaction 独立返回（不混入 history）
+    const { messages: systemMessages } = await this.systemPromptService.build({
       tools: toolDescriptions,
       skills: this.skills.getAll().map((s) => s.name),
       model: this.currentModel,
-      summary: summaryMsg,
+      summary: compacted.summary,
       historyCount: history.length,
     });
 
     const toolMessages: LLMMessage[] = [
-      { role: 'system' as const, content: systemPrompt },
+      ...systemMessages.map(({ content }) => ({ role: 'system' as const, content })),
       ...history.map((m) => ({ role: m.role as LLMMessage['role'], content: m.content })),
       { role: 'user' as const, content: currentText },
     ];

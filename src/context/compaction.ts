@@ -10,7 +10,7 @@
 import type { LLMProvider } from '../llm/types.js';
 import type { CompactionStore } from '../core/compaction-store.js';
 import type { EventBus } from '../core/events.js';
-import type { CompactionService } from '../core/compaction.js';
+import type { CompactionResult, CompactionService } from '../core/compaction.js';
 
 /** 压缩阈值：历史超过此条数触发压缩 */
 const COMPACT_THRESHOLD = 20;
@@ -34,11 +34,11 @@ export class CompactionServiceImpl implements CompactionService {
   /**
    * 上下文压缩：读当前 history，超限时生成摘要并压缩。
    * @param history 当前对话历史（从 storage.getMessages() 读取）
-   * @returns 压缩后的 history（可能含开头的摘要 system 消息）
+   * @returns 压缩结果：history（不含摘要）+ 独立 summary（供 SystemPromptService 摘要层用）
    */
-  async maybeCompact(history: Array<{ role: string; content: string }>): Promise<Array<{ role: string; content: string }>> {
+  async maybeCompact(history: Array<{ role: string; content: string }>): Promise<CompactionResult> {
     const { storage, llm, events } = this.deps;
-    if (!storage) return history;
+    if (!storage) return { history, summary: undefined };
 
     // 已有摘要：取最后一个 compaction 的 summary
     let compressedSummary = '';
@@ -80,9 +80,7 @@ export class CompactionServiceImpl implements CompactionService {
       }
     }
 
-    if (compressedSummary) {
-      history.unshift({ role: 'system' as const, content: `[对话摘要] ${compressedSummary}` });
-    }
-    return history;
+    // 摘要独立返回（不 unshift 进 history，避免污染缓存前缀）
+    return { history, summary: compressedSummary || undefined };
   }
 }

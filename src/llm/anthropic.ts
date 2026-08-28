@@ -37,6 +37,17 @@ interface AnthropicContentBlock {
   tool_use_id?: string;
   content?: string | AnthropicContentBlock[];
   is_error?: boolean;
+  /** 提示词缓存断点（Anthropic 手动声明，缓存"从开头到本块"的前缀） */
+  cache_control?: { type: 'ephemeral' };
+}
+
+/** Anthropic 工具定义（与 OpenAI 的 {type,function} 格式不同：name + input_schema） */
+interface AnthropicTool {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  /** 缓存断点（在最后一个工具定义后设，工具列表稳定 → 缓存大块前缀） */
+  cache_control?: { type: 'ephemeral' };
 }
 
 interface AnthropicMessage {
@@ -46,10 +57,11 @@ interface AnthropicMessage {
 
 interface AnthropicRequest {
   model: string;
-  system?: string;
+  system?: AnthropicContentBlock[];
   messages: AnthropicMessage[];
   max_tokens: number;
   stream?: boolean;
+  tools?: AnthropicTool[];
 }
 
 interface AnthropicResponse {
@@ -73,23 +85,24 @@ interface AnthropicResponse {
  * 将内部 LLMMessage[] 转换为 Anthropic Messages API 格式。
  *
  * 转换规则：
- *   system → 提取到顶级 system 参数，不出现在 messages 数组中
+ *   system → 提取到顶级 system 参数（多条分层消息逐条保留，稳定段设缓存断点）
  *   user   → 直接映射，content 包装为 content block 数组
- *   assistant → 直接映射，content 为文本字符串（简化处理）
- *   tool   → 转为 tool_result content block，role 设为 user
+ *   assistant → 直接映射，content 为文本/tool_use content block
+ *   tool   → 转为 tool_result content block（连续 tool 结果合并进同一条 user 消息，
+ *            role 设为 user，避免违反 Anthropic 的 user/assistant 交替约束）
  */
 function toAnthropicMessages(msgs: LLMMessage[]): {
-  system?: string;
+  system?: AnthropicContentBlock[];
   messages: AnthropicMessage[];
 } {
-  let systemPrompt: string | undefined;
+  const systemParts: string[] = [];
   const messages: AnthropicMessage[] = [];
 
   for (const msg of msgs) {
     switch (msg.role) {
       case 'system':
-        // system 在 Anthropic 中是顶级参数
-        systemPrompt = msg.content;
+        // system 在 Anthropic 中是顶级参数：分层消息逐条收集（不再互相覆盖）
+        systemParts.push(msg.content);
         break;
 
       case 'user':
@@ -124,23 +137,46 @@ function toAnthropicMessages(msgs: LLMMessage[]): {
 
       case 'tool': {
         // tool 结果 → tool_result content block
-        messages.push({
-          role: 'user',
-          content: [
-            {
-              type: 'tool_result',
-              tool_use_id: msg.tool_call_id ?? '',
-              content: msg.content,
-              is_error: false,
-            },
-          ],
-        });
+        const block: AnthropicContentBlock = {
+          type: 'tool_result',
+          tool_use_id: msg.tool_call_id ?? '',
+          content: msg.content,
+          // agent-loop 失败/被拒绝消息以 `[工具 xxx` 开头（正常结果以 `[OK]` 等状态码开头）
+          is_error: msg.content.startsWith('[工具'),
+        };
+        // 连续 tool 结果合并进同一条 user 消息（Anthropic 要求 user/assistant 交替）
+        const last = messages[messages.length - 1];
+        if (last && last.role === 'user' && Array.isArray(last.content) && last.content[last.content.length - 1]?.type === 'tool_result') {
+          (last.content as AnthropicContentBlock[]).push(block);
+        } else {
+          messages.push({ role: 'user', content: [block] });
+        }
         break;
       }
     }
   }
 
-  return { ...(systemPrompt ? { system: systemPrompt } : {}), messages };
+  // system 段设缓存断点：稳定层（core/tools/skills）各一个，最后一段（通常是最新摘要，属变化区）不设
+  const system: AnthropicContentBlock[] = systemParts.map((text, i) => ({
+    type: 'text',
+    text,
+    ...(i < systemParts.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
+  }));
+
+  return { ...(systemParts.length > 0 ? { system } : {}), messages };
+}
+
+/**
+ * 将内部 LLMTool[]（OpenAI 格式 {type,function}）转换为 Anthropic tools 参数格式（name + input_schema），
+ * 并在最后一个工具定义后设缓存断点（工具列表稳定 → 缓存整块工具前缀）。
+ */
+function toAnthropicTools(tools: LLMTool[]): AnthropicTool[] {
+  return tools.map((t, i) => ({
+    name: t.function.name,
+    description: t.function.description,
+    input_schema: t.function.parameters as Record<string, unknown>,
+    ...(i === tools.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
+  }));
 }
 
 /**
@@ -182,14 +218,14 @@ export class AnthropicProvider implements LLMProvider {
   async chat(messages: LLMMessage[], tools?: LLMTool[]): Promise<ChatResult> {
     const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
 
-    const body: AnthropicRequest & { tools?: LLMTool[] } = {
+    const body: AnthropicRequest = {
       model: this.config.model,
       messages: anthropicMsgs,
       max_tokens: 4096,
       stream: false,
     };
-    if (tools && tools.length > 0) body.tools = tools;
-    if (system) body.system = system;
+    if (tools && tools.length > 0) body.tools = toAnthropicTools(tools);
+    if (system && system.length > 0) body.system = system;
 
     const res = await fetch(`${this.config.baseUrl}/v1/messages`, {
       method: 'POST',
@@ -221,14 +257,14 @@ export class AnthropicProvider implements LLMProvider {
       try {
         const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
 
-        const body: AnthropicRequest & { tools?: LLMTool[] } = {
+        const body: AnthropicRequest = {
           model: this.config.model,
           messages: anthropicMsgs,
           max_tokens: 4096,
           stream: true,
         };
-        if (tools && tools.length > 0) body.tools = tools;
-        if (system) body.system = system;
+        if (tools && tools.length > 0) body.tools = toAnthropicTools(tools);
+        if (system && system.length > 0) body.system = system;
 
         const res = await fetch(`${this.config.baseUrl}/v1/messages`, {
           method: 'POST',
