@@ -8,3 +8,4 @@
 | 2026-07-27 14:57 | 主动更新 | 同步 CLAUDE.md 到桌面元数据仓库 + 批量追加 CHANGE_LOG 记录 |
 | 2026-07-27 18:47 | 主动更新 | 工具系统完成 + UI 组件拆分 + 批量追加 CHANGE_LOG |
 | 2026-08-28 16:40 | 主动更新 | 新增 ARCHITECTURE_LOG.md（架构演进日志）+ 同步目录.md |
+| 2026-08-28 17:56 | 主动更新 | 新增 ARCHITECTURE_LOG_RULES.md（规则书）+ CLAUDE.md 同步规则 |

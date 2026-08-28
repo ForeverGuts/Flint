@@ -14,6 +14,7 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-08-28 17:56 | [Docs📝] 新增 Log/ARCHITECTURE_LOG_RULES.md（架构日志格式规则书）+ CLAUDE.md 文档同步规则纳入架构日志自动追加（项目 + 元数据仓库同步）
 2026-08-28 16:47 | [Docs📝] ARCHITECTURE_LOG 补录 8 个历史架构演进主题（系统提示词子系统/多系统分离/配置重构/function calling/UI 组件树/协议路由/工具系统/结构分层）
 2026-08-28 16:40 | [Docs📝] 新增 Log/ARCHITECTURE_LOG.md（架构演进日志：重构/改良逐块记录，含问题/改动/解决/可优化 + 首条缓存优化记录）
 2026-08-28 15:21 | [Optimize⚡] Anthropic 提示词缓存断点：system 分层稳定段（core/tools/skills）手动加 cache_control，摘要段不设；tools 参数末工具设断点（共 4 个，达官方推荐上限）

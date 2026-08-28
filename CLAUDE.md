@@ -6,7 +6,7 @@
 
 | 你说的话 | 我会做的事 |
 |----------|-----------|
-| **"更新Log"** 或 **"同步文档"** | 读取 `Log/CHANGE_RULES.md` 确认格式，更新 `Log/CHANGE_LOG.md` 和 `Log/目录.md` |
+| **"更新Log"** 或 **"同步文档"** | 读取 `Log/CHANGE_RULES.md` + `Log/ARCHITECTURE_LOG_RULES.md` 确认格式，更新 `Log/CHANGE_LOG.md` / `Log/ARCHITECTURE_LOG.md` / `Log/目录.md` |
 | **"看目录"** | 读取 `Log/目录.md` 了解项目结构 |
 | **"查术语"** | 读取 `Log/GLOSSARY.md` 解释项目术语 |
 | **"看架构"** | 读取 `Log/ARCHITECTURE.md` 了解架构决策 |
@@ -39,16 +39,18 @@ interface RuntimeOptions {
 ## 📝 文档同步（自动执行 + 按需补记）
 
 每次功能开发、Bug 修复、重构或配置改动后，**自动追加记录到 `Log/CHANGE_LOG.md`**。
+每次**架构设计 / 升级 / 改良 / 重构**后，**自动追加一块到 `Log/ARCHITECTURE_LOG.md`**。
 （写日志是本地文件操作，不消耗 LLM token，不会遗漏。）
 
 当你说 **"更新Log"** 或 **"同步文档"** 时，额外执行一次完整同步：
 
-1. 读取 `Log/CHANGE_RULES.md` 确认格式
-2. 读取 `Log/DIRECTORY_RULES.md` 确认目录结构格式
-3. 补全遗漏的 `Log/CHANGE_LOG.md` 记录
-4. 若文件结构有变化，同步更新 `Log/目录.md`
+1. 读取 `Log/CHANGE_RULES.md` 确认变更日志格式
+2. 读取 `Log/ARCHITECTURE_LOG_RULES.md` 确认架构日志格式
+3. 读取 `Log/DIRECTORY_RULES.md` 确认目录结构格式
+4. 补全遗漏的 `Log/CHANGE_LOG.md` 与 `Log/ARCHITECTURE_LOG.md` 记录
+5. 若文件结构有变化，同步更新 `Log/目录.md`
 
-> **时间戳规则**：CHANGE_LOG 中的所有时间必须通过 `date` 命令获取系统当前时间。
+> **时间戳规则**：CHANGE_LOG 与 ARCHITECTURE_LOG 中的所有时间必须通过 `date` 命令获取系统当前时间。
 
 ## 📓 笔记写入规则
 
