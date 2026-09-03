@@ -25,6 +25,8 @@
 | **配置系统增强（P4）** | config/manager 配置分层（环境变量>全局>项目）+ Provider 对象抽象 + /model 自定义供应商 |
 | **错误日志与诊断（P4）** | Diagnostic 公共类型 + runtime 诊断队列 + /diagnostics 查看 + debug-runtime.log 落盘 |
 | **启动自检增强（P4）** | check() 逐项检查（配置/API key/连通性/模型列表）+ 严重度分级 + check 事件 |
+| **可观测性增强（P6）** | 事件语义层：总线盖 at/seq/turnId + 打卡机 trace()/beginSpan() + 四组骨架 span + 便签通道 + trace-log watcher 落 JSONL + L3 两条流式协议的真实 usage + SpanCollector 公共配对件与 /traces 内置命令 |
+| **启动提速（P6）** | 第一档网络探测后台化 + 第二档启动关键路径 0 网络请求（模型列表内存预热 + /model 按需现拉） |
 
 ---
 
@@ -104,8 +106,22 @@
 - [ ] **工具参数校验框架** — 从手动 requireString 升级为 schema 自动校验
   - 理由：工具参数校验标准化
   - 对标：Cline 工具参数 schema 校验
-- [ ] **可观测性增强** — 结构化 trace/span 观测层（当前仅 Diagnostic + debug log）
+- [x] **可观测性增强** — 结构化 trace/span 观测层（2026-09-02 落地：总线 emit() 盖 at/seq/turnId 公共头 + SpanRecorder 打卡机（trace 自动配对 / beginSpan 手动）+ 四组骨架 span 覆盖三重循环（prompt/llm_request/tool_call/compaction）+ note_start/note_end 便签通道 + trace-log hook 落 trace.jsonl，verify-events 55 项）
+  - L3 真实 usage 同日补齐：两条流式协议各自取用量（OpenAI 兼容靠 stream_options.include_usage 显式索取 + 撞 400 自动降级，Anthropic 靠 message_start 输入三项相加 + message_delta 输出累计值），AgentLoopResult 逐轮合计、任一轮缺失即整体 null，verify-usage 22 项；实测同一条冒烟的 promptTokens 从估算 26 变真值 2834（估算没算 system prompt 与 5 个工具描述）
   - 对标：Pi 的 docs/observability.md
+  - 剩余（未立项，按需再做）：非流式 chat() 的用量回流（ChatResult 无 usage 字段，compaction 摘要调用消耗的 token 从未计入 totalUsage）· 缓存命中率明细（现被合并进 promptTokens，LLMUsage 只有三个槽）· 显式 parentId 树形（现靠 turnId + 时间区间包含关系重建）· 51 处裸 console 收编进总线
+- [x] **/traces 内置命令 + SpanCollector 公共配对件** —（2026-09-03 落地）把 trace-log watcher 里的 span 配对逻辑抽成 runtime/span-collector.ts（契约 SpanCollector / CollectedSpan 进 core/events.ts，与生产端的 SpanRecorder 对称：一个帮打卡、一个帮收段），watcher 从 134 行瘦到 78 行、只剩"开关判定 + 落盘格式 + 退出补记"；新增 /traces 命令就地看最近段的耗时/成败/此刻在跑的是哪段，支持条数与段名过滤；两个消费者各持独立实例（核心命令不反过来依赖可选扩展）；verify-events ⑨ 段 21 项，全量 299 项
+  - 理由：看一段耗时不该先开 TS_AGENT_TRACE 落盘、再翻 jsonl 文件；而配对逻辑虽然只有一份，却住在可选扩展里，核心命令拿不到
+  - 对标：把观测结果做成内置命令随手可查（而不是只能翻落盘文件）的通行做法；不引入 LangSmith / LangFuse 这类外部服务与依赖，只保留内存环形队列
+- [x] **启动提速·第二档：模型列表移出启动关键路径** —（2026-09-02 落地，实现与原案不同）原案是"/models 结果落本地缓存带时间戳（TTL 约 24h）"，调研后发现 getModels() 的 9 个调用点里只有 /model 二级选择器真需要远程列表，落盘那套机械（缓存文件/TTL 失效/baseUrl 变更失效/gitignore）换不到额外收益，改为**内存预热**：删掉 getConfigManager() 里的 init()，启动路径 0 网络请求（实测 check() 760ms → 0.7ms）；main.ts 界面渲染前 fire-and-forget 预热有 key 的几家，/model 二级展开前 ensureModels（5 分钟新鲜期内零等待，还在飞则复用在飞 promise）；Provider 加 modelsFetchedAt 且只在真拿到列表时盖戳；verify-startup 32 项
+  - 理由：模型列表几乎不变，没必要每次启动现拉；断网时启动照样过（列表有静态兜底、自检 probeStartup 本就在后台）
+  - 对标：Cursor / Cline / Continue 把网络依赖移出启动关键路径的通用手法（"落盘缓存"这一层按本项目实际消费面裁掉，三选一的取舍见 DECISION_LOG 2026-09-02）
+- [ ] **启动提速·第三档：预编译发行** — tsc 编译到 dist/，启动脚本改跑编译产物，省掉 tsx 每次启动的即时转译开销；可选再进一步打包单文件二进制（第一/二档完成后收益递减，优先级最低）
+  - 理由：解释器冷启动 + 全源码转译是启动时间的固定底噪，编译产物一劳永逸；但收益比前两档小且需配套发行流程（版本/源码映射）
+  - 对标：Claude Code / Codex CLI 发行打包 bundle 而非源码现转译
+- [ ] **现状类文档校准** — ARCHITECTURE.md / TESTING.md / GLOSSARY.md 三份停在项目早期，与代码直接矛盾（2026-09-03 查出具证：分层图仍写 AnthropicProvider 与 ui.ts 为 TODO；TESTING 列的 Agent 类不存在；GLOSSARY 3 条标"计划中"却已落地、2 条指向不存在的文件路径）
+  - 理由：append-only 的四份日志天生不会烂，会烂的是"现状快照"；目录.md 因每轮同步所以准，这三份没进这个习惯，越晚校准越多条目需要重写
+  - 建议顺序：GLOSSARY 逐条核（共 41 条，新增的 11 条观测层词条是准的，只需校准旧的 30 条）→ TESTING 改写成"10 套 verify + 299 项断言 + RPC 冒烟"的真实测试体系 → ARCHITECTURE 重画分层图（补 core 契约层、工具/权限/压缩/诊断子系统、扩展三口子、观测旁路）
 
 ### P7 — 业务能力强化（让 Agent 真正解决实际问题）
 

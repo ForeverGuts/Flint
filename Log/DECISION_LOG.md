@@ -4,6 +4,181 @@
 
 ---
 
+## 2026-09-02 — 模型列表怎么移出启动关键路径（内存预热 vs 纯懒加载 vs 落盘缓存+TTL）
+
+**场景：** 启动提速第一档把网络探测后台化之后，界面渲染前还剩最后一批真实往返：`getConfigManager()` 会 `await init()`，为每个有 key 的供应商并行拉 `/models`，而 `check()` 又 await 它。实测这批请求冷连接 1998ms、连接池热时 278ms，网络差时每家最长卡 10s 超时——全程终端只有 banner 没有 UI（用户此前明确投诉过"UI 没在第一时间加载出来"）。ROADMAP 原案写的是"落本地缓存带时间戳（TTL 约 24h），启动只读缓存"。
+
+**方案 A（内存预热 + 按需现拉）：** 启动路径 0 网络请求；main.ts 在界面渲染前 fire-and-forget 调 `warmModels()` 并行拉有 key 的几家，结果只写内存里的 Provider；`/model` 二级选择器展开前 `ensureModels()`——5 分钟新鲜期内零等待，还在飞就 await 同一个 promise（inflight 去重）。不落盘。
+
+**方案 B（纯懒加载）：** 启动不拉也不预热，只有用户真开 `/model` 时才现拉那一家。
+
+**方案 C（落盘缓存 + TTL，ROADMAP 原案）：** `/models` 结果写本地文件带时间戳（TTL 约 24h），启动只读缓存，`/model` 时才主动刷新。
+
+**选择：A**
+
+**理由：**
+- 调研发现 `getModels()` 的 9 个调用点里**只有 `/model` 的二级选择器真需要远程列表**：其余要么只是说明文字，要么静态列表就满足（连 `getFallback()` 点名要的 `deepseek-v4-flash` 都在 opencode-go 的静态表里）。既然只有一个消费者，缓存就该服务于"打开它的那一刻别等"，而不是"跨进程复用"
+- 方案 C 为一个内存里的数组配一整套机械：缓存文件、TTL 失效、baseUrl 变更失效、写盘失败处理、gitignore、旧缓存与新配置不一致……而它换来的只是"下次启动省一次后台请求"——可 A 已经让启动路径一次请求都不发了，那份收益是 0
+- 方案 B 更省，但把 0.3~0.9s（实测单家 913ms / 552ms）原封不动搬到用户点开菜单那一刻，而用户对"点了没反应"的敏感度远高于启动多等半秒；A 用一次用户感知为零的后台预热把这段时间藏起来
+- A 的代价可控且都在明处：进程重启即重新拉（模型列表的变化频率是"月"级，5 分钟新鲜期已远超需要）；断网时启动照样过——自检（`probeStartup`）本来就在后台，列表有静态兜底
+
+**代价：** 活动供应商启动时会被拉两次（`warmModels` 一次 + `probeStartup` 一次）。**不合并是有意的**：probe 要靠 HTTP 状态码分档（401 → key 无效），而 `fetchRemoteModels` 把状态码吞了；为省一次**后台**请求（用户感知为零）把两者耦起来不划算。另外 `/model` 一级列表的"N 个模型可用"在预热完成前显示的是静态数（13 而非 33），只影响说明文字。
+
+**参考：** `src/config/manager.ts` 的 `warmModels/ensureModels/isModelsFresh/startRefresh`、`src/llm/provider.ts` 的 `modelsFetchedAt`、`src/harness/main.ts` 的 TTY 分支、`scripts/verify-startup.ts` S1/S7/S9/S10
+
+---
+
+## 2026-09-02 — 流式用量怎么拿（显式索取 + 撞墙降级 vs 一律不索取继续估算）
+
+**场景：** 可观测层落地后 `llm_request_end.usage` 恒为 null：OpenAI 兼容协议**默认不在流式响应里给用量**，必须靠 `stream_options.include_usage` 显式索取；Anthropic 则把用量拆在 `message_start`（输入）与 `message_delta`（输出累计值）两个事件里，不解析就永远拿不到。于是 token 数只能靠 `estimateTokenUsage` 本地估算，而它只算 user 输入 + 最终回复：多轮工具循环的中间消息、system prompt、5 个工具描述全没算。实测同一条冒烟：估算 {26,23,49} vs API 真值 {2834,71,2905}，输入侧少报约 109 倍。
+
+**方案 A（显式索取 + 降级）：** 带上 `stream_options.include_usage`；若端点因这个参数报 400，则关掉进程级开关并在同一次调用内静默重试一次（不带该参数）。Anthropic 侧解析两个用量事件，输入把两个缓存字段加回来。
+
+**方案 B（一律不索取）：** 保持现状，token 数永远靠本地估算，`usage` 槽位继续留空。
+
+**选择：A**
+
+**理由：**
+- 估算与真值差两个数量级，`/usage` 与 `prompt_end.totalUsage` 一直在报一个口径完全不对的数——这不是"精度差一点"，是把 system prompt 与工具描述整体当成不存在
+- 代价可控：降级后的行为与方案 B **完全一致**（usage 继续 null、上层回退估算），用户看不到失败，不会为了一个统计参数把对话搞挂
+- 开关做成进程级而非每次探测：撞过一次就不再白跑一趟；只有错误文本里含 `stream_options` 才降级，其他 400（密钥无效、余额不足）原样抛出，不误吞真错误
+- Anthropic 的 `input_tokens` 只统计"本次新读的非缓存部分"，而本项目在 system 分层与 tools 上都设了 `cache_control` 断点——命中时它只剩个位数，不把 `cache_creation` 与 `cache_read` 加回来，报出来的"真值"会比估算更离谱
+
+**代价：** 首次撞上严格代理端时多一次失败往返；开关是进程级的，同进程内从不兼容端切到兼容端也不会再索取（重启才恢复）；缓存命中率这个最能省钱的信息被合并进 `promptTokens` 了（`LLMUsage` 只有三个槽）。
+
+**参考：** `src/llm/stream-helper.ts` 降级段、`src/llm/anthropic.ts` `AnthropicStreamUsage`、`scripts/verify-usage.ts` U1/U5/U11/U12/U13
+
+---
+
+## 2026-09-02 — 多轮合计不完整时怎么报（整体 null vs 报部分合计）
+
+**场景：** 一次 prompt 可能有多轮 LLM 往返（工具循环），而任一轮都可能拿不到用量：流中途异常、端点不支持索取、降级后重试的那轮。`AgentLoopResult` 只能交一个合计值出去。
+
+**方案 A（整体 null）：** 任一轮缺失 → `usage: null`，Runtime 回退 `estimateTokenUsage`。
+
+**方案 B（报部分合计）：** 把拿到的那几轮相加报出去，缺的当 0。
+
+**选择：A**
+
+**理由：**
+- B 报出的是一个"看起来是真值"的少报数字，消费端无法区分"这就是全部"与"这只是其中几轮"——它比明确的估算值更误导，因为估算值大家都知道是估的
+- null 与 0 在本项目里一直是两件事（0 = 真的收到 0 个字，null = 无从统计），`firstTokenMs`、`textLength` 等 span 结果字段全是这套语义，用量沿用同一套才不必教消费端两种读法
+- 回退路径本来就存在（`usage ?? estimateTokenUsage(...)`），A 不新增分支，消费端一行未改
+
+**代价：** 多轮任务里只要一轮缺失，整段真值全丢，退回精度差两个数量级的估算；实现上还得绕一个坑——TS 的控制流分析不追踪闭包内的赋值，用量必须经 `trace()` 回调的**返回值**上送，写成"回调内改外层 let"会被锁死成初始的 null（本次为此连撞两轮 `never` 报错）。
+
+**参考：** `src/core/loop.ts` `AgentLoopResult.usage` 注释、`src/loop/agent-loop.ts` `usageComplete`、`scripts/verify-usage.ts` U8/U9/U10
+
+---
+
+## 2026-09-02 — 可观测性的落地路径（先补事件语义 vs 直接引 LangSmith）
+
+**场景：** 用户提出"引入 LangSmith 帮助记录某个行为的结果和报错"。现状四层日志（启动自检 `Diagnostic[]`、运行时诊断队列、51 处裸 console、两个 env 调试日志）全部是**离散点**：无 traceId/spanId/parentId、无时间戳无耗时、不记输入输出、无树形结构。一次带 3 个工具调用的 prompt 实际发生 4 次 LLM 往返，对外却一个边界事件都没有。
+
+**方案 A（先补事件语义）：** 自研 span 层——总线 emit() 盖 at/seq/turnId 公共头，四组强类型骨架 span 覆盖三重循环，消费者写成扩展 hook 落本机 JSONL。零运行时依赖不破。
+
+**方案 B（直接引 LangSmith SDK）：** `optionalDependencies` + 动态 import 规避破零依赖，把现有事件流映射成 run tree 上报云端。
+
+**选择：A**
+
+**理由：**
+- LangSmith 记的是"一次调用的树"，而现有事件是扁平的离散点——**没有边界（无成对 start/end）就没有树**，接进去也只能上报一堆无父子的孤点，等于把语义欠账搬到云端
+- 实测 langsmith@0.10.1：直接依赖 p-queue、传递 4 包、解包 3.2MB，与 `package.json` 的 `dependencies` 为空这一立项目标冲突
+- 数据出网：完整 messages / 工具参数 / 输出会上 api.smith.langchain.com
+- 进程硬退出丢队列：`/exit`、SIGINT、SIGTERM 三条路径都走 `process.exit()`，未 flush 的上报直接消失
+- 先定语义则后端可插拔（换 LangSmith / LangFuse 只是在 `hooks/` 再放一个文件），先选后端则被其私有 run 模型锁死
+
+**代价：** 暂无跨会话聚合看板与云端 UI，只有本机 JSONL；日后若真要接 LangSmith，需再写一个 hook 做字段映射，且上述四条现实一个不少。
+
+**参考：** `Log/ROADMAP.md` P6 "可观测性增强"（本次落地）；`Log/ARCHITECTURE_LOG.md` 2026-09-02 16:26
+
+---
+
+## 2026-09-02 — span 契约形态（强类型骨架 + 自由便签双通道 vs 单一自由通道）
+
+**场景：** 新增一个观测点要不要每次改核心事件类型。用户拍板："路 A 身份证用于骨架的核心事件，路 B 作为便签用于记录扩展 hook 里的内容，想加就加"。
+
+**方案 A（双通道）：** 骨架 span（prompt / llm_request / tool_call / compaction）事件类型即 `<name>_start`，载荷由 `SpanContracts` 的 interface 约束；便签 span 事件类型固定 `note_start` / `note_end`，段名降级成 `name` 字段、载荷是自由字典。
+
+**方案 B（单一自由通道）：** 全部走 `note_*` + `attrs` 字典，核心永不为观测改动。
+
+**选择：A**
+
+**理由：**
+- 骨架那四段是 **UI 要直接消费**的（判红绿、显示耗时与首字延迟），字段名打错必须编译期就炸；自由字典要到运行时才发现，而运行时发现的代价是 UI 静默显示错数
+- 便签通道保留了方案 B 的全部好处：用户在 hook 里圈任意一段，核心零改动
+- 双通道的分工正好对上两种不同的变更频率："系统必须观测的四处"（极少变）与"临时想看的任意一处"（随时变）
+
+**代价：** 核心有两套发射路径（`openSpan` 的 note 分支）；加一个骨架段要改 `runtime/events.ts` 两处（interface + SpanContracts）；`beginSpan` 收到集合外的段名只能运行时 `console.warn` 一次兜底。
+
+---
+
+## 2026-09-02 — 出门载荷字段必填 vs 可缺（异常段不得伪报）
+
+**场景：** `llm_request` / `tool_call` 段在流中途抛异常时，`firstTokenMs` / `textLength` / `resultLength` / `usage` 根本没有值可报——`span.set()` 那一行并未执行到。
+
+**方案 A（可缺，缺失即"无从统计"）：** 结果字段全部可选，只有 `status` / `durationMs` 由总线算、永远在；`usage` 用 `null` 表示"Provider 没给"，与 0 区分。
+
+**方案 B（必填，异常路径补 0 / 补空串）：** 类型上所有字段必填，异常时填默认值。
+
+**选择：A**
+
+**理由：**
+- 填 0 等于伪报：0 个 token 与"没统计到"是两件事，消费端无法区分，画出图表就是假数据
+- `verify-events.ts` 第一次跑就抓到这个契约谎言：异常段报 `resultLength 不存在`——**这是正确语义**（工具崩了就没有结果体量），是类型把它写成了必填
+- `agent-loop` 事后拼的 `[工具 X 执行失败]` 文本是兜底话术，不是工具输出，不该算体量
+- `usage` 槽位当前两个 Provider 的流式路径都还没填（`llm/types.ts` 的 end 事件已留位），写成必填就会逆逼真报 0；写成 `LLMUsage | null` 则填上之后自动变真值、消费端不必改
+
+**代价：** 消费端每个字段都要判存在性（TreeUI 里 `typeof event.durationMs === 'number'` 这类守卫）；`exactOptionalPropertyTypes` 下生产端赋值必须用条件展开，写法啰嗦。
+
+**参考：** `scripts/verify-events.ts` ⑥ 组（异常段不伪报）；`src/runtime/events.ts` 的 LLMRequestEndEvent / ToolCallEndEvent 注释
+
+---
+
+## 2026-09-02 — 歧义宽字符的测宽口径（显式窄区段表 vs 完整 wcwidth 表）
+
+**场景：** `fit-width.ts` 的字符列宽判定。旧规则 `charCode > 0xff 即 2 列` 把制表画框字符 `─│┌┐└┘═` 也算成 2 列，76 字符的边框被测成 140 列，`Text.render` 的 `fitWidth(width-1)` 把它砍到 45 字符，右侧 `┐ ┘` 整段丢失——框是破的；而 `Screen` 的行宽告警排在截断之后，结构上永远报不出来（真机 `debug-screen.log` 里 `newLine宽度=78` 就是 48 字 `━` 分隔线被砍到 39 字的痕迹）。
+
+**方案 A（显式窄区段表）：** 只把确定按 1 列绘制的非 ASCII 区段声明为窄（制表画框 U+2500–259F、箭头 U+2190–21FF、盲文 U+2800–28FF、`❯` U+276F），其余非 ASCII（汉字、全角标点、`— … “”`、emoji）维持 2 列。
+
+**方案 B（完整 wcwidth 表）：** 按 Unicode East Asian Width 属性建全表，Ambiguous 一律按 1 列（wcwidth / xterm.js / Windows Terminal 的口径）。
+
+**选择：A**
+
+**理由：**
+- 两种猜错的代价不对称：把窄字符测成宽 → 行提前折、提前截断，只浪费几列；把宽字符测成窄 → 行超出终端宽度触发软换行，而差分渲染按"一逻辑行 = 一终端行"记账，行数一错整屏错位
+- 方案 A 修的正是必须修的那一类（UI 骨架字符：边框、分隔线、旋转帧、选择器光标），而这些字符在所有现代终端都由等宽西文字体绘制，1 列无争议
+- `— … “” ①②③` 这类中文正文标点的真实宽度取决于终端字体回退（Consolas 有字形→ 1 列，回退到中文字体→ 2 列），无法离线判定；维持现状等于不引入新风险
+- 方案 B 需约 90 个区段的静态表，且一旦用户终端把歧义字符画成宽（旧 conhost + 中文字体），全部中文正文行都会超宽错位
+
+**代价：** 中文正文行会比实际显示宽度短若干列（每个 `— … “”` 少用 1 列），框内右侧略参差。
+
+**参考：** `Log/CHANGE_LOG.md` 2026-09-02 12:33 [Fix🐛]；`scripts/verify-ui.ts` ⑥ 组
+
+---
+
+## 2026-09-02 — 进度指示器粒度与流式框收尾（回合级 + 就地封口 vs 事件驱动 + 整框重建）
+
+**场景：** 用户反馈"回复中途会经历较长时间的等待，并没有状态栏提示，直到完全给出全部回复后上面的 UI 才会加上"。旧实现两处根因：① 指示器只消费 `thinking` 事件，而 `agent-loop` 内部一轮都不发该事件 → 工具执行期、工具结束到下一次 LLM 首字之间全程黑屏；② `agent_end` 时 `removeLiveBox()` 拆掉半成品框再用完整文本重建。
+
+**方案 A（回合级指示器 + 就地封口）：** 指示器从 `onSubmit`（按下 Enter）点亮到 `agent_end` 才撤，位置随阶段迁移（等待期挂底部状态行，流式期挂回复框的开口底边）；收尾时只把开口底边那一行换成 `└──┘`，顶边框与正文原地不动。
+
+**方案 B（事件驱动 + 整框重建，旧实现）：** 指示器只在收到 `thinking` 时显示、首片正文到达即撤；`agent_end` 拆框重建。
+
+**选择：A**
+
+**理由：**
+- 差分渲染按行比较：重建让整框所有行同时变化 → 视觉上"闪一下重画"；就地封口只有底边一行变化
+- 回合级指示器不依赖上游发不发事件，把"进度承诺"的缺口从根上堵住（事件驱动口径下，任何新增的不发事件的阶段都会重新出现黑屏）
+- 流式期框已是完整形状（只差底边），开口底边常驻"正在输出… N 秒 · 已收 X 字"正好对应用户诉求"等输出完毕后再进行变化"
+- 摘要行（💭 思考了 N 字 / ⏳ 用时 N 秒）可能在开框之后才凑齐（推理晚到、等待跨了工具轮），需往已成型的框中部插行 → 为此给 `Container` 补了 `insertChild(component, index)`
+
+**代价：** `Container` 多一个 `insertChild` 接口；`liveBox` 生命周期内要额外维护 `liveFoot` / `liveBoxWidth` / `liveSummaryShown` 三个字段（宽度必须建框时锁定，否则窗口中途变化会让顶底边不同宽）；双时钟（首字前等待 `waitAccumMs` 与流式计时 `streamStartAt`）必须分开，否则两个秒数互相污染。
+
+**参考：** `Log/CHANGE_LOG.md` 2026-09-02 12:33 [Feature✨] 回合级进度指示器
+
+---
+
 ## 2026-07-23 — 选择 Pi 模式（调用方持有循环）
 
 **场景：** 设计 Runtime 的交互循环归属。
