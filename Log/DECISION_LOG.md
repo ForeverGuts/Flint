@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-09-03 — 回归防护走 vitest 还是零依赖自研脚本
+
+**场景：** 上一轮改写 `TESTING.md` 时发现两处文档立场互相矛盾：TESTING 第一节写“**不用任何测试框架**，10 套零依赖验证脚本、299 项断言”，而 ROADMAP P6 挂着一条未勾选的 `- [ ] 正式测试套件 — 引入 vitest`（立项于 2026-08-14）。同一件事一处说“已经这么定了”、另一处说“还待做”，读的人会以为项目中途改过主意。本轮把这条待办补齐了执行手段（`run-verify.mjs` 串跑入口 + `npm run verify`，12 套 359 项一键跑完、EXIT=0），必须同时把立场定下来。用户拍板：**不引入 vitest**。
+
+**方案 A（引入 vitest）：** 装依赖、写 `vitest.config.ts`，把 session / compaction / commands / rpc 四个子系统改写成 `describe` / `it` / `expect`。
+
+**方案 B（零依赖自研脚本，并补齐入口）：** 不装任何测试依赖，给现有脚本加一个串跑入口与 `package.json` 命令，靠退出码当回归信号。
+
+**选择：B**
+
+**理由：**
+- **立项时写的痛点已经消失了**：P6 那条的理由是“P5 大重构后零回归保护，改 bug 可能悄悄破坏别处”。而回归保护本身已经存在（2026-08-14 立项时只有零星几个脚本，现在 12 套 359 项），缺的只是“一条命令能跑完”——这个缺口用 73 行的 `run-verify.mjs` 就补上了，成本远低于迁框架
+- **现有断言大多不适合框架的抽象**：起假 HTTP 服务器演两种流式协议（c1 / c3 / usage）、夹逼 TTY 宽度量框宽（ui）、手工造事件对象喂给 SpanCollector 看配对（events）、计启动关键路径的毫秒数（startup）、往扩展目录临时放探针文件再读 `globalThis`（extensions）。这些用 `node:http`、`process.stdout.columns`、直接构造对象写出来更直白，包上 `describe` / `it` 不会变短
+- **依赖成本不是零**：`package.json` 至今**没有 `dependencies` 字段**（零运行时依赖），`devDependencies` 只有 `@types/node` / `tsx` / `typescript` 三个。加 vitest 意味着引入一整棵依赖树与一份配置，而这个项目的自定位就是“从零自研、看得懂每一行”
+- **迁移期会出现两套测试体系**：359 项断言不可能一次改完，改一半的时间里“跑测试”变成两个命令、两套写法，比现在更糟
+
+**代价：** 放弃的东西都是真的，已逐条记进 `TESTING.md` 第七节——**没有覆盖率**（359 项盖住了什么、漏了什么只能人工判断）、**没有 watch 模式**、**没有测试隔离机制**（每个脚本自己管临时目录与副作用）、**没有 `describe` 的组织力**（所以出现了断言函数名三种并存、退出码写法四种变体的债务——框架本来会强制统一这些）。另外 `scripts/` 不在 `tsconfig.json` 的 `include` 里（`include` 只有 `src/**/*.ts`），验证脚本没有类型检查保护，**必须真跑**才算验过。真到需要覆盖率数字或要接 CI 矩阵的那天，这个决策应当重开。
+
+**参考：** [TESTING.md](./TESTING.md)（第一节选型理由、第七节缺口）· [ROADMAP.md](./ROADMAP.md)（P6 “正式测试套件”已勾选关闭）· `scripts/run-verify.mjs`
+
+---
+
 ## 2026-09-03 — 六天未提交的改动怎么拆（每件事一个提交 vs 两个粗粒度提交 vs 逐 hunk 拆）
 
 **场景：** 用户要求“挨个提交”。上一个提交是 `ee40eae`（2026-08-28 17:57），之后积压了 **83 条** CHANGE_LOG 记录、`git status` 里 **38 个已改文件 + 4 个未跟踪**（仅 src 就 29 个，+2195 行）。先查了每个改动文件在 CHANGE_LOG 里被哪几天的哪几件事提到：结果 **14 个文件是多件事交织的**——`llm/anthropic.ts` 一个文件里压着 4 件事（thinking C1/C3、L3 真实 usage、观测层、流式重构），`core/events.ts`、`core/loop.ts`、`harness/check.ts`、`harness/main.ts`、`loop/agent-loop.ts`、`runtime/events.ts`、`runtime/runtime.ts`、`llm/provider.ts` 各压 3 件；另有 7 个文件（包括 `tree-ui.ts` +466 行、`input-handler.ts` +251 行）在 CHANGE_LOG 里根本没按文件名出现过。而 `git add` 只能整文件加。

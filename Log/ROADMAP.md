@@ -86,7 +86,7 @@
 
 > 功能 P0-P5 已齐，以下为对标成熟 Agent 框架（Cline/Pi）缺失的能力，按价值排序。
 
-- [ ] **正式测试套件** — 引入 vitest，为 session/compaction/commands/rpc 等子系统建立正式单测（当前仅临时脚本）
+- [x] **正式测试套件** —（2026-09-03 关闭，**不引入 vitest**）原案是“引入 vitest，为 session/compaction/commands/rpc 等子系统建立正式单测（当前仅临时脚本）”；痛点“P5 大重构后零回归保护”已由另一条路解决——`scripts/` 下 **12 套零依赖验证脚本、359 项断言**，`npm run verify` 一条命令串跑、退出码可直接交给 CI（原先“只能手工循环跑”的缺口由本轮新增的 `run-verify.mjs` 补上）。四个子系统里 session 已有专套（`verify-session.ts` 47 项），compaction / commands / rpc 仍靠间接覆盖，这部分缺口保留在 TESTING.md 第七节
   - 理由：P5 大重构后零回归保护，改 bug 可能悄悄破坏别处
   - 对标：Pi 有 vitest.config.ts + 完整测试
 - [ ] **系统提示词模板层** — 从 runtime.ts 硬编码字符串抽为模板（system-prompt.ts），支持按场景选择
@@ -125,6 +125,14 @@
   - 落地：按建议顺序执行，但每一步的实际工作量都比预估大——GLOSSARY 逐条拿代码验证后查出 **23 条失真**（不是只需校准旧的 30 条里的一部分，而是过半），修正后另新增 8 条已验证术语（→ **49 条**，新建 J、U 两节）；TESTING 旧版的示例代码照抄会编译不过（三处类型错 + `new Runtime` 缺 11 个必注入），逐条修不如整份改写，现 7 节 96 行；ARCHITECTURE 分层图扩成 6 层 + 两条横切旁路（209 行），决策 1/2/4/5/6 逐条补现状、对比表 5 行里 4 行已反转故全部重写，并新增第四节"已知架构债"7 条
   - 超出原案：`目录.md` 也跟着校准了一轮（三个幽灵条目 CLAUDE.init.md / src/utils/error-log.ts / src/persistence.ts、core 契约 9→11、内置工具 4→5 漏了 ls、io/ui/permission.ts 实为 permission-prompt.ts、runtime/ 漏 4 项、补 skills/ 与 sessions/）——它虽然每轮同步，但同步的是"新增了什么"，删掉和改名的东西会留下幽灵
   - 校准过程中查出的**代码级**问题（不属文档任务，需另立）：两个同名 `SessionStorage` 接口注释互相矛盾而 `instanceof` 才是现状（core/storage.ts 那版的三个可选成员白定义了）· `AgentConfig` 是死类型 · 压缩用量没回流导致 `/usage` 少算 · `package.json` 无 verify/test 入口且 `clean` 是 `rm -rf dist` 在 Windows 跑不通 · `src/runtime/commands/` 是空目录、`input-handler-demo.ts` 是演示文件，两者去留待定 · 内置 `ls` 工具已落地，下面 P7 的"实用工具补全（ls）"该划掉一半
+- [x] **校准查出的代码级问题批量处理** —（2026-09-03 落地）上一条末尾列了 6 个代码级问题，本轮处理掉 5 个（那条是 append-only 的历史记录，里面提到的 `input-handler-demo.ts` 已不存在，以本条为准）：
+  - ✅ **两个同名 `SessionStorage` 接口已收敛**：`types.ts` 改成只做转发、`RuntimeOptions.session` 直指 core 版、`runtime.ts` 四处 `instanceof` 换成能力探测（那四处调的正好就是三个可选成员，行为等价）；新增 `verify-session.ts` 47 项，把“探测 ≡ instanceof”的 3×3 穷举对比钉死
+  - ✅ **`AgentConfig` 死类型已删**（删前核实全库引用只有 1 处，就是它自己的定义）
+  - ✅ **`package.json` 已补 `verify` / `typecheck` / `clean` 三个入口**；`clean` 从 `rm -rf dist`（Windows 跑不通）改为 `node scripts/clean.mjs`（`fs.rmSync` 的 recursive + force）；新增 `run-verify.mjs` 串跑 12 套（全量 359 项、EXIT=0，三个 npm 入口均实测跑通）
+  - ✅ **`input-handler-demo.ts` 已删**（连同 `main.ts` 里的 import 与注册）。删前查出它会静默吞掉 `@@` 开头的输入、把 `/ask ` 转成加问号，属**未文档化的魔法行为却挂在生产路径上**；`runtime.onInput()` 能力本身保留给下面的 Hook 系统
+  - ✅ **GLOSSARY 5 处同文件锚点死链修好**（`#项目元数据` ×4、`#event-subscription` ×1，按该文件其余 30+ 处已用的“全 slug 含中文后缀”约定对齐），并把检查固化为 `verify-docs.mjs`；其中“入站锚点契约”6 条把被 DECISION_LOG / GLOSSARY 引用的标题文字钉死（DECISION_LOG 是 append-only，断链没法在源头修，只能不让标题变）
+  - ⏸ **压缩用量没回流（`/usage` 少算）本轮不做**：要改就得改 `ChatResult` 的形状，牵连两个 provider 的非流式路径 + `stream-helper` + 多套 verify 脚本，是独立的一件事，已在上面“可观测性增强”的剩余项里
+  - 遗留两项：`src/runtime/commands/` 空目录仍在（git 不跟踪空目录，仓库里本就没它，只是本地残留）；另查出 **`InputHandler` 同名冲突**（`runtime.ts` 的函数类型 vs `io/ui/input-handler.ts` 的类），未改、只在两处各加注释互指，详见 ARCHITECTURE.md 第四节第 8 条
 
 ### P7 — 业务能力强化（让 Agent 真正解决实际问题）
 
@@ -144,6 +152,7 @@
 - [ ] **实用工具补全** — 列表目录（ls）、网页抓取（fetch）、读取多文件（并行 read）
   - 理由：扩展可处理的任务类型（查项目结构/查网页/批量读）
   - 对标：Cline 的 fetch_web_content / pi 的 ls
+  - 进度（2026-09-03）：**ls 已落地**（`tools/builtin.ts`，内置工具现为 5 个：ls / read / write / grep / bash），本条只剩 fetch 与并行 read 两项未做，故仍留 `- [ ]`。上一轮文档校准查出的“该划掉一半”即指此处
 
 ---
 

@@ -169,7 +169,7 @@
 
 **代价：** 模块数量增长到 20+ 时，可能需要重新评估。
 
-**现状：重新评估的条件已经触发**——`src/` 下 14 个目录、71 个 `.ts` 文件，`main.ts` 要组装 11 个必注入依赖。但结论仍是**不做**：组装点只有一处、从上到下一屏能读完，比容器的隐式查找更好查错。真要减负，先做的是把组装段落抽成一个 `createRuntime()` 工厂函数（已经这么做了），而不是引容器。
+**现状：重新评估的条件已经触发**——`src/` 下 14 个目录、70 个 `.ts` 文件，`main.ts` 要组装 11 个必注入依赖。但结论仍是**不做**：组装点只有一处、从上到下一屏能读完，比容器的隐式查找更好查错。真要减负，先做的是把组装段落抽成一个 `createRuntime()` 工厂函数（已经这么做了），而不是引容器。
 
 ---
 
@@ -185,25 +185,28 @@
 | 扩展机制 | 完整的 Extension 插件体系 | **已落地三类口子**：sections / hooks / watchers，`extension-loader` 自动扫描装载 |
 | 配置 | 分层 SettingsManager（全局/项目/会话） | **部分落地**：密钥分三层（环境变量 > 全局 `~/.ts-agent/config.json` > 项目 `config/provider-keys.json`），其余配置项还没分层（`config/manager.ts` 里标着 TODO） |
 | 观测 | docs/observability.md | **已落地**：SpanCollector 公共配对件 + `/traces` 内置命令 + `trace.jsonl` 落盘；不引 LangSmith / LangFuse 这类外部服务 |
-| 测试 | vitest 全套 | **路线不同**：10 套零依赖验证脚本、299 项断言 + 1 个真实链路冒烟；无框架、无覆盖率、无 CI（见 [TESTING.md](./TESTING.md)） |
+| 测试 | vitest 全套 | **路线不同、且已定调**：12 套零依赖验证脚本、359 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
 
 ---
 
-## 四、已知架构债（校准过程中查出，尚未处理）
+## 四、已知架构债
 
-1. **两个同名 `SessionStorage` 接口，注释还互相矛盾。**
-   - `core/storage.ts` 版：三必需方法 + 三可选成员（`getAllStored?` / `forkTo?` / `getDir?`），注释说"这样 Runtime **无需 instanceof** 判断"。**三个实现 implements 的是这一版**。
-   - `types.ts` 版：只有三必需方法，注释说"不在此接口内，Runtime **通过 instanceof 分支调用**"。**`RuntimeOptions.session` 声明的是这一版**。
-   - 而 `runtime.ts` 里实际写着 `if (this.session instanceof JsonlSessionStorage)` ——**instanceof 分支才是现状**，那版"消除 instanceof"的设计意图没落实，可选成员白定义了。两处该收敛成一处。
+> 2026-09-03 校准文档时查出 7 条，**同日下午已处理 4 条**（下面标 ✅，保留原描述以便回溯“当初为何算债”）；剩 3 条仍成立；另在修第 7 条时又查出 1 条（第 8 条）。
 
-2. **`AgentConfig` 是死类型。** `types.ts` 里留着它（name / version）和一句"调用方：agent.ts"的注释，但**该文件不存在、该类型全项目无人 import**。属早期遗留。
+1. ✅ **两个同名 `SessionStorage` 接口，注释还互相矛盾**（已收敛）
+   - 原状：`core/storage.ts` 版有三必需方法 + 三可选成员（`getAllStored?` / `forkTo?` / `getDir?`），注释说“这样 Runtime **无需 instanceof** 判断”，三个实现 implements 的是这一版；`types.ts` 版只有三必需方法，注释说“Runtime **通过 instanceof 分支调用**”，而 `RuntimeOptions.session` 声明的是这一版——于是可选成员在接口层面拿不到，`runtime.ts` 里只能写 `if (this.session instanceof JsonlSessionStorage)`。
+   - 怎么修的：`types.ts` 改成只做转发（`export type { SessionStorage, StoredMessage } from './core/storage.js'`），`RuntimeOptions.session` 直指 core 版；`runtime.ts` 四处 instanceof 换成**能力探测**（`if (this.session?.getAllStored)`）。等价性的根据：那四处调的正好就是三个可选成员，而三个实现里只有 Jsonl 有这三个成员。“探测 ≡ instanceof”的 3×3 穷举对比已固化为断言（`verify-session.ts` ③ 段 9 项）。
+
+2. ✅ **`AgentConfig` 是死类型**（已删）。原状：`types.ts` 里留着它（name / version）和一句“调用方：agent.ts”的注释，而该文件从未存在、全项目无人 import。删前核实过全库引用只有 1 处，就是它自己的定义。
 
 3. **`Provider`（供应商元数据）与 `LLMProvider`（调用抽象）同名易混。** 前者在 `llm/provider.ts`（显示名 + 模型列表 + `getApiKey`/`fetchModels`，由 `ProviderRegistry` 持有），后者在 `llm/types.ts`（`chat()` / `stream()`）。真正的工厂是 `llm/index.ts` 的 `createProvider(config)`。
 
-4. **压缩用量没回流。** `context/compaction.ts` 走非流式 `llm.chat()`，而 `ChatResult` 没有 usage 字段，全文件也没有 `usage` 字样 → 压缩消耗的 token 从未计入 `/usage` 的合计。
+4. **压缩用量没回流。** `context/compaction.ts` 走非流式 `llm.chat()`，而 `ChatResult` 没有 usage 字段，全文件也没有 `usage` 字样 → 压缩消耗的 token 从未计入 `/usage` 的合计。**本轮判定不做**：要改就得改 `ChatResult` 的形状，牵连两个 provider 的非流式路径 + `stream-helper` + 多套 verify 脚本，是独立的一件事（已记在 ROADMAP P6 “可观测性增强”的剩余项里）。
 
-5. **`package.json` 的工程化缺口。** 没有 verify / test 入口（10 套脚本只能手工循环跑）；`clean` 写的是 `rm -rf dist`，Windows 下根本跑不通。
+5. ✅ **`package.json` 的工程化缺口**（已补）。原状：没有 verify / test 入口（10 套脚本只能手工循环跑）；`clean` 写的是 `rm -rf dist`，Windows 下根本跑不通。现有 `verify`（`run-verify.mjs` 串跑 12 套）/ `typecheck` / `clean`（`clean.mjs` 用 `fs.rmSync` 跨平台删 dist）三个入口，三个都实测跑通。
 
 6. **`scripts/` 不受 tsc 检查。** `tsconfig.json` 的 `include` 只有 `["src/**/*.ts"]`。这是有意的取舍（脚本要造替身、塞假字段），代价是脚本必须真跑才算验过。
 
-7. **`src/runtime/commands/` 是个空目录**，`runtime/input-handler-demo.ts` 是演示用文件（由 `main.ts` 通过 `runtime.onInput` 注册）——两者都该决定去留。
+7. ✅ **演示文件与空目录**（部分处理）。`runtime/input-handler-demo.ts` **已删**（连同 `main.ts` 里的 import 与注册）——它会静默吞掉 `@@` 开头的输入、把 `/ask ` 转成加问号，属**未文档化的魔法行为却挂在生产路径上**；`runtime.onInput()` 这个能力本身保留，给 ROADMAP 里的 Hook 系统。`src/runtime/commands/` 空目录**仍在**：git 本来就不跟踪空目录，所以仓库里不存在它，只是本地残留。
+
+8. **`InputHandler` 同名冲突**（修第 7 条时查出）。`runtime.ts` 导出的是**函数类型** `type InputHandler = (text: string) => InputEventResult | Promise<...>`（输入预处理器），`io/ui/input-handler.ts` 导出的是**类** `class InputHandler`（raw mode 逐键解析）。删掉 demo 前，`main.ts` 里两者相隔两行同时出现（一行用函数类型注册、下一行注释在说那个类），同一段代码里两个含义混用。这是项目里第三组同名混淆（前两组：两个 `SessionStorage`——本日已收敛；`Provider` vs `LLMProvider`——仍成立，见第 3 条）。未改，只在两处各加了注释互指。

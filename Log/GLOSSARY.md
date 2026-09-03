@@ -7,7 +7,7 @@
 ### Agent
 **本项目没有 Agent 类。** 运行实体是 [Runtime](#runtime)（持有全部子系统、对外提供 `prompt()`），三重循环在 [Agent Loop](#agent-loop) 里。
 
-`types.ts` 还留着一个 `AgentConfig`（name / version）和一句“调用方：agent.ts”的注释——**该文件不存在、该类型全项目无人 import**，属早期遗留，尚未清理。
+`types.ts` 里曾有个 `AgentConfig`（name / version）和一句“调用方：agent.ts”的注释，而该文件从未存在、全项目无人 import——属早期遗留，**已于 2026-09-03 删掉**。
 
 参见：[Harness](#harness)、[Runtime](#runtime)、[Agent Loop](#agent-loop)
 
@@ -60,7 +60,7 @@ Agent 内部持有 `while(true)` 循环、自驱动运行的交互方式。**本
 参见：[Span](#span行为段)、[Usage](#usage用量)
 
 ### Config（配置）
-项目的运行参数文件，如 `package.json`、`tsconfig.json`。属于[项目元数据](#项目元数据)的一类。
+项目的运行参数文件，如 `package.json`、`tsconfig.json`。属于[项目元数据](#project-metadata项目元数据)的一类。
 
 运行期配置由 `config/manager.ts` 统一读取，**四份文件 + 一条优先级链**（高 → 低）：环境变量（`apiKeyEnv` 指定）> 全局 `~/.ts-agent/config.json` > 项目 `config/provider-keys.json`（密钥，gitignore）> 项目 `config/active-config.json`（当前激活，不含 key）> 代码默认。供应商预设另在 `config/providers.json`（公开可提交）。
 
@@ -92,7 +92,7 @@ Agent 内部持有 `while(true)` 循环、自驱动运行的交互方式。**本
 参见：[LLMProvider](#llmprovider)、[Provider（供应商）](#provider供应商)、[EventStream](#eventstream推拉通道)
 
 ### Document（文档）
-记录项目状态和历史的信息文件。属于[项目元数据](#项目元数据)的一类。
+记录项目状态和历史的信息文件。属于[项目元数据](#project-metadata项目元数据)的一类。
 
 本项目全在 `Log/` 下，分**两类，维护方式完全不同**：
 
@@ -232,7 +232,7 @@ LLM 调用抽象接口，位于 `src/llm/types.ts`。两个方法：`chat(messag
 
 **当前三个调用点全都不传它**：`repl.ts` 与 `rpc.ts` 只传 input，`tree-ui.ts` 甚至显式写 `undefined` 跳过它去传第三个参数。UI 联动实际走 [EventBus](#eventbus事件总线) 订阅。Runtime 内部仍会在个别分支调它（如插入 steer 消息时回一句提示），所以它没死，只是**没人从外面接**。（旧文档写它是“当前 UI 联动方式”已过期。）
 
-对比：[Event Subscription](#event-subscription)
+对比：[Event Subscription](#event-subscription事件订阅)
 
 ## P
 
@@ -273,7 +273,7 @@ Runtime 对外当然不止 `prompt()` 一个方法（见 [Runtime](#runtime)）�
 参见：[Mode（运行模式）](#mode运行模式)、[Pi 模式](#pi-模式)
 
 ### Rule（规则）
-约束 AI 或开发者行为的文件。属于[项目元数据](#项目元数据)的一类。
+约束 AI 或开发者行为的文件。属于[项目元数据](#project-metadata项目元数据)的一类。
 
 本项目是 `CLAUDE.md`（项目根，给 AI 的总则）+ `Log/*_RULES.md` 五份规则书（分别约定变更日志、架构演进日志、决策日志、ROADMAP、目录文档怎么写）。（旧文档举的 `CLAUDE.init.md` 不存在。）
 
@@ -294,14 +294,13 @@ Runtime 构造选项（`types.ts`）。**11 个必注入**（无默认值，`mai
 ## S
 
 ### SessionStorage
-会话存储接口。**必需三个方法**：`appendMessage(role, content, extra?)`、`getMessages()`、`clear()`。三个实现：[JsonlSessionStorage](#jsonlsessionstorage)（**默认**，落盘）、[InMemorySession](#inmemorysession)、[MockSession](#mocksession)（测试替身）。
+会话存储接口。**唯一真身在 `core/storage.ts`**：三个必需方法（`appendMessage(role, content, extra?)`、`getMessages()`、`clear()`）+ 三个**可选成员**（`getAllStored?` / `forkTo?` / `getDir?`，即 entry 树能力）。三个实现：[JsonlSessionStorage](#jsonlsessionstorage)（**默认**，落盘，三个可选成员全有）、[InMemorySession](#inmemorysession)、[MockSession](#mocksession)（测试替身，后两个都没有可选成员）。
 
-⚠️ **项目里有两个同名接口，注释还互相矛盾**：
+`types.ts` 里也 export 这个名字，但那只是**转发**（`export type { SessionStorage, StoredMessage } from './core/storage.js'`），不是第二个接口；`RuntimeOptions.session` 直指 core 版，所以调用方能直接拿到可选成员。
 
-- `core/storage.ts` 版：三个必需方法 + 三个**可选成员**（`getAllStored?` / `forkTo?` / `getDir?`），注释说这样“Runtime 无需 instanceof 判断”。**三个实现 implements 的是这一版**
-- `types.ts` 版：只有三个必需方法，注释说 entry 树能力“不在此接口内，Runtime 通过 instanceof 分支调用”。**`RuntimeOptions.session` 声明的是这一版**
+**可选成员靠能力探测缩窄，不靠 `instanceof`**：`runtime.ts` 写的是 `if (this.session?.getAllStored)` 这类判断——实现了该成员就是 entry 树存储，没实现就走 `getMessages()` 兜底。（2026-09-03 之前这里写的是 `instanceof JsonlSessionStorage`，且 `types.ts` 另有一个只含三必需方法的同名接口，两处注释互相矛盾；已收敛，过程见 [ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第四节第 1 条。）
 
-而 `runtime.ts` 里实际写着 `if (this.session instanceof JsonlSessionStorage)`——**instanceof 分支才是现状**，`core/storage.ts` 那版“消除 instanceof”的设计意图没落实（可选成员白定义了）。两处该收敛成一处。
+走接口调用时注意：`StoredMessage` 的 `id` 与 `msgId` **都是可选的**（兼容 JSONL 用 `id`、对外 API 用 `msgId`），而 `JsonlSessionStorage` 自己的签名比接口窄（`msgId` 必填）。所以 runtime 里显式做了兜底：`m.msgId ?? m.id ?? ''`。
 
 ### SSE（Server-Sent Events）
 HTTP 流式传输协议，服务端持续发送 `data: {...}\n` 格式的事件。DeepSeek 和 OpenAI 的流式 API 都基于 SSE。
@@ -315,7 +314,7 @@ Agent 可调用的能力模块，**已落地**（旧文档标“计划中”已�
 
 `SkillLoader` 是 Runtime 的必注入子系统之一（`RuntimeOptions.skills`）。
 
-不属于[项目元数据](#项目元数据)——Skill 是可执行的，元数据是声明式的。
+不属于[项目元数据](#project-metadata项目元数据)——Skill 是可执行的，元数据是声明式的。
 
 ### Span（行为段）
 一次**有始有终**的行为，用“进门 / 出门”两个事件括起来。生产端拿到的是一个句柄：
