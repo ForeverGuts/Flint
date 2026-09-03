@@ -26,8 +26,12 @@ import { coreSection } from '../context/sections/core-section.js';
 import { toolsSection } from '../context/sections/tools-section.js';
 import { skillsSection } from '../context/sections/skills-section.js';
 import { loadExtensions } from '../context/extension-loader.js';
+import { SpanCollectorImpl } from '../runtime/span-collector.js';
 import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
+import { probeStartup } from './check.js';
+import { getConfigManager } from '../config/manager.js';
+import type { Diagnostic } from '../types.js';
 
 interface CreateRuntimeOptions {
   session?: SessionStorage | undefined;
@@ -71,7 +75,13 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const events = new PromptEventEmitter();
   const commandSystem = new CommandServiceImpl();
   const diagnosticsService = new DiagnosticsServiceImpl({ events });
-  // 装载用户扩展（段落 + hook）—— 自动扫描 src/extensions/
+  // 段收集器：订阅同一条总线，把成对的 span 事件合成"一段完整行为"，供 /traces 只读展示。
+  // 建在 createRuntime 闭包外——热切换重建 Runtime 时，已收的历史不会跟着丢。
+  // 与 trace-log watcher 各持独立实例：共用的是 SpanCollector 这份配对代码，不是实例
+  // （总线的意义就是消费者互不知情，核心命令也不该反过来依赖一个可选扩展）。
+  const spanCollector = new SpanCollectorImpl();
+  spanCollector.attach(events);
+  // 装载用户扩展（段落 + hook + watcher）—— 自动扫描 src/extensions/ 下三类目录
   const ext = await loadExtensions(events);
   // 系统提示词子系统（配置驱动 + 分层缓存友好：核心稳定层在前，工具/技能层独立）
   // 用户扩展段落并入 core 稳定层（人设/规则补充，属稳定前缀）
@@ -96,6 +106,7 @@ export async function main(checkResult: CheckResult): Promise<void> {
       permission,
       skills,
       events,
+      spanCollector,
       commandSystem,
       diagnosticsService,
       compaction,
@@ -103,6 +114,8 @@ export async function main(checkResult: CheckResult): Promise<void> {
       model: modelName,
       provider: checkResult.config?.provider ?? '',
       baseUrl,
+      // exactOptionalPropertyTypes 严格模式：无配置时不传该键（而非传 undefined）
+      ...(checkResult.config?.thinking ? { thinking: checkResult.config.thinking } : {}),
     });
     return { runtime };
   };
@@ -132,5 +145,23 @@ export async function main(checkResult: CheckResult): Promise<void> {
     return;
   }
 
-  await runReplMode(runtime, checkResult.diagnostics ?? []);
+  // ── 两档后台网络：都不挡界面渲染，区别只在"结果要不要回填" ──
+  // 第一档 · 网络探测（probeStartup）：结果要回填 banner，所以把 promise 交给 repl，
+  //   由它在 UI 订阅完成后 await 完再发 check_done（时序上杜绝"结果早于订阅"的竞态）。
+  const probePromise: Promise<Diagnostic[]> = checkResult.config
+    ? probeStartup(checkResult.config, checkResult.providerName)
+    : Promise.resolve([]);
+
+  // 第二档 · 模型列表预热（warmModels）：结果只写内存里的 Provider，没有任何要回填的界面，
+  //   因此连 promise 都不必交出去 —— 用户开 /model 时若还没拉完，那边 await 的是同一个在飞
+  //   promise（inflight 去重），不会重发请求。
+  //   两个前置条件让它只在 TTY 下发起：① 非 TTY 时选择器直接返回第一项，模型列表根本不会
+  //   被展示，拉了也白拉；② 非 TTY 的管道模式跑完就退，在飞的 fetch 反而会把进程拖到超时才结束。
+  if (process.stdin.isTTY) {
+    getConfigManager()
+      .then((mgr) => mgr.warmModels())
+      .catch(() => { /* 预热失败即静态兜底（warmModels 内部已吞异常），不打扰界面 */ });
+  }
+
+  await runReplMode(runtime, checkResult.diagnostics ?? [], probePromise);
 }

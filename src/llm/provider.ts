@@ -53,7 +53,7 @@ export interface ProviderDeps {
 /**
  * Provider 对象 —— 一个供应商实例（数据 + 行为自包含）。
  * 行为：getApiKey / getModels / refreshModels / createLLM
- * 数据：id/name/baseUrl/type/apiKeyEnv/isDefault/staticModels
+ * 数据：id/name/baseUrl/type/apiKeyEnv/isDefault/staticModels/modelsFetchedAt
  */
 export interface Provider {
   /** 唯一标识（供应商 id，如 "opencode-go" / "my-custom"） */
@@ -70,6 +70,13 @@ export interface Provider {
   isDefault: boolean;
   /** 静态模型列表 */
   staticModels: ProviderModel[];
+  /**
+   * 最近一次**成功**拉到远程模型列表的时刻（毫秒时间戳）；null = 本进程内还没成功拉过。
+   * 拉取失败（fetchModels 返回空）刻意不盖戳：否则断网那一次会被误记成"列表已新鲜"，
+   * 之后再也不重试，用户整个进程周期都只能看到静态列表。
+   * 用途：/model 打开时据此判断要不要现拉（见 ConfigManager.ensureModels）。
+   */
+  modelsFetchedAt: number | null;
 
   // ── 行为 ──
   /** 解析 API Key（环境变量 > 全局 > 项目，依赖注入的 resolver） */
@@ -128,6 +135,7 @@ export function createProviderFromConfig(cfg: ProviderConfigJson, deps: Provider
     ...(cfg.apiKeyEnv ? { apiKeyEnv: cfg.apiKeyEnv } : {}),
     isDefault: !!cfg.isDefault,
     staticModels,
+    modelsFetchedAt: null,
 
     getApiKey() {
       return deps.resolveApiKey(cfg);
@@ -140,6 +148,9 @@ export function createProviderFromConfig(cfg: ProviderConfigJson, deps: Provider
     async refreshModels() {
       const remote = await deps.fetchModels(provider);
       models = mergeModels(remote, staticModels);
+      // 只有真拿到远程列表才盖新鲜戳：失败时 fetchModels 返回空数组，此时保持原值（含 null），
+      // 让下一次 ensureModels 仍会重试，而不是把"拉取失败"误记成"列表已新鲜"
+      if (remote.length > 0) provider.modelsFetchedAt = Date.now();
     },
 
     createLLM(model: string) {

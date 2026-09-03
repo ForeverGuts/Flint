@@ -57,6 +57,8 @@ export class TerminalUI {
   /** 流式输出是否处于"行首"（跨片维护，保证每行缩进正确，杜绝顶格/空段错位） */
   private atLineStart = false;
   private lastUsage: { current: { totalTokens: number }; total: { totalTokens: number } } | null = null;
+  /** 本轮是否已提示过"推理中"（思维链片段只提示首片，agent_end 重置） */
+  private reasoningHinted = false;
 
   /* ── 启动 Banner ── */
 
@@ -127,6 +129,17 @@ export class TerminalUI {
             streaming: '💬 生成中...',
           };
           this.spinner.start(phaseMap[event.phase] ?? `⏳ ${event.phase}...`);
+          break;
+        }
+
+        case 'stream_reasoning': {
+          // 思维链推理片段（阶段 C1）：首片把 spinner 切为"推理中"提示即可，
+          // 推理文本不倾泻到终端（可能几千 token，噪音大），正式回复由 stream_text 接管
+          if (!this.reasoningHinted) {
+            this.spinner.stop();
+            this.spinner.start('🧠 推理中...');
+            this.reasoningHinted = true;
+          }
           break;
         }
 
@@ -210,6 +223,7 @@ export class TerminalUI {
           console.log();
           this.isNewResponse = true;
           this.atLineStart = false;
+          this.reasoningHinted = false;
           break;
         }
 

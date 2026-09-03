@@ -37,13 +37,21 @@ async function buildReplInfo(runtime: Runtime, diagnostics: import('../types.js'
   };
 }
 
-/** 运行 REPL 模式（TTY 组件树 UI 或管道 TerminalUI） */
-export async function runReplMode(runtime: Runtime, diagnostics: import('../types.js').Diagnostic[]): Promise<void> {
+/**
+ * 运行 REPL 模式（TTY 组件树 UI 或管道 TerminalUI）。
+ * @param probePromise 后台网络探测（启动提速第一档）：界面先行，结果到达后回填；
+ *        TTY 由 TreeUI 在订阅完成后消费，管道模式不展示诊断（与历史行为一致）
+ */
+export async function runReplMode(
+  runtime: Runtime,
+  diagnostics: import('../types.js').Diagnostic[],
+  probePromise?: Promise<import('../types.js').Diagnostic[]>,
+): Promise<void> {
   const info = await buildReplInfo(runtime, diagnostics);
 
   // TTY 模式：组件树 UI —— 接管终端，Input 组件接收输入
   if (process.stdin.isTTY) {
-    const ui = new TreeUI(runtime, info);
+    const ui = new TreeUI(runtime, info, probePromise);
     ui.start();
     // TUI 启动后常驻，直到进程退出（Input.onSubmit 处理 /exit）
     await new Promise<void>(() => {}); // 挂起，等待 /exit 或 SIGINT

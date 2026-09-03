@@ -13,6 +13,10 @@ Thumbs.db
 *.swp
 *.swo
 
+# AI 工具本机个人配置（含审批规则，不随仓库共享）
+.qoder/settings.local.json
+.claude/settings.local.json
+
 # 环境变量
 .env
 .env.local
@@ -27,3 +31,7 @@ sessions/
 # 测试产物
 xxx.test
 debug-*.log
+
+# 观测落盘（trace-log watcher 产物；含对话正文片段，不随仓库共享）
+trace.jsonl
+trace-*.jsonl

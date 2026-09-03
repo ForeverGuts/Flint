@@ -34,6 +34,16 @@ export class Container implements Component {
     this.children.push(component);
   }
 
+  /**
+   * 按位插入子组件（index 越界时退化为追加）。
+   * 调用方：TreeUI.endReply（流式框封口时把💭/⏳摘要补挂到正文之前）
+   * 服务于：内容已成型后仍需在中部插行，避免整框重建带来的跳变
+   */
+  insertChild(component: Component, index: number): void {
+    const at = Math.max(0, Math.min(index, this.children.length));
+    this.children.splice(at, 0, component);
+  }
+
   /** 移除子组件（选择器结束后移除 selectBox） */
   removeChild(component: Component): void {
     const idx = this.children.indexOf(component);

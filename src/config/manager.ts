@@ -47,6 +47,8 @@ interface ActiveConfig {
   provider?: string;
   model?: string;
   baseUrl?: string;
+  /** 思维链开关（阶段 C1）：'auto' | 'on' | 'off'，缺省等同 'auto' */
+  thinking?: 'auto' | 'on' | 'off';
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -72,6 +74,14 @@ interface PathOverrides {
   globalPath?: string;
 }
 
+/**
+ * 模型列表的内存新鲜期（启动提速第二档）。
+ * 这段时间内已成功拉过就不再自动重拉：模型列表的变化频率是"月"级的（新模型发布），
+ * 而现拉一次要 0.3~0.9s（实测 opencode-go 913ms），每次开 /model 都付这一下不值得。
+ * 不落盘、不跳进程：只在内存里比一个时间戳，因此没有缓存文件、TTL 失效、baseUrl 变更这一整套机械。
+ */
+const MODELS_FRESH_MS = 5 * 60 * 1000;
+
 /* ════════════════════════════════════════════════════════════════════════════
    ConfigManager 类
    ════════════════════════════════════════════════════════════════════════════ */
@@ -85,6 +95,8 @@ export class ConfigManager {
   private globalConfig: GlobalConfig = {};
   /** 路径覆盖（测试注入，默认用真实路径） */
   private paths: Required<PathOverrides>;
+  /** 在飞的模型拉取（按供应商 id）：后台预热与用户开 /model 可能同时打同一家，靠它去重 */
+  private inflight = new Map<string, Promise<void>>();
 
   constructor(overrides?: PathOverrides) {
     this.paths = {
@@ -98,14 +110,58 @@ export class ConfigManager {
     this.loadProviders();
   }
 
-  /* ── 异步初始化：为有 key 的供应商并行拉取远程模型 ── */
+  /* ── 模型列表：后台预热 + 按需现拉（启动提速第二档）──
+     改造前：getConfigManager() 会 await init() 并行拉每个有 key 的供应商的 /models，
+     而 check() 又 await 它 → 这一批网络往返全部压在界面渲染之前（实测冷启动 1998ms、
+     连接池热时 278ms，网络差时每家最长卡 10s 超时，全程终端只有 banner 没有 UI）。
+     而这些列表的唯一真消费者是 /model 的二级选择器（其余 8 处调用点要么只是说明文字，
+     要么静态列表就能满足）——等于每次启动都在为用户可能永远不会打开的菜单提前付钱。 */
 
-  async init(): Promise<void> {
-    const tasks = this.getAll().map(async (p) => {
-      if (!p.getApiKey()) return; // 无密钥用 staticModels
-      await p.refreshModels();
-    });
+  /**
+   * 后台预热：并行拉所有有 key 的供应商的模型列表，结果只更新内存里的 Provider。
+   * 调用方：main.ts（界面渲染前发起但不 await，因此不挡界面）；RPC 模式不调（外部程序用不到选择器）。
+   * 失败即静态兜底（fetchRemoteModels 内部已 swallow 并返回空），不向调用方抛——
+   * 预热是锦上添花，不该因为它失败而在界面上报错。
+   * 注：活动供应商会被拉两次（本方法一次 + probeStartup 一次）。不合并是有意的：
+   * probe 要靠 HTTP 状态码分档（401 → key 无效），而 fetchRemoteModels 把状态码吞了；
+   * 为省一次**后台**请求（用户感知为零）把两者耦起来不划算。
+   */
+  async warmModels(): Promise<void> {
+    const tasks = this.getAll()
+      .filter((p) => p.getApiKey())   // 无密钥拉不动，用 staticModels
+      .map((p) => this.startRefresh(p));
     await Promise.all(tasks);
+  }
+
+  /**
+   * 确保某供应商的模型列表可用：新鲜期内成功拉过就直接用（零等待），否则现拉一次。
+   * 调用方：/model 二级选择器之前
+   * 服务于：绝大多数情况下后台预热早已拉完，用户开 /model 不必再等那 0.3~0.9s
+   */
+  async ensureModels(providerId: string): Promise<void> {
+    const p = this.registry.get(providerId);
+    if (!p || !p.getApiKey()) return;
+    if (this.isModelsFresh(providerId)) return;
+    await this.startRefresh(p);
+  }
+
+  /** 模型列表是否仍在新鲜期内（调用方据此决定要不要先提示"正在拉取"，免得看着像卡死） */
+  isModelsFresh(providerId: string): boolean {
+    const at = this.registry.get(providerId)?.modelsFetchedAt;
+    return at !== null && at !== undefined && Date.now() - at < MODELS_FRESH_MS;
+  }
+
+  /**
+   * 发起一次模型拉取，并与在飞的同一家去重。
+   * 不去重的后果：预热与 /model 同时打同一家，两次一模一样的往返，
+   * 而 /model 那次还得等自己那份（明明另一份马上就要回来了）。
+   */
+  private startRefresh(p: Provider): Promise<void> {
+    const flying = this.inflight.get(p.id);
+    if (flying) return flying;
+    const task = p.refreshModels().finally(() => { this.inflight.delete(p.id); });
+    this.inflight.set(p.id, task);
+    return task;
   }
 
   /* ── 查询 ── */
@@ -165,11 +221,11 @@ export class ConfigManager {
     return p;
   }
 
-  /** 运行中重新拉取某供应商模型（输入 key 后调用） */
+  /** 运行中重新拉取某供应商模型（输入新 key 后调用：新 key 可能解锁不同模型，必须现拉，不看新鲜期） */
   async refreshModels(providerId: string): Promise<void> {
     const p = this.registry.get(providerId);
     if (!p || !p.getApiKey()) return;
-    await p.refreshModels();
+    await this.startRefresh(p);
   }
 
   /**
@@ -207,6 +263,8 @@ export class ConfigManager {
       baseUrl: this.globalConfig.baseUrls?.[p.id] ?? p.baseUrl,
       apiKey: p.getApiKey(),
       model: active.model ?? '',
+      // thinking 开关透传（阶段 C1）：不写时缺省，Provider 侧按 'auto'→关闭处理
+      ...(active.thinking ? { thinking: active.thinking } : {}),
     };
   }
 
@@ -325,16 +383,11 @@ export class ConfigManager {
 
 let _instancePromise: Promise<ConfigManager> | null = null;
 
-/** 获取全局唯一的 ConfigManager 实例（首次调用时载入配置 + 拉取模型） */
+/** 获取全局唯一的 ConfigManager 实例（首次调用时载入本地配置；全程不发网络请求） */
 export function getConfigManager(): Promise<ConfigManager> {
-  if (!_instancePromise) {
-    _instancePromise = (async () => {
-      const mgr = new ConfigManager();
-      // RPC 模式：不拉远程模型（快速启动，外部程序调用不阻塞）；chat 用静态模型兜底
-      if (process.env.TS_AGENT_MODE === 'rpc') return mgr;
-      await mgr.init();
-      return mgr;
-    })();
-  }
+  // 模型列表不在这里拉（启动提速第二档）：启动关键路径纯本地（实测 1ms），
+  // 预热由 main.ts 调 warmModels() 在后台做，/model 打开时再按新鲜期按需现拉。
+  // 保留 Promise 签名：调用方已全面 await，且日后若要加异步初始化不必改调用点
+  if (!_instancePromise) _instancePromise = Promise.resolve(new ConfigManager());
   return _instancePromise;
 }

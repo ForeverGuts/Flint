@@ -65,6 +65,8 @@ export interface CheckResult {
   config?: import('./llm/types.js').LLMConfig;
   /** 启动自检诊断列表（逐项检查结果） */
   diagnostics: Diagnostic[];
+  /** 激活供应商的显示名（供后台网络探测的诊断文案使用） */
+  providerName: string;
 }
 
 /**
@@ -87,6 +89,8 @@ export interface RuntimeOptions {
   skills: import('./runtime/skill.js').SkillLoader;
   /** 事件总线（必注入） */
   events: import('./runtime/events.js').PromptEventEmitter;
+  /** 段收集器（必注入，接口）—— 把成对 span 合成一段完整行为，供 /traces 只读展示 */
+  spanCollector: import('./core/events.js').SpanCollector;
   /** 命令子系统（必注入，接口） */
   commandSystem: import('./core/commands.js').CommandService;
   /** 诊断子系统（必注入，接口） */
@@ -103,4 +107,6 @@ export interface RuntimeOptions {
   provider?: string;
   /** 当前 baseUrl */
   baseUrl?: string;
+  /** thinking 配置模式（阶段 C2：'on' 常开 / 'off' 常关 / 'auto' 按有无进行中任务判定） */
+  thinking?: 'auto' | 'on' | 'off';
 }

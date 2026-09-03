@@ -2,6 +2,10 @@
  * hook 扩展示例 —— 演示用户如何订阅系统提示词 hook。
  * 用户操作：在本目录（src/extensions/hooks/）建文件，export registerHooks(ctx)，
  * 系统自动装载，无需改 main。
+ *
+ * 该放这里还是放 watchers/：看你要不要改写流程。
+ *   - 要改（如本例追加一条 system 层消息）→ 用 ctx.on，放 hooks/
+ *   - 不改，只想通配收事件做落盘/统计  → 用 ctx.events.subscribe，放 watchers/（参见 trace-log.ts）
  */
 import type { SystemPromptMessage } from '../../core/system-prompt.js';
 

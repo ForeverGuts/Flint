@@ -1,7 +1,7 @@
 /**
  * 启动前检查（可靠性工程）。
  * 调用方：harness/index.ts（Harness.run 中率先执行）
- * 服务于：验证运行环境 → 逐项自检（配置/API key/连通性/模型列表）→ 创建 LLM Provider → 返回结果
+ * 服务于：验证运行环境 → 逐项自检（配置/API key，均为本地操作）→ 创建 LLM Provider → 返回结果
  *
  * 严重度分级：
  *   - pass  配置与网络全正常
@@ -67,53 +67,34 @@ export async function check(): Promise<CheckResult> {
     diagnostics.push(warn('apikey', `「${providerName}」API Key 未配置，首次对话可能失败。可在 /model 中选择并输入。`));
   }
 
-  // RPC 模式：跳过网络/模型测试（外部程序调用要快速启动，不阻塞）
-  // TODO(流式 RPC)：如需在 RPC 启动时校验，可改为异步后台检查不阻塞
+  // RPC 模式：快速启动（网络探测本来就不做）
   if (process.env.TS_AGENT_MODE === 'rpc') {
     diagnostics.push(pass('network', `「${providerName}」RPC 模式跳过网络检查（快速启动）`));
     const llm = createProvider(config);
-    return { llm, config, diagnostics };
+    return { llm, config, diagnostics, providerName };
   }
 
-  // ── ③ 连通性：baseUrl 是否可达（warn 级：网络抖动不影响进入程序） ──
-  const network = await testConnectivity(config, providerName);
-  diagnostics.push(network);
-
-  // ── ④ 模型列表拉取（区分网络问题 / key 无效 / 成功） ──
-  const { models, modelDiags } = await testModelList(config, providerName);
-  diagnostics.push(...modelDiags);
-
-  // ── ⑤ 当前 model 是否在远程列表（warn 级：可能是打错或用静态兜底） ──
-  if (models.length > 0 && !models.includes(config.model)) {
-    diagnostics.push(warn('model', `「${providerName}」模型 ${config.model} 不在远程列表中，可能是模型名有误或由静态列表兜底。`));
-  }
-
+  // ── ③④⑤ 网络检查全部移出启动关键路径（启动提速第一档 + 第二档）──
+  // 第一档：这三项原先是串行的 /models 探测（真实网络往返，启动大头）；现改为 check 只做
+  //   本地检查快速返回，probeStartup 由 main.ts 后台发起，结果经 check_done 事件回填 banner。
+  // 第二档：上面 ① 的 getConfigManager() 原先还会 await init() 并行拉每家供应商的 /models，
+  //   同样压在界面渲染之前（实测冷启动 1998ms、连接池热时 278ms；网络差时每家最长卡 10s 超时，
+  //   全程终端只有 banner 没有 UI）；现在启动路径 0 网络请求（new ConfigManager() 实测 1ms），
+  //   模型列表改由 main.ts 后台预热 + /model 打开时按新鲜期现拉（见 ConfigManager.warmModels）。
+  // 因此本函数返回的 diagnostics 只有 config / apikey 两条本地结论，network / models 由 probe 事后补。
   const llm = createProvider(config);
-  return { llm, config, diagnostics };
+  return { llm, config, diagnostics, providerName };
 }
 
 /**
- * 连通性测试 —— 检查 baseUrl 是否能建立连接。
- * 只做 GET 探测，不关心返回内容；超时/连接失败 = 网络问题（warn）。
+ * 启动探测 —— 单次带 key 的 /models 请求，同时产出 network + models 两条诊断（启动提速：原先两次串行请求合一）。
+ * 失败分档：
+ *   网络异常（超时/断连） → network warn + models warn（静态兜底）
+ *   401/403            → network pass（可达） + apikey warn（key 无效）
+ *   其他非 2xx          → network pass + models warn（静态兜底）
+ *   成功              → network pass + models pass（含模型数）；当前模型不在列表再补 model warn
  */
-async function testConnectivity(config: LLMConfig, providerName: string): Promise<Diagnostic> {
-  const url = `${config.baseUrl.replace(/\/+$/, '')}/models`;
-  try {
-    await fetch(url, { signal: AbortSignal.timeout(8000) });
-    return pass('network', `供应商「${providerName}」网络可达: ${config.baseUrl}`);
-  } catch {
-    return warn('network', `供应商「${providerName}」无法连接 ${config.baseUrl}（检查网络、代理或 baseUrl 是否正确）`);
-  }
-}
-
-/**
- * 模型列表拉取 —— 验证 API key 有效性 + 获取可用模型。
- * 区分三种失败：
- *   401/403 → key 无效（warn，可在 /provider 换 key）
- *   其他非 2xx → 拉取失败（warn）
- *   网络异常 → 超时/断开（warn，用静态兜底）
- */
-async function testModelList(config: LLMConfig, providerName: string): Promise<{ models: string[]; modelDiags: Diagnostic[] }> {
+export async function probeStartup(config: LLMConfig, providerName: string): Promise<Diagnostic[]> {
   const headers: Record<string, string> = {};
   if (config.provider === 'anthropic') {
     headers['x-api-key'] = config.apiKey;
@@ -123,18 +104,37 @@ async function testModelList(config: LLMConfig, providerName: string): Promise<{
   }
   const url = `${config.baseUrl.replace(/\/+$/, '')}/models`;
 
+  let res: Response;
   try {
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(10000) });
-    if (res.status === 401 || res.status === 403) {
-      return { models: [], modelDiags: [warn('apikey', `供应商「${providerName}」API Key 无效（HTTP ${res.status}），对话会失败。请检查 key 或在 /model 中更换。`)] };
-    }
-    if (!res.ok) {
-      return { models: [], modelDiags: [warn('models', `供应商「${providerName}」模型列表拉取失败（HTTP ${res.status}），使用静态模型兜底。`)] };
-    }
-    const data = (await res.json()) as { data?: Array<{ id: string }>; models?: Array<{ id: string }> };
-    const list = (data.data ?? data.models ?? []).map((m) => m.id);
-    return { models: list, modelDiags: [pass('models', `供应商「${providerName}」模型列表拉取成功（${list.length} 个可用）`)] };
+    res = await fetch(url, { headers, signal: AbortSignal.timeout(10000) });
   } catch {
-    return { models: [], modelDiags: [warn('models', `供应商「${providerName}」模型列表拉取超时/失败，使用静态模型兜底。`)] };
+    return [
+      warn('network', `供应商「${providerName}」无法连接 ${config.baseUrl}（检查网络、代理或 baseUrl 是否正确）`),
+      warn('models', `供应商「${providerName}」模型列表拉取超时/失败，使用静态模型兜底。`),
+    ];
   }
+
+  if (res.status === 401 || res.status === 403) {
+    return [
+      pass('network', `供应商「${providerName}」网络可达: ${config.baseUrl}`),
+      warn('apikey', `供应商「${providerName}」API Key 无效（HTTP ${res.status}），对话会失败。请检查 key 或在 /model 中更换。`),
+    ];
+  }
+  if (!res.ok) {
+    return [
+      pass('network', `供应商「${providerName}」网络可达: ${config.baseUrl}`),
+      warn('models', `供应商「${providerName}」模型列表拉取失败（HTTP ${res.status}），使用静态模型兜底。`),
+    ];
+  }
+
+  const data = (await res.json()) as { data?: Array<{ id: string }>; models?: Array<{ id: string }> };
+  const list = (data.data ?? data.models ?? []).map((m) => m.id);
+  const diags: Diagnostic[] = [
+    pass('network', `供应商「${providerName}」网络可达: ${config.baseUrl}`),
+    pass('models', `供应商「${providerName}」模型列表拉取成功（${list.length} 个可用）`),
+  ];
+  if (list.length > 0 && !list.includes(config.model)) {
+    diags.push(warn('model', `「${providerName}」模型 ${config.model} 不在远程列表中，可能是模型名有误或由静态列表兜底。`));
+  }
+  return diags;
 }

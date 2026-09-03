@@ -17,6 +17,9 @@ import type { ProviderConfigJson } from '../../llm/provider.js';
 export function activate(runtime: Runtime): void {
   runtime.registerCommand('model', '选择 AI 供应商及模型 / 自定义供应商（↑↓ 导航）', async () => {
     const mgr = await getConfigManager();
+    // 一级列表只靠静态列表就够（供应商数量与 key 状态都是本地的）。
+    // 注意："N 个模型可用"在后台预热完成前显示的是静态模型数（如 13），完成后才是合并数（如 33）；
+    // 这是"启动 0 网络请求"换来的取舍，且只影响这行说明文字，不影响二级选择器（那里会 ensureModels）。
     const providers = mgr.getAll().filter((p) => p.getModels().length > 0);
 
     // ── ① 一级：选择供应商（含"自定义"入口） ──
@@ -52,6 +55,18 @@ export function activate(runtime: Runtime): void {
       mgr.setKey(chosen, key.trim());
       await mgr.refreshModels(chosen); // 输入密钥后重新拉取模型
     }
+
+    // ── ③½ 模型列表按需现拉（启动提速第二档）──
+    // 启动路径已不再拉任何供应商的模型列表，改由 main.ts 后台预热；而二级选择器是这份列表
+    // 的唯一真消费者，所以展开前得确保它可用：预热已完成 → 零等待；还在飞 → await 同一个
+    // promise（inflight 去重，不重发）；压根没拉过（非 TTY 启动、预热失败）→ 现拉一次。
+    // 现拉要 0.3~0.9s（实测 opencode-go 913ms），先给一句提示，免得界面看着像卡死。
+    // 上面刚输过 key 的分支已 refreshModels 过，此处 isModelsFresh 为真 → 不提示也不重拉。
+    if (!mgr.isModelsFresh(chosen)) {
+      console.log('');
+      console.log('  正在拉取模型列表…');
+    }
+    await mgr.ensureModels(chosen);
 
     const refreshed = mgr.get(chosen);
     if (!refreshed || refreshed.getModels().length === 0) {

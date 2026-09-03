@@ -1,7 +1,8 @@
 /**
- * 内置工具注册 —— Read / Write / Grep / Bash 四个核心工具。
+ * 内置工具注册 —— Ls / Read / Write / Grep / Bash 五个核心工具。
  * 调用方：main.ts（组装工具子系统时调用）
- * 服务于：为 LLM 提供读文件、写文件、搜索内容、执行命令的能力
+ * 服务于：为 LLM 提供列目录、读文件、写文件、搜索内容、执行命令的能力
+ *         （Ls 支撑"工具增强推理"：模型先看清项目结构再动手，不凭记忆脑补）
  *
  * 设计原则：
  * 1. 参数名只认规范名，不搞多别名（结构化 function calling 由 API 保证参数格式）
@@ -55,6 +56,77 @@ function optionalPositiveInt(args: Record<string, unknown>, key: string, label: 
    ═══════════════════════════════════════════════════════════════════════════════ */
 
 export function registerBuiltinTools(tools: ToolProvider): void {
+  /* ── Ls：列目录（了解结构，工具增强推理的起点） ── */
+  tools.register({
+    name: 'ls',
+    description: '列出目录内容，了解项目/目录结构（动手前先看清结构）。目录项以 / 结尾。默认只列当前层，depth 可递归。跳过 .git/node_modules/dist 等噪音目录。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: '目录路径，默认当前目录。示例: "src/" 或 "C:/Users/name/project"',
+        },
+        depth: {
+          type: 'number',
+          description: '递归深度（1=仅当前层）。默认 1。示例: 2 列出两层',
+        },
+      },
+    },
+    handler: async (args) => {
+      try {
+        const path = optionalString(args, 'path', '.');
+        const depth = optionalPositiveInt(args, 'depth', '递归深度', 1);
+
+        const { existsSync, statSync, readdirSync } = await import('node:fs');
+        const resolvedPath = path.replace(/\\/g, '/');
+
+        if (!existsSync(resolvedPath)) {
+          return `[NOT_FOUND] 目录不存在: ${resolvedPath}`;
+        }
+        if (!statSync(resolvedPath).isDirectory()) {
+          return `[NOT_DIR] 不是目录: ${resolvedPath}`;
+        }
+
+        // 递归列目录（目录名带 / 后缀；跳过噪音目录；限制条目数防膨胀）
+        const SKIP = new Set(['.git', 'node_modules', 'dist']);
+        const MAX_ENTRIES = 200;
+        const lines: string[] = [];
+        const walk = (dir: string, level: number): void => {
+          if (level > depth || lines.length >= MAX_ENTRIES) return;
+          let items;
+          try {
+            items = readdirSync(dir, { withFileTypes: true });
+          } catch {
+            return; // 无权限等 → 跳过该目录
+          }
+          items.sort((a, b) => {
+            if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+            return a.name.localeCompare(b.name);
+          });
+          for (const item of items) {
+            if (lines.length >= MAX_ENTRIES) return;
+            if (item.name.startsWith('.') || SKIP.has(item.name)) continue;
+            const prefix = '  '.repeat(level - 1);
+            const isDir = item.isDirectory();
+            lines.push(`${prefix}- ${item.name}${isDir ? '/' : ''}`);
+            if (isDir) walk(`${dir}/${item.name}`, level + 1);
+          }
+        };
+        walk(resolvedPath, 1);
+
+        if (lines.length === 0) {
+          return `[EMPTY] 目录为空或全部被过滤: ${resolvedPath}`;
+        }
+        const count = lines.length;
+        return `[OK] 目录 ${resolvedPath} (${count} 项${count >= MAX_ENTRIES ? ', 已达上限截断' : ''}):\n${lines.join('\n')}`;
+      } catch (e) {
+        if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
+        return `[ERROR] 列目录失败: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    },
+  });
+
   /* ── Read：读文件 ── */
   tools.register({
     name: 'read',

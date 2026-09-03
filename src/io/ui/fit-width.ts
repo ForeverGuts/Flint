@@ -6,8 +6,39 @@
  * 要点：
  *   - ANSI 颜色码（\x1b[36m 等）不计宽度，完整保留
  *   - 中文/全角字符按 2 列宽计算
+ *   - 制表画框/箭头/盲文等非 ASCII 窄字符按 1 列（见 NARROW_NON_ASCII）
  *   - 超宽截断丢弃剩余字符
+ *   - 一律按码点迭代：emoji 是 UTF-16 代理对，按 code unit 切会测宽翻倍并折出半截乱码
  */
+/**
+ * 按 1 列绘制的非 ASCII 区段。
+ * 它们在 Unicode 里归为 East Asian Ambiguous（宽度取决于终端字体回退），
+ * 但等宽西文字体一律把它们画成窄字符，Windows Terminal / VSCode(xterm.js)
+ * / conhost+Consolas 实测都是 1 列。
+ *
+ * 为什么必须显式声明：旧规则是"charCode > 0xff 即 2 列"，于是 ─┌┐└┘ 被算成 2 列，
+ * 76 字符的边框被测成 140 列 → fitWidth 砍到 45 字符，右边的 ┐ ┘ 被整段截掉，框是破的。
+ *
+ * 其余非 ASCII（汉字、全角标点、— … “”、emoji）仍按 2 列：宁可少写几列，也不能让行超宽——
+ * 超宽会触发终端软换行，而差分渲染按"一逻辑行 = 一终端行"记账，行数一错整屏就花。
+ */
+const NARROW_NON_ASCII: ReadonlyArray<readonly [number, number]> = [
+  [0x2190, 0x21ff], // ← ↑ → ↓（快捷键提示、选择器导航）
+  [0x2500, 0x259f], // ─ │ ┌ ┐ └ ┘ ├ ═（消息框边框、分隔线）
+  [0x276f, 0x276f], // ❯（选择器当前项光标）
+  [0x2800, 0x28ff], // ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏（旋转动画帧）
+];
+
+/** 单个可见字符（码点）的显示列宽：ASCII 与窄区段 1 列，其余非 ASCII 2 列 */
+function charWidth(ch: string): number {
+  const cp = ch.codePointAt(0)!;
+  if (cp <= 0xff) return 1;
+  for (const [lo, hi] of NARROW_NON_ASCII) {
+    if (cp >= lo && cp <= hi) return 1;
+  }
+  return 2;
+}
+
 /**
  * 计算文本可见宽度（剔除 ANSI 颜色码，CJK/全角计 2 列）。
  * 调用方：Screen（行宽告警）、TreeUI（输入行光标定位）
@@ -25,7 +56,7 @@ export function visibleWidth(text: string): number {
       inAnsi = true;
       continue;
     }
-    w += ch.charCodeAt(0) > 0xff ? 2 : 1;
+    w += charWidth(ch);
   }
   return w;
 }
@@ -72,9 +103,12 @@ function tokenize(text: string): WrapUnit[] {
       pendingAnsi = '';
       i++;
     } else {
-      units.push({ ansi: pendingAnsi, ch, w: ch.charCodeAt(0) > 0xff ? 2 : 1 });
+      // 按码点取字符：emoji 占 2 个 UTF-16 单元，按 text[i] 切会拆成半截代理，
+      // 既让宽度翻倍，又可能在折行点把代理对劈开 → 屏幕上出现乱码方块
+      const cp = String.fromCodePoint(text.codePointAt(i)!);
+      units.push({ ansi: pendingAnsi, ch: cp, w: charWidth(cp) });
       pendingAnsi = '';
-      i++;
+      i += cp.length;
     }
   }
   // 残留 ANSI（文本以颜色码结尾）：作为零宽单元并入
@@ -166,7 +200,7 @@ export function fitWidth(text: string, maxWidth: number): string {
       ansiBuf = '\x1b';
       continue;
     }
-    const w = ch.charCodeAt(0) > 0xff ? 2 : 1;
+    const w = charWidth(ch);
     if (width + w > maxWidth) break;
     out += ch;
     width += w;

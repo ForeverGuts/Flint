@@ -19,8 +19,28 @@
  *     而非 OpenAI 的 tool_calls 顶级字段
  *   - 流式 SSE 格式不同：Anthropic 用 event: 行前缀，OpenAI 用 data: 行前缀
  */
-import type { ChatResult, LLMConfig, LLMMessage, LLMProvider, LLMStreamEvent, LLMTool, LLMToolCall } from './types.js';
+import type { ChatResult, LLMConfig, LLMMessage, LLMProvider, LLMRequestOptions, LLMStreamEvent, LLMTool, LLMToolCall, LLMUsage, ThinkingBlock } from './types.js';
 import { EventStream } from '../runtime/event-stream.js';
+import { resolveThinkingEnabled } from './stream-helper.js';
+
+/* ── 输出预算常量（thinking 约束：budget_tokens 必须严格小于 max_tokens） ── */
+const ANTHROPIC_MAX_TOKENS = 4096;
+const THINKING_BUDGET_TOKENS = 2048;
+
+/**
+ * 解析本次请求是否开启 extended thinking（阶段 C3 问题1：消费按次判定，不再静默丢弃）。
+ * 优先级与 OpenAI 兼容路径同一函数（按次覆盖 > 配置）。
+ * 安全阀（阶段 C3 问题3 精确化）：Anthropic 要求带 tool_use 的 assistant 轮回放 thinking 块（验 signature）。
+ *   - 历史存在“带 tool_calls 但无 thinkingBlocks”的 assistant 消息 → 无法回放，强制关（防 400）；
+ *   - run() 内的 assistant 消息已被挂载 thinkingBlocks → 可回放，正常开启；
+ *   - 跨用户轮历史为纯文本（会话存储不存结构化信息），无回放义务 → 不拦截。
+ */
+function resolveAnthropicThinking(config: LLMConfig, opts: LLMRequestOptions | undefined, messages: LLMMessage[]): boolean {
+  if (!resolveThinkingEnabled(config, opts)) return false;
+  return messages.every((m) =>
+    m.role !== 'assistant' || !m.tool_calls?.length || (m.thinkingBlocks?.length ?? 0) > 0,
+  );
+}
 
 /* ════════════════════════════════════════════════════════════════════════════
    Anthropic Messages API 类型定义
@@ -29,8 +49,11 @@ import { EventStream } from '../runtime/event-stream.js';
 type AnthropicRole = 'user' | 'assistant';
 
 interface AnthropicContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result';
+  type: 'text' | 'tool_use' | 'tool_result' | 'thinking';
   text?: string;
+  /** extended thinking 块（阶段 C3 问题3）：推理文本 + Anthropic 签名，多轮需原样回放 */
+  thinking?: string;
+  signature?: string;
   id?: string;
   name?: string;
   input?: Record<string, unknown>;
@@ -62,6 +85,8 @@ interface AnthropicRequest {
   max_tokens: number;
   stream?: boolean;
   tools?: AnthropicTool[];
+  /** extended thinking（与 OpenAI 的 thinking:{type} 形状不同：必须带 budget_tokens 且 < max_tokens） */
+  thinking?: { type: 'enabled'; budget_tokens: number };
 }
 
 interface AnthropicResponse {
@@ -75,6 +100,25 @@ interface AnthropicResponse {
     input_tokens: number;
     output_tokens: number;
   };
+}
+
+/**
+ * Anthropic 流式用量片段——分两处给：
+ *   message_start 携 input（本次请求发了多少）
+ *   message_delta 携 output（累计值，不是增量）
+ *
+ * 缓存字段必须算进输入：本项目在 system 分层与 tools 上都设了 cache_control 断点，
+ * 命中时 input_tokens 会小到只剩个位数（它只统计"本次新读的非缓存部分"），
+ * 只填它就等于伪报"这次几乎没发输入"——真实计费量是三者之和。
+ * （缓存命中率的明细本层不单列：LLMUsage 只有三个槽，先把总量报对）
+ */
+interface AnthropicStreamUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  /** 本次新建缓存块写进的输入 token */
+  cache_creation_input_tokens?: number;
+  /** 本次命中缓存复用的输入 token */
+  cache_read_input_tokens?: number;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -115,6 +159,12 @@ function toAnthropicMessages(msgs: LLMMessage[]): {
       case 'assistant': {
         // 解析 tool_calls 或纯文本
         const content: AnthropicContentBlock[] = [];
+        // 阶段 C3 问题3：原样回放本轮 thinking 块（置于 text/tool_use 之前，与产出顺序一致；一字不改否则验签失败）
+        if (msg.thinkingBlocks && msg.thinkingBlocks.length > 0) {
+          for (const tb of msg.thinkingBlocks) {
+            content.push({ type: 'thinking', thinking: tb.thinking, signature: tb.signature });
+          }
+        }
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           // 如果有工具调用，文本和 tool_use 平行放在 content 里
           if (msg.content) {
@@ -215,15 +265,18 @@ export class AnthropicProvider implements LLMProvider {
 
   /* ── 非流式调用 ── */
 
-  async chat(messages: LLMMessage[], tools?: LLMTool[]): Promise<ChatResult> {
+  async chat(messages: LLMMessage[], tools?: LLMTool[], opts?: LLMRequestOptions): Promise<ChatResult> {
     const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
 
     const body: AnthropicRequest = {
       model: this.config.model,
       messages: anthropicMsgs,
-      max_tokens: 4096,
+      max_tokens: ANTHROPIC_MAX_TOKENS,
       stream: false,
     };
+    if (resolveAnthropicThinking(this.config, opts, messages)) {
+      body.thinking = { type: 'enabled', budget_tokens: THINKING_BUDGET_TOKENS };
+    }
     if (tools && tools.length > 0) body.tools = toAnthropicTools(tools);
     if (system && system.length > 0) body.system = system;
 
@@ -247,7 +300,7 @@ export class AnthropicProvider implements LLMProvider {
 
   /* ── 流式调用 ── */
 
-  stream(messages: LLMMessage[], tools?: LLMTool[]): EventStream<LLMStreamEvent> {
+  stream(messages: LLMMessage[], tools?: LLMTool[], opts?: LLMRequestOptions): EventStream<LLMStreamEvent> {
     const eventStream = new EventStream<LLMStreamEvent>(
       (event) => event.type === 'end',
       (event) => event as { type: 'end'; fullText: string },
@@ -260,9 +313,12 @@ export class AnthropicProvider implements LLMProvider {
         const body: AnthropicRequest = {
           model: this.config.model,
           messages: anthropicMsgs,
-          max_tokens: 4096,
+          max_tokens: ANTHROPIC_MAX_TOKENS,
           stream: true,
         };
+        if (resolveAnthropicThinking(this.config, opts, messages)) {
+          body.thinking = { type: 'enabled', budget_tokens: THINKING_BUDGET_TOKENS };
+        }
         if (tools && tools.length > 0) body.tools = toAnthropicTools(tools);
         if (system && system.length > 0) body.system = system;
 
@@ -284,10 +340,18 @@ export class AnthropicProvider implements LLMProvider {
         const decoder = new TextDecoder();
         let buffer = '';
         let full = '';
+        /** 用量累积器：两个事件分别填，都没见到则保持 sawUsage=false（上层报 null） */
+        let promptTokens = 0;
+        let completionTokens = 0;
+        let sawUsage = false;
 
         // ── 工具调用累积（Anthropic 流式 tool_use） ──
         // content_block_start 携带 tool_use 的 id/name，input 通过 input_json_delta 分片累积
         const toolBlocks: Map<number, { id: string; name: string; input: string }> = new Map();
+        // ── thinking 块收集（阶段 C3 问题1 展示 / 问题3 回放） ──
+        // reasoning 分片（thinking_delta）推展示事件不进 full（展示不持久）；同时按块累积，
+        // 连同 signature_delta 的签名在 content_block_stop 时拼装完整块 → 推 thinking_block 事件供回放
+        const thinkingBlocks: Map<number, { thinking: string; signature: string }> = new Map();
 
         while (true) {
           const { done, value } = await reader.read();
@@ -310,14 +374,65 @@ export class AnthropicProvider implements LLMProvider {
               const data = JSON.parse(trimmed.slice(6)) as {
                 type?: string;
                 index?: number;
-                delta?: { text?: string; partial_json?: string };
+                delta?: { text?: string; partial_json?: string; thinking?: string; signature?: string };
                 content_block?: {
                   type?: string;
                   text?: string;
                   id?: string;
                   name?: string;
                 };
+                /** message_start 携：本次请求的输入用量（含缓存明细） */
+                message?: { usage?: AnthropicStreamUsage };
+                /** message_delta 携：累计输出用量 */
+                usage?: AnthropicStreamUsage;
               };
+
+              // 用量·输入（message_start）：缓存写入与命中都要加回来，否则严重少报
+              if (data.type === 'message_start' && data.message?.usage) {
+                const u = data.message.usage;
+                promptTokens = (u.input_tokens ?? 0)
+                  + (u.cache_creation_input_tokens ?? 0)
+                  + (u.cache_read_input_tokens ?? 0);
+                completionTokens = u.output_tokens ?? 0;
+                sawUsage = true;
+              }
+
+              // 用量·输出（message_delta）：给的是累计值，直接覆盖不累加
+              if (data.type === 'message_delta' && data.usage) {
+                completionTokens = data.usage.output_tokens ?? completionTokens;
+                sawUsage = true;
+              }
+
+              // thinking 块开始：初始化按块累积器（推理分片将走 reasoning 通道，不进正文）
+              if (data.type === 'content_block_start' && data.content_block?.type === 'thinking') {
+                thinkingBlocks.set(data.index ?? thinkingBlocks.size, { thinking: '', signature: '' });
+              }
+
+              // 推理增量：推展示事件 + 累积入块（展示不持久只针对 full/历史，累积是回放用的协议数据）
+              if (data.type === 'content_block_delta' && data.delta?.thinking) {
+                const acc = thinkingBlocks.get(data.index ?? -1);
+                if (acc) acc.thinking += data.delta.thinking;
+                eventStream.push({ type: 'reasoning', text: data.delta.thinking });
+                continue;
+              }
+
+              // 签名增量：Anthropic 对块的防篡改章，回放必备（阶段 C3 问题3）
+              if (data.type === 'content_block_delta' && data.delta?.signature) {
+                const acc = thinkingBlocks.get(data.index ?? -1);
+                if (acc) acc.signature += data.delta.signature;
+                continue;
+              }
+
+              // thinking 块结束：拼装完整块 → 推 thinking_block 事件（Agent Loop 挂到本轮 assistant 消息，供下一轮回放）
+              if (data.type === 'content_block_stop') {
+                const idx = data.index ?? -1;
+                const acc = thinkingBlocks.get(idx);
+                if (acc) {
+                  thinkingBlocks.delete(idx);
+                  const block: ThinkingBlock = { type: 'thinking', thinking: acc.thinking, signature: acc.signature };
+                  eventStream.push({ type: 'thinking_block', block });
+                }
+              }
 
               // 文本增量
               if (data.type === 'content_block_delta' && data.delta?.text) {
@@ -359,8 +474,14 @@ export class AnthropicProvider implements LLMProvider {
             }));
           eventStream.push({ type: 'tool_call', toolCalls });
         }
-        eventStream.push({ type: 'end', fullText: full });
-      } catch {
+        // Anthropic 不给 total，自加；一个用量事件都没见到则不填（不伪报 0）
+        const usage: LLMUsage | undefined = sawUsage
+          ? { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens }
+          : undefined;
+        eventStream.push({ type: 'end', fullText: full, ...(usage ? { usage } : {}) });
+      } catch (err) {
+        // 流异常不吞：暴露真实错误（否则上层只看到空流，无法定位）
+        console.error('[AnthropicStream] 流异常:', err);
         eventStream.end();
       }
     })();

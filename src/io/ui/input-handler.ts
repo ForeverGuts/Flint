@@ -6,12 +6,19 @@
  *
  * 原理：
  *   - 进入 raw mode（process.stdin.setRawMode(true)），每个按键立即送达
- *   - 逐字节解析：普通字符追加到输入行，Enter 提交，\x1b[A/B 等转义交给方向键
+ *   - 逐段解析：普通字符追加到输入行，Enter 提交，\x1b[A/B 等转义交给方向键
  *   - Alt+Enter：\x1b\r（ESC 后跟回车）→ 标记为 followUp
+ *   - 括号粘贴（bracketed paste，mode 2004）：终端把粘贴内容包在 \x1b[200~...\x1b[201~ 里，
+ *     与 Enter 键明确区分——多行粘贴入缓冲区（换行转空格）而不触发提交，用户按 Enter 才提交；
+ *     不支持 2004 的终端降级：含换行的 chunk 内文本先入 buffer 再提交（旧实现会整块丢弃）
  */
 import { appendFileSync } from 'node:fs';
 /** 提交回调：text = 输入文本, mode = 'enter' | 'alt-enter' */
 export type SubmitCallback = (text: string, mode: 'enter' | 'alt-enter') => void;
+
+/** 括号粘贴标记（mode 2004 启用后终端用它包裹粘贴内容） */
+const PASTE_START = '\x1b[200~';
+const PASTE_END = '\x1b[201~';
 
 export class InputHandler {
   /** 当前输入缓冲区 */
@@ -59,6 +66,9 @@ export class InputHandler {
     if (process.stdin.setRawMode) {
       process.stdin.setRawMode(true);
     }
+    // 启用括号粘贴（mode 2004）：Windows Terminal/conpty 支持；
+    // 启用后多行粘贴不再与 Enter 键混淆（粘贴内容被 \x1b[200~...\x1b[201~ 包裹）
+    process.stdout.write('\x1b[?2004h');
     process.stdin.resume();
     process.stdin.on('data', (chunk: Buffer) => this.handleData(chunk));
   }
@@ -67,6 +77,8 @@ export class InputHandler {
   stop(): void {
     this.listening = false;
     process.stdin.removeAllListeners('data');
+    // 关闭括号粘贴（退出后终端恢复常规粘贴行为）
+    process.stdout.write('\x1b[?2004l');
     if (process.stdin.setRawMode) {
       process.stdin.setRawMode(false);
     }
@@ -79,6 +91,8 @@ export class InputHandler {
 
   /** 转义序列缓冲（raw mode 下 ↑ 可能是 \x1b + [A 拆包到达） */
   private escapeBuf = '';
+  /** 括号粘贴缓冲（粘贴内容跨 chunk 时累积，直到 \x1b[201~ 到达） */
+  private pasteBuf: string | null = null;
 
   /** 调试日志（env TS_AGENT_DEBUG_INPUT=1 时开启，写入 debug-input.log，避免污染 stdout） */
   static debug = !!process.env.TS_AGENT_DEBUG_INPUT;
@@ -91,117 +105,170 @@ export class InputHandler {
     }
   }
 
-  /** 处理原始字节 */
+  /** 处理原始字节（try/catch 包裹：stdin data 回调里的异常 = uncaught = 进程崩溃 UI 僵死，必须就地吃掉） */
   private handleData(chunk: Buffer): void {
     if (this.paused) return;
     let str = chunk.toString('utf-8');
-    this.debugLog(`[handleData] raw=${JSON.stringify(str)} | onSelectKey=${this.onSelectKey !== null} | buffer="${this.buffer}"`);
-
-    // ── 转义序列缓冲：累积 \x1b 开头的序列直到完整（CSI 序列以字母结尾） ──
-    if (this.escapeBuf) {
-      // 孤立 ESC：累积的是单个 \x1b 且新数据不是 CSI（[）→ 丢弃 ESC，只处理新数据
-      // （防止 ESC 残留污染后续普通字符/Enter）
-      if (this.escapeBuf === '\x1b' && !str.startsWith('[')) {
-        this.escapeBuf = '';
-      } else {
-        this.escapeBuf += str;
-        const complete = this.tryCompleteEscape();
-        if (!complete) return; // 序列不完整，等下一个 chunk
-        str = this.escapeBuf;
-        this.escapeBuf = '';
+    try {
+      // ── 括号粘贴状态机：粘贴内容可能跨 chunk，累积到 \x1b[201~ 出现 ──
+      if (this.pasteBuf !== null) {
+        const end = str.indexOf(PASTE_END);
+        if (end === -1) { this.pasteBuf += str; return; }
+        this.pasteBuf += str.slice(0, end);
+        this.appendPaste(this.pasteBuf);
+        this.pasteBuf = null;
+        str = str.slice(end + PASTE_END.length);
+        if (!str) return;
       }
-    } else if (str.startsWith('\x1b')) {
-      // 新转义序列开始：可能是完整（\x1b[A）或拆包（\x1b + [A）
-      this.escapeBuf = str;
-      const complete = this.tryCompleteEscape();
-      if (!complete) return;
-      str = this.escapeBuf;
-      this.escapeBuf = '';
-    }
 
-    // 选择器拦截：选择器激活时所有按键先给它，由它决定消费
-    if (this.onSelectKey && this.onSelectKey(str)) {
-      this.debugLog(`  → 被选择器消费 (${JSON.stringify(str)})`);
-      return;
-    }
-
-    // Alt+Enter：\x1b\r（Windows 下可能带 \n，组合送达）
-    if (str === '\x1b\r' || str === '\x1b\n' || str === '\x1b\r\n' || str === '\x1b\n\r') {
-      this.debugLog('  → Alt+Enter 提交');
-      this.submit('alt-enter');
-      return;
-    }
-
-    // Enter：含 \r 或 \n 即视为提交（覆盖 \r、\n、\r\n、\n\r 及 Windows 下任意混合分片）
-    if (/[\r\n]/.test(str)) {
-      this.debugLog(`  → Enter 提交 (${JSON.stringify(str)})`);
-      this.submit('enter');
-      return;
-    }
-
-    // Ctrl+C
-    if (str === '\x03') {
-      this.debugLog('  → Ctrl+C，退出');
-      // 先恢复终端（raw mode → 正常模式 + 显示光标），再退出
-      if (this.onExit) {
-        this.onExit();
-      } else {
-        if (process.stdin.setRawMode) process.stdin.setRawMode(false);
-        process.stdout.write('\x1b[?25h');
+      // ── 转义序列缓冲：序列可能拆包到达（\x1b + [A） ──
+      if (this.escapeBuf) {
+        // 孤立 ESC：累积的是单个 \x1b 且新数据不是 CSI（[）→ 丢弃 ESC，只处理新数据
+        // （防止 ESC 残留污染后续普通字符/Enter）
+        if (this.escapeBuf === '\x1b' && !str.startsWith('[')) {
+          this.escapeBuf = '';
+        } else {
+          str = this.escapeBuf + str;
+          this.escapeBuf = '';
+        }
       }
-      process.exit(0);
-      return;
-    }
 
-    // 退格：\x7f 或 \x08
-    if (str === '\x7f' || str === '\x08') {
-      this.debugLog(`  → 退格`);
-      this.buffer = this.buffer.slice(0, -1);
-      this.onChange?.();
-      return;
-    }
+      this.debugLog(`[handleData] raw=${JSON.stringify(str)} | onSelectKey=${this.onSelectKey !== null} | buffer="${this.buffer}"`);
 
-    // 完整转义序列（\x1b[A 等）交给组件处理，不作为文本
-    if (str.startsWith('\x1b')) {
-      this.debugLog(`  → 未消费转义序列 (${JSON.stringify(str)})`);
-      this.onEscapeSequence?.(str);
-      return;
-    }
+      // 选择器拦截：选择器激活时所有按键先给它，由它决定消费
+      if (this.onSelectKey && this.onSelectKey(str)) {
+        this.debugLog(`  → 被选择器消费 (${JSON.stringify(str)})`);
+        return;
+      }
 
-    // 普通字符：追加到输入行（剔除残留的换行控制符，防止输入行翻行）
-    this.debugLog(`  → 追加 "${str}"`);
-    const safe = str.replace(/[\r\n]/g, '');
-    if (safe) {
-      this.buffer += safe;
-      this.onChange?.();
+      this.processInput(str);
+    } catch (e) {
+      // 解析异常只记日志不上抛（防一个怪异字节序列杀死整个进程）
+      this.debugLog(`[handleData] 异常已忽略: ${e instanceof Error ? e.stack : String(e)}`);
     }
   }
 
   /**
-   * 尝试完成当前转义缓冲序列。
-   * CSI 序列：\x1b [ 参数? 最终字节，最终字节是 0x40-0x7e 的字母/符号。
-   * 返回 true 表示序列完整。
+   * 解析普通输入（逐段循环）：粘贴标记 / 焦点事件 / Alt+Enter / 转义序列 / 换行 / Ctrl+C / 退格 / 文本。
+   * 换行语义（修复旧版"含 \r\n 的 chunk 整块当 Enter、文本被丢弃"的缺陷）：
+   *   - 换行前的同 chunk 文本先入 buffer 再提交（文本不再丢）
+   *   - 多行内容（无 bracketed 支持终端的粘贴）以空格合并为同一条消息
+   *   - 仅当 chunk 以换行结尾才提交（换行在中间且尾部还有文本 → 可能是未完成的粘贴，
+   *     留在 buffer 等用户明确按 Enter，宁可不自动提交也不丢/误发内容）
    */
-  private tryCompleteEscape(): boolean {
-    const buf = this.escapeBuf;
-    if (buf.length === 0) return false;
-    if (buf === '\x1b') return false; // 单独的 ESC，等后续
+  private processInput(str: string): void {
+    const parts: string[] = [];
+    let sawNewline = false;
+    let altEnter = false;
+    // 提交判定：chunk 以换行结尾才是明确的提交信号（尾部还有文本 → 留在 buffer 等 Enter）
+    const endsWithNewline = /[\r\n]$/.test(str) || /\x1b[\r\n]+$/.test(str);
 
-    // 检查：\x1b 后是否已有完整 CSI（\x1b[ ... 最终字节）
-    if (buf[1] === '[') {
-      // 从第 3 个字符开始，找到非参数（非 0-9;?）的最终字节
-      for (let i = 2; i < buf.length; i++) {
-        const ch = buf[i];
-        if (!/[0-9;?]/.test(ch)) {
-          // 遇到最终字节（A/B/C/D 等）→ 序列完整
-          return true;
-        }
+    /** 已收集文本段入 buffer：首段直连（快速打字不被空格拆散），后续段以空格分隔（多行粘贴合并） */
+    const flushParts = (): void => {
+      let first = true;
+      for (const p of parts) {
+        if (!p) continue;
+        if (!first && this.buffer && !this.buffer.endsWith(' ')) this.buffer += ' ';
+        this.buffer += p;
+        first = false;
       }
-      return false; // 还在参数中
+      parts.length = 0;
+    };
+
+    while (str.length > 0) {
+      // 括号粘贴开始：内容作为文本累积，不触发提交（用户按 Enter 明确提交）
+      if (str.startsWith(PASTE_START)) {
+        const end = str.indexOf(PASTE_END, PASTE_START.length);
+        if (end === -1) { flushParts(); this.pasteBuf = str.slice(PASTE_START.length); return; }
+        this.appendPaste(str.slice(PASTE_START.length, end));
+        str = str.slice(end + PASTE_END.length);
+        continue;
+      }
+      // 焦点事件（终端聚焦/失焦）：静默丢弃，不当作输入
+      if (str.startsWith('\x1b[I') || str.startsWith('\x1b[O')) { str = str.slice(3); continue; }
+      // Alt+Enter：\x1b\r / \x1b\n（followUp）
+      if (str.startsWith('\x1b\r') || str.startsWith('\x1b\n')) {
+        str = str.replace(/^\x1b[\r\n]+/, '');
+        sawNewline = true;
+        altEnter = true;
+        continue;
+      }
+      // 其他转义序列（方向键等）：只消费序列本身，剩余字节继续解析（旧实现会整 chunk 吞掉）
+      if (str.startsWith('\x1b')) {
+        const seq = this.takeEscapeSeq(str);
+        if (seq === null) { flushParts(); this.escapeBuf = str; return; } // 不完整，等下一 chunk
+        str = str.slice(seq.length);
+        this.debugLog(`  → 转义序列 ${JSON.stringify(seq)}`);
+        this.onEscapeSequence?.(seq);
+        continue;
+      }
+      // 换行：提交信号——同 chunk 中换行前的文本先入 buffer（不再丢弃）
+      const m = /[\r\n]/.exec(str);
+      if (m) {
+        if (m.index > 0) parts.push(str.slice(0, m.index));
+        sawNewline = true;
+        str = str.slice(m.index).replace(/^[\r\n]+/, '');
+        continue;
+      }
+      // Ctrl+C
+      if (str[0] === '\x03') {
+        this.debugLog('  → Ctrl+C，退出');
+        // 先恢复终端（raw mode → 正常模式 + 显示光标），再退出
+        if (this.onExit) {
+          this.onExit();
+        } else {
+          if (process.stdin.setRawMode) process.stdin.setRawMode(false);
+          process.stdout.write('\x1b[?25h');
+        }
+        process.exit(0);
+        return;
+      }
+      // 退格：\x7f 或 \x08
+      if (str[0] === '\x7f' || str[0] === '\x08') {
+        this.debugLog('  → 退格');
+        flushParts();
+        this.buffer = this.buffer.slice(0, -1);
+        this.onChange?.();
+        str = str.slice(1);
+        continue;
+      }
+      // 普通文本：整段吃到下一个控制符为止
+      const next = /[\r\n\x1b\x03\x7f\x08]/.exec(str);
+      parts.push(next ? str.slice(0, next.index) : str);
+      str = next ? str.slice(next.index) : '';
     }
 
-    // 非 CSI 的 ESC 序列（如 \x1b 单键）——完整
-    return true;
+    const before = this.buffer;
+    flushParts();
+    if (sawNewline && (endsWithNewline || altEnter)) {
+      this.debugLog(`  → ${altEnter ? 'Alt+Enter' : 'Enter'} 提交 (${JSON.stringify(this.buffer)})`);
+      this.submit(altEnter ? 'alt-enter' : 'enter');
+    } else if (this.buffer !== before) {
+      this.onChange?.();
+    }
+  }
+
+  /** 括号粘贴内容入 buffer：换行转空格（输入行保持单行渲染），不自动提交 */
+  private appendPaste(content: string): void {
+    const cleaned = content.replace(/[\r\n]+/g, ' ').trim();
+    this.debugLog(`  → 括号粘贴 ${content.length} 字符（换行已转空格）`);
+    if (!cleaned) return;
+    this.buffer += (this.buffer ? ' ' : '') + cleaned;
+    this.onChange?.();
+  }
+
+  /**
+   * 从 chunk 头部取出一个完整转义序列前缀。
+   * CSI 序列：\x1b [ 参数(0-9;?) 最终字节（0x40-0x7e）；非 CSI：\x1b + 单字符。
+   * 返回 null = 序列不完整（需等下一 chunk）。
+   */
+  private takeEscapeSeq(str: string): string | null {
+    if (str.length < 2) return null; // 单独的 ESC，等后续
+    if (str[1] !== '[') return str.slice(0, 2); // ESC+单字符（如 Alt 组合）
+    for (let i = 2; i < str.length; i++) {
+      if (!/[0-9;?]/.test(str[i])) return str.slice(0, i + 1); // 遇到最终字节（A/B/C/D/~ 等）
+    }
+    return null; // 还在参数中
   }
 
   /** 提交当前输入（空 buffer 的 Enter 完全 no-op，不触发渲染——避免 Windows 一次 Enter 发多个 \r 导致多余重绘） */

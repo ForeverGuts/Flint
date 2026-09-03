@@ -9,12 +9,39 @@ import type { Diagnostic, RuntimeOptions } from '../types.js';
 import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
-import type { EventHandler, HookHandler } from './events.js';
-import { AgentLoopServiceImpl } from '../loop/agent-loop.js';
+import type { EventHandler, HookHandler, SpanAttrs, SpanResult } from './events.js';
+import type { CollectedSpan, SpanCollector } from '../core/events.js';
+import { AgentLoopServiceImpl, DEFAULT_MAX_TURNS, WITH_PLAN_MAX_TURNS } from '../loop/agent-loop.js';
 import { estimateTokenUsage } from './utils.js';
 import { promptPermission } from '../io/ui/permission-prompt.js';
 import { selectFromList } from '../io/ui/selector.js';
 import { readLine } from '../io/terminal.js';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { hasUncheckedTask } from '../context/system-prompt.js';
+
+/**
+ * 读工作记忆 TASK.md 并善后（阶段 C2 工程侧清理）。
+ * 调用方：Runtime.runSingleTurn（每次请求注入 task 层）
+ * 服务于：compaction 只压缩对话历史 jsonl，TASK.md 在文件系统不受影响，每次请求重新读取注入。
+ *   清理语义：清单全勾选（任务已完成）→ 删除文件并返回 undefined——
+ *   遗留的已完成计划不再放大轮数预算、不再触发 auto thinking/续传提示（不依赖模型自觉）。
+ */
+export function loadTaskMemory(taskPath = 'TASK.md'): string | undefined {
+  try {
+    if (!existsSync(taskPath)) return undefined;
+    const content = readFileSync(taskPath, 'utf-8').trim();
+    if (!content) return undefined;
+    if (!hasUncheckedTask(content)) {
+      try { unlinkSync(taskPath); } catch { /* 清理失败不阻塞请求（下次请求会重试） */ }
+      return undefined;
+    }
+    // 截断防膨胀（TASK.md 由模型用 write 维护，应保持精简）
+    return content.length > 2000 ? content.slice(0, 2000) + '\n...（截断）' : content;
+  } catch {
+    return undefined; // 读取失败不影响请求（无工作记忆）
+  }
+}
+
 /* ── 类型定义 ── */
 
 /** 命令处理函数签名（re-export 自 core，保持兼容） */
@@ -55,12 +82,16 @@ export class Runtime {
   permission: import('../core/permission.js').PermissionProvider;
   /** 事件总线（构造注入，缺省默认 PromptEventEmitter） */
   private events: PromptEventEmitter;
+  /** 段收集器（接口注入，把成对 span 合成一段完整行为；/traces 只读，不参与对话流程） */
+  private spanCollector: SpanCollector;
   /** 当前模型名（供 /model 命令读写） */
   currentModel: string = '';
   /** 当前 provider 类型（供 /model 命令读写） */
   currentProvider: string = 'deepseek';
   /** 当前 baseUrl（供 /model 命令读写） */
   currentBaseUrl: string = '';
+  /** thinking 配置模式（阶段 C2：'on' 常开 / 'off' 常关 / 'auto' 按有无进行中任务判定，缺省 auto） */
+  private thinkingMode: 'auto' | 'on' | 'off' = 'auto';
   /** 选择器钩子（TTY 由 TreeUI 注册，管道用默认 selectFromList） */
   private selectHook: ((items: SelectItem[], title?: string) => Promise<string | undefined>) | null = null;
   /** TTY 读行钩子（由 TreeUI 注册，走 InputHandler；管道用 readLine） */
@@ -130,6 +161,8 @@ export class Runtime {
     this.tools = options.tools;
     this.permission = options.permission;
     this.events = options.events;
+    // 段收集器（main 建实例并 attach 到同一条总线；与 trace-log watcher 各持一份，互不知情）
+    this.spanCollector = options.spanCollector;
     this.skills = options.skills;
     this.skills.load();
     this.commandSystem = options.commandSystem;
@@ -139,7 +172,20 @@ export class Runtime {
     // 系统提示词——注入（main 组装，配置驱动 + hook）
     this.systemPromptService = options.systemPromptService;
     // Agent Loop——内部创建（回调依赖 runtime 的权限弹窗/诊断/兜底）
-    this.agentLoop = new AgentLoopServiceImpl({
+    this.agentLoop = this.buildAgentLoop();
+    if (options.model) this.currentModel = options.model;
+    if (options.provider) this.currentProvider = options.provider;
+    if (options.baseUrl) this.currentBaseUrl = options.baseUrl;
+    if (options.thinking) this.thinkingMode = options.thinking;
+  }
+
+  /**
+   * 组装 Agent Loop（构造时与热切换时各调一次）。
+   * 为什么抽成方法：AgentLoop 持有的是注入时的 Provider 引用，
+   * setLLM() 只改 this.llm 不重建它，循环就会继续用旧的那只。
+   */
+  private buildAgentLoop(): import('../core/loop.js').AgentLoopService {
+    return new AgentLoopServiceImpl({
       llm: this.llm,
       tools: this.tools,
       permission: this.permission,
@@ -148,9 +194,6 @@ export class Runtime {
       onDiagnostic: (level, item, message) => this.recordDiagnostic(level as 'fail' | 'warn', item, message),
       onFallback: (err) => this.tryFallbackOnError(err),
     });
-    if (options.model) this.currentModel = options.model;
-    if (options.provider) this.currentProvider = options.provider;
-    if (options.baseUrl) this.currentBaseUrl = options.baseUrl;
   }
 
   /* ── 命令注册（委托给命令子系统） ── */
@@ -302,6 +345,16 @@ export class Runtime {
     return this.diagnosticsService.getAll();
   }
 
+  /** 获取最近收束的行为段（供 /traces 命令查看）—— 委托段收集器，只读不改 */
+  getTraces(): CollectedSpan[] {
+    return this.spanCollector.recent();
+  }
+
+  /** 获取仍未关门的行为段（供 /traces 显示"正在跑"）—— 委托段收集器 */
+  getRunningSpans(): CollectedSpan[] {
+    return this.spanCollector.running();
+  }
+
   /** 记录一条运行时诊断 —— 委托诊断子系统 */
   private recordDiagnostic(level: Diagnostic['level'], item: string, message: string): void {
     this.diagnosticsService.record(level, item, message);
@@ -315,6 +368,9 @@ export class Runtime {
   /** 运行时替换 LLM Provider（实现热切换模型） */
   setLLM(provider: LLMProvider): void {
     this.llm = provider;
+    // 重建 Agent Loop：否则它仍持旧 Provider，兜底切换形同虚设——
+    // 用户点了"切换到兜底模型"，下一轮却仍打向刚刚失败的那只
+    this.agentLoop = this.buildAgentLoop();
   }
 
   /* ── 生命周期 ── */
@@ -334,7 +390,12 @@ export class Runtime {
     onToken?: (chunk: string) => void,
     streamingBehavior: 'steer' | 'followUp' = 'followUp',
   ): Promise<string> {
-    // ① 扩展命令检查
+    // ① 开新回合：换发 turnId + 事件序号归零，把这一次输入引发的全部事件收成一组。
+    //   仅在不在流式中时换发——用户在生成期间输入的消息会走排队分支再次进入本方法，
+    //   那时若换发 turnId，在飞回合的后续事件会被错误归到新组里
+    if (!this.isStreaming) this.events.beginTurn();
+
+    // ② 扩展命令检查
     if (input.startsWith('/')) {
       const handled = await this.tryExecuteCommand(input);
       if (handled !== null) {
@@ -346,7 +407,7 @@ export class Runtime {
       }
     }
 
-    // ② Input 事件
+    // ③ Input 事件
     let currentText = input;
     for (const handler of this.inputHandlers) {
       const result = await handler(currentText);
@@ -362,12 +423,12 @@ export class Runtime {
       }
     }
 
-    // ③ Skill/模板展开
+    // ④ Skill/模板展开
     if (currentText.startsWith('/')) {
       currentText = this.expandSkill(currentText);
     }
 
-    // ④ 流式队列检查 —— 外层循环进行中，新消息按 streamingBehavior 分流
+    // ⑤ 流式队列检查 —— 外层循环进行中，新消息按 streamingBehavior 分流
     //   - 'followUp'（默认）：等当前所有回复完全结束后处理
     //   - 'steer'：当前轮跑完后优先处理（仿 Pi，不 abort 当前流）
     if (this.isStreaming) {
@@ -382,7 +443,7 @@ export class Runtime {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ⑤ 外层循环（仿 Pi runLoop 的 outer loop）：消费 followUp 队列
+    // ⑥ 外层循环（仿 Pi runLoop 的 outer loop）：消费 followUp 队列
     //
     //   首条消息 = 用户当前输入；处理完后检查队列：
     //     - 有 followUp → 插入上下文继续处理（等当前回复完全结束后才轮到它）
@@ -390,9 +451,16 @@ export class Runtime {
     //
     //   内层 = runSingleTurn()（单条消息的 LLM + 工具循环）。
     //   【预留】steering 打断需内层 stream 支持 AbortSignal，暂未接入。
+    //
+    //   整段包在 prompt span 里（根段）：这是观测树的树根，所有 llm_request / tool_call /
+    //   compaction 段都落在它的 turnId 下。用 beginSpan 而非 trace()：本段跨 continue/finally，
+    //   自动包裹套不进来；改由 finally 里的 root.closed 判定兼顾正常与异常两条出路。
     // ═══════════════════════════════════════════════════════════════════════════
     this.isStreaming = true;
     let finalResult = '';
+    const rootAttrs: SpanAttrs<'prompt'> = { input: currentText.slice(0, 200) };
+    const root = this.events.beginSpan('prompt', rootAttrs);
+    let turnCount = 0;
     try {
       let turnText = currentText;
       while (true) {
@@ -409,6 +477,7 @@ export class Runtime {
         // ── ② 处理一条消息（内层单循环） ──
         const result = await this.runSingleTurn(turnText, onToken);
         finalResult = result;
+        turnCount++;
 
         // ── ③ 本轮结束后，先看有没有新 steering（可能在上轮处理期间入队） ──
         //   有 → 下一轮优先处理它（steering 优先于 followUp）
@@ -425,8 +494,20 @@ export class Runtime {
         turnText = next;
         this.events.emit({ type: 'thinking', phase: 'analyzing' });
       }
+    } catch (err) {
+      root.fail(err);   // 先打异常卡，再原样重抛（兜底与报错仍归调用方）
+      throw err;
     } finally {
       this.isStreaming = false;
+      // 正常出路（包括 break 退出）在这里关门；已 fail 过的不重复打卡
+      if (!root.closed) {
+        const done: SpanResult<'prompt'> = {
+          reply: finalResult.slice(0, 200),
+          turns: turnCount,
+          totalUsage: { ...this.totalUsage },
+        };
+        root.end(done);
+      }
       this.events.emit({ type: 'agent_end' });
     }
 
@@ -460,13 +541,16 @@ export class Runtime {
       `  - ${t.function.name}: ${t.function.description}（参数: ${JSON.stringify(t.function.parameters)}）`
     ).join('\n');
 
-    // 系统提示词：分层构建（稳定前缀缓存友好：core → tools → skills → summary）
+    // 系统提示词：分层构建（稳定前缀缓存友好：core → tools → skills → task → summary）
     // 每层独立 system 消息，越稳定越靠前；摘要来自 compaction 独立返回（不混入 history）
+    // 工作记忆（TASK.md）独立于对话历史持久化，压缩不触碰，每次请求重新注入
+    const taskMemory = loadTaskMemory();
     const { messages: systemMessages } = await this.systemPromptService.build({
       tools: toolDescriptions,
       skills: this.skills.getAll().map((s) => s.name),
       model: this.currentModel,
       summary: compacted.summary,
+      task: taskMemory,
       historyCount: history.length,
     });
 
@@ -479,13 +563,23 @@ export class Runtime {
     // ═══════════════════════════════════════════════════════════════════════════
     // ⑧: Agent Loop —— 委托给 AgentLoop 子系统（LLM 生成 + 工具执行循环）
     // ═══════════════════════════════════════════════════════════════════════════
-    const { finalText } = await this.agentLoop.run(toolMessages, onToken);
+    // 轮数预算：TASK.md 存在（带计划的复杂任务）时放大轮数，否则用默认预算（防死循环）
+    // thinking 自动判定（阶段 C2）：'on' 常开；'auto' 仅当有进行中任务（TASK.md 有未勾选项）时开；'off' 常关。
+    // 与清理共享同一信号：loadTaskMemory 对全勾选文件已删除并返回 undefined，僵尸计划不会污染 auto
+    const thinkingOn = this.thinkingMode === 'on' || (this.thinkingMode === 'auto' && taskMemory !== undefined);
+    const { finalText, usage } = await this.agentLoop.run(toolMessages, onToken, {
+      maxTurns: taskMemory ? WITH_PLAN_MAX_TURNS : DEFAULT_MAX_TURNS,
+      thinking: thinkingOn,
+      model: this.currentModel,
+    });
     this.events.emit({ type: 'message_end' });
 
     await this.session?.appendMessage('user', currentText);
     await this.session?.appendMessage('assistant', finalText);
-    // 计算token
-    const u = estimateTokenUsage(currentText, finalText);
+    // 用量：优先 API 真值（Agent Loop 已合计各轮），缺失才回退估算——
+    // 估算只算 user 输入 + 最终回复，多轮工具循环的中间 assistant/tool 消息、
+    // system prompt、工具描述全没算，多轮任务下严重少报
+    const u = usage ?? estimateTokenUsage(currentText, finalText);
     this.totalUsage.promptTokens += u.promptTokens;
     this.totalUsage.completionTokens += u.completionTokens;
     this.totalUsage.totalTokens += u.totalTokens;

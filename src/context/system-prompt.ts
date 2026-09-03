@@ -20,6 +20,15 @@ import type {
   SystemPromptLayer,
 } from '../core/system-prompt.js';
 
+/**
+ * 检测任务清单是否含未勾选项（复选框约定 "- [ ]"，兼容 "* [ ]"）。
+ * 调用方：本文件（续传提示判定）· runtime（阶段 C2：全勾选即清理 + auto thinking 判定）
+ * 服务于：提示词层与工程侧共享同一检测标准，避免两处正则漂移（单一真相源）
+ */
+export function hasUncheckedTask(content: string): boolean {
+  return /(?:^|\n)\s*[-*]\s*\[ \]/.test(content);
+}
+
 /** 系统提示词子系统实现 */
 export class SystemPromptServiceImpl implements SystemPromptService {
   constructor(
@@ -54,12 +63,23 @@ export class SystemPromptServiceImpl implements SystemPromptService {
       messages.push({ layer: 'core', content: this.config.fallback });
     }
 
-    // ③ 摘要层：有压缩摘要才加，放最末（变化最大，最不影响前缀）
+    // ③ 工作记忆层：TASK.md 内容（独立持久通道，放摘要前——比摘要稳定，任务期少变）
+    // 阶段B 计划驱动：清单有未勾选项时追加续传提示——系统发信号，
+    // core-section【工作记忆】教模型复选框约定与响应方式，两边对暗号（断点续传的最小闭环）
+    if (ctx.task) {
+      const hasUnchecked = hasUncheckedTask(ctx.task);
+      const resumeHint = hasUnchecked
+        ? '\n\n[续传提示] 上方任务清单存在未勾选项：从第一个未勾选项继续执行，不要从头重做；完成一步后把 TASK.md 对应项更新为已勾选。'
+        : '';
+      messages.push({ layer: 'task', content: `## 当前任务（工作记忆）\n${ctx.task}${resumeHint}` });
+    }
+
+    // ④ 摘要层：有压缩摘要才加，放最末（变化最大，最不影响前缀）
     if (ctx.summary) {
       messages.push({ layer: 'summary', content: `[对话摘要] ${ctx.summary}` });
     }
 
-    // ④ hook：发送前可改写分层消息数组（扩展可追加 custom 层到末尾）
+    // ⑤ hook：发送前可改写分层消息数组（扩展可追加 custom 层到末尾）
     const result = await this.events.emitHook?.('before_request', { messages } as unknown);
     const override = (result as { messages?: SystemPromptMessage[] } | undefined)?.messages;
     if (override) return { messages: override };
