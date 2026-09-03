@@ -119,9 +119,12 @@
 - [ ] **启动提速·第三档：预编译发行** — tsc 编译到 dist/，启动脚本改跑编译产物，省掉 tsx 每次启动的即时转译开销；可选再进一步打包单文件二进制（第一/二档完成后收益递减，优先级最低）
   - 理由：解释器冷启动 + 全源码转译是启动时间的固定底噪，编译产物一劳永逸；但收益比前两档小且需配套发行流程（版本/源码映射）
   - 对标：Claude Code / Codex CLI 发行打包 bundle 而非源码现转译
-- [ ] **现状类文档校准** — ARCHITECTURE.md / TESTING.md / GLOSSARY.md 三份停在项目早期，与代码直接矛盾（2026-09-03 查出具证：分层图仍写 AnthropicProvider 与 ui.ts 为 TODO；TESTING 列的 Agent 类不存在；GLOSSARY 3 条标"计划中"却已落地、2 条指向不存在的文件路径）
+- [x] **现状类文档校准** —（2026-09-03 落地，范围比原案大）ARCHITECTURE.md / TESTING.md / GLOSSARY.md 三份停在项目早期，与代码直接矛盾（2026-09-03 查出具证：分层图仍写 AnthropicProvider 与 ui.ts 为 TODO；TESTING 列的 Agent 类不存在；GLOSSARY 3 条标"计划中"却已落地、2 条指向不存在的文件路径）
   - 理由：append-only 的四份日志天生不会烂，会烂的是"现状快照"；目录.md 因每轮同步所以准，这三份没进这个习惯，越晚校准越多条目需要重写
   - 建议顺序：GLOSSARY 逐条核（共 41 条，新增的 11 条观测层词条是准的，只需校准旧的 30 条）→ TESTING 改写成"10 套 verify + 299 项断言 + RPC 冒烟"的真实测试体系 → ARCHITECTURE 重画分层图（补 core 契约层、工具/权限/压缩/诊断子系统、扩展三口子、观测旁路）
+  - 落地：按建议顺序执行，但每一步的实际工作量都比预估大——GLOSSARY 逐条拿代码验证后查出 **23 条失真**（不是只需校准旧的 30 条里的一部分，而是过半），修正后另新增 8 条已验证术语（→ **49 条**，新建 J、U 两节）；TESTING 旧版的示例代码照抄会编译不过（三处类型错 + `new Runtime` 缺 11 个必注入），逐条修不如整份改写，现 7 节 96 行；ARCHITECTURE 分层图扩成 6 层 + 两条横切旁路（209 行），决策 1/2/4/5/6 逐条补现状、对比表 5 行里 4 行已反转故全部重写，并新增第四节"已知架构债"7 条
+  - 超出原案：`目录.md` 也跟着校准了一轮（三个幽灵条目 CLAUDE.init.md / src/utils/error-log.ts / src/persistence.ts、core 契约 9→11、内置工具 4→5 漏了 ls、io/ui/permission.ts 实为 permission-prompt.ts、runtime/ 漏 4 项、补 skills/ 与 sessions/）——它虽然每轮同步，但同步的是"新增了什么"，删掉和改名的东西会留下幽灵
+  - 校准过程中查出的**代码级**问题（不属文档任务，需另立）：两个同名 `SessionStorage` 接口注释互相矛盾而 `instanceof` 才是现状（core/storage.ts 那版的三个可选成员白定义了）· `AgentConfig` 是死类型 · 压缩用量没回流导致 `/usage` 少算 · `package.json` 无 verify/test 入口且 `clean` 是 `rm -rf dist` 在 Windows 跑不通 · `src/runtime/commands/` 是空目录、`input-handler-demo.ts` 是演示文件，两者去留待定 · 内置 `ls` 工具已落地，下面 P7 的"实用工具补全（ls）"该划掉一半
 
 ### P7 — 业务能力强化（让 Agent 真正解决实际问题）
 
