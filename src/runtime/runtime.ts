@@ -251,6 +251,13 @@ export class Runtime {
 
   /* ── Input 事件 ── */
 
+  /**
+   * 注册输入预处理器（在命令分发前改写 / 吞掉用户输入）。
+   * 注：这里的 InputHandler 是**函数类型**（见本文件上方定义），与 io/ui/input-handler.ts
+   *     那个逐键解析的 InputHandler **类**同名不同物。
+   * 当前无注册者：原先挂的 demoInputHandler 会静默吞掉 "@@" 开头的输入，属未文档化的
+   * 演示行为，已摘除；能力本身保留给 ROADMAP 里的 Hook 系统。
+   */
   onInput(handler: InputHandler): void {
     this.inputHandlers.push(handler);
   }
@@ -267,10 +274,16 @@ export class Runtime {
    * 服务于：展示会话历史、定位 fork 点
    */
   async getHistoryMessages(): Promise<Array<{ msgId: string; role: string; content: string }>> {
-    if (this.session instanceof JsonlSessionStorage) {
-      return this.session.getAllStored();
+    // 能力探测代替 instanceof：契约里 getAllStored 是可选成员，实现了就是 entry 树存储
+    if (this.session?.getAllStored) {
+      // StoredMessage 的 id/msgId 都可选（兼容 JSONL 用 id、对外 API 用 msgId），这里显式兜底
+      return this.session.getAllStored().map((m) => ({
+        msgId: m.msgId ?? m.id ?? '',
+        role: m.role,
+        content: m.content,
+      }));
     }
-    // 非 JSONL 存储（InMemory/Mock）：从 getMessages 拼装（无 msgId）
+    // 非 entry 树存储（InMemory/Mock）：从 getMessages 拼装（无 msgId）
     const msgs = (await this.session?.getMessages()) ?? [];
     return msgs.map((m, i) => ({ msgId: `m${i}`, role: m.role, content: m.content }));
   }
@@ -284,7 +297,7 @@ export class Runtime {
    * @returns 新会话文件名
    */
   async forkSessionAt(msgId: string): Promise<string> {
-    if (!(this.session instanceof JsonlSessionStorage)) return '';
+    if (!this.session?.forkTo) return '';
     const { fileName, storage } = await this.session.forkTo(msgId);
     this.session = storage;
     return fileName;
@@ -324,15 +337,13 @@ export class Runtime {
 
   /** 当前会话目录（供列表/切换/新建复用） */
   private sessionDir(): string {
-    if (this.session instanceof JsonlSessionStorage) {
-      return this.session.getDir();
-    }
+    if (this.session?.getDir) return this.session.getDir();
     return './sessions';
   }
 
   /** 当前会话消息数（供 banner 展示，读取当前分支路径长度） */
   async getSessionMsgCount(): Promise<number> {
-    if (this.session instanceof JsonlSessionStorage) return this.session.getAllStored().length;
+    if (this.session?.getAllStored) return this.session.getAllStored().length;
     return (await this.session?.getMessages())?.length ?? 0;
   }
 

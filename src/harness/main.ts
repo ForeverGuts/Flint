@@ -13,7 +13,6 @@ import { closeTerminal } from '../io/terminal.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import { registerBuiltinCommands } from '../commands/loader.js';
 import { registerBuiltinTools } from '../tools/builtin.js';
-import { demoInputHandler } from '../runtime/input-handler-demo.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { PermissionManager } from '../permission/manager.js';
 import { SkillLoader } from '../runtime/skill.js';
@@ -122,10 +121,11 @@ export async function main(checkResult: CheckResult): Promise<void> {
 
   const { runtime } = await createRuntime({});
 
-  // 构造后统一注册能力（命令 + 工具 + 输入处理）——时序一致
+  // 构造后统一注册能力（命令 + 工具）——时序一致
   await registerBuiltinCommands(runtime);   // 装命令（动态 import 需 await）
   registerBuiltinTools(tools);               // 装工具（直接用本地变量，不绕 runtime.tools）
-  runtime.onInput(demoInputHandler);         // 装输入处理器
+  // 输入预处理器（runtime.onInput）当前不挂任何实现：原先挂的 demoInputHandler 会静默
+  // 吞掉 "@@" 开头的输入，属未文档化的演示行为；能力保留给 Hook 系统
 
   // SIGINT/Ctrl+C：raw mode 下由 InputHandler 处理（选择器取消/输入），
   // 这里只作兜底（非 TTY 或 InputHandler 未捕获时），优雅退出

@@ -1,30 +1,14 @@
 /**
- * Agent 配置。
- * 调用方：agent.ts、harness/index.ts
- * 服务于：定义 Agent 启动所需的静态信息
+ * 全局类型定义 —— 跨模块共享的运行期类型。
+ * 调用方：main.ts（组装依赖）、runtime.ts（RuntimeOptions）、harness/check.ts（CheckResult）
+ * 服务于：把“不属于任何单个子系统”的类型集中一处
+ *
+ * 注：SessionStorage 的唯一真身在 core/storage.ts（含 entry 树的三个可选成员），
+ *     本文件只做转发。曾经这里另有一个三方法版，与 core 版同名不同体，
+ *     导致 Runtime 只能靠 instanceof 缩窄到具体类才能调可选成员（已收敛）。
+ *     AgentConfig（name/version）已删——注释声称调用方是 agent.ts，而该文件从未存在、全项目无人 import。
  */
-export interface AgentConfig {
-  /** Agent 名称 */
-  name: string;
-  /** 版本号（语义化） */
-  version: string;
-}
-
-/**
- * Session 存储接口（最小契约）。
- * 调用方：session.ts（InMemorySession 实现此接口）、runtime.ts（通过接口调用）
- * 服务于：定义消息存取的通用契约。
- * 注意：entry 树能力（leaf/fork/compaction）属于 JsonlSessionStorage 的具体方法，
- *       不在此接口内，Runtime 通过 instanceof 分支调用，避免污染 InMemory/Mock。
- */
-export interface SessionStorage {
-  /** 追加一条消息 */
-  appendMessage(role: string, content: string): Promise<void>;
-  /** 读取当前会话全部消息（JSONL 实现=当前分支路径） */
-  getMessages(): Promise<Array<{ role: string; content: string }>>;
-  /** 清空会话 */
-  clear(): Promise<void>;
-}
+export type { SessionStorage, StoredMessage } from './core/storage.js';
 
 /**
  * Agent 运行模式。
@@ -79,8 +63,8 @@ export interface RuntimeOptions {
   mode?: Mode;
   /** LLM 模型调用（必注入） */
   llm: import('./llm/types.js').LLMProvider;
-  /** 会话存储（必注入） */
-  session: SessionStorage;
+  /** 会话存储（必注入）——契约在 core/storage.ts，含 entry 树的三个可选成员 */
+  session: import('./core/storage.js').SessionStorage;
   /** 工具子系统（必注入） */
   tools: import('./core/tools.js').ToolProvider;
   /** 权限子系统（必注入） */

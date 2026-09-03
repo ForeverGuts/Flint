@@ -5,6 +5,11 @@
  *
  * 设计：entry 树能力（compaction/fork）作为**可选成员**加入接口——
  * 这样 Runtime 无需 instanceof 判断，但 InMemory/Mock 可实现为 no-op/空。
+ *
+ * 本接口是 SessionStorage 的**唯一真身**（types.ts 只做转发）。曾经 types.ts 里另有一个
+ * 三方法版，与本接口同名不同体，而 RuntimeOptions.session 声明的是那一版，导致可选成员
+ * 在接口层面拿不到、Runtime 只能靠 instanceof 缩窄到 JsonlSessionStorage 才能调。
+ * 收敛后：Runtime 改为探测可选成员（`if (session.getAllStored)`），上面那句设计意图至此落实。
  */
 
 /**
