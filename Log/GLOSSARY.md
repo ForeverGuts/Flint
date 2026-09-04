@@ -186,9 +186,13 @@ watcher 的 ctx 里刻意不给 `on`——“旁观者改流程”在类型层�
 
 一行一条落 `sessions/*.jsonl`，形如 `{"type":"message","id":"m2","parentId":"m1","role":"assistant","content":"...","timestamp":2}`。`/history` 读 `getAllStored()` 展示当前分支，`/sessions` 读 `getDir()` 列会话，`/fork` 走 `forkTo()`。
 
-压缩摘要不塞进消息流，另由 [Compaction](#compaction上下文压缩) 的 store 存在会话文件旁（`sessions/*_summary.jsonl`）。
+**压缩摘要就在同一个文件里**：`JsonlSessionStorage` 自己 `implements CompactionStore`，`appendCompaction(summary, firstKeptId)` 往树里追加一条 `{"type":"compaction","id":...,"parentId":...,"summary":...,"firstKeptId":...}` entry，`getMessages()` 遇到它就转成 `[对话摘要] …` 的 system 消息。
 
-参见：[SessionStorage](#sessionstorage)、[InMemorySession](#inmemorysession)
+**不存在独立的 `sessions/*_summary.jsonl`**——那是 v1 机制，全 `src/` 无一行代码写它（旧词条此处写错，已于 2026-09-04 改正）。现存的 `sessions/archive-v1/default_summary.jsonl` 只是归档遗物，而 `isSessionFileName()` 还专门把含 `_summary` 的文件**排除**在 `/sessions` 列表外。
+
+`message` entry 除 `role` / `content` 外还有三个可选结构化字段（`tool_calls` / `tool_call_id` / `name`），格式上支持 function calling 往返——但**当前既无人写入也无人消费**，见 [ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第四节第 9 条。
+
+参见：[SessionStorage](#sessionstorage)、[InMemorySession](#inmemorysession)、[Compaction](#compaction上下文压缩)
 
 ## L
 
@@ -202,7 +206,9 @@ LLM Provider 配置类型（`llm/types.ts`），读取自 **`config/active-confi
 ### LLMMessage
 一条对话消息（`llm/types.ts`）：`role` 有**四种**（`system` / `user` / `assistant` / **`tool`**）、`content` 文本，另有可选的 `tool_calls?`（仅 assistant）、`thinkingBlocks?`（仅 assistant、仅 Anthropic 路径）、`name?` 与 `tool_call_id?`（仅 tool）。
 
-`thinkingBlocks` 的作用域是**单次 `run()` 内的内存消息链**——会话存储只存纯文本，跨轮次没有回放义务。
+`thinkingBlocks` 的作用域是**单次 `run()` 内的内存消息链**——`MessageEntry` 没有这个字段，块永不落盘，所以跨轮次没有回放义务。
+
+别把理由记成“会话存储只存纯文本”（旧版本条与 `llm/types.ts` 注释都这么写，2026-09-04 查出是错的）：`tool_calls` / `tool_call_id` / `name` 是**能**落盘并还原的，只是 `runtime.ts` 组装请求时又把它们丢了，而那道丢弃是承重的——见 [ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第四节第 9 条。
 
 ### LLMProvider
 LLM 调用抽象接口，位于 `src/llm/types.ts`。两个方法：`chat(messages, tools?, opts?)` 返回 `Promise<ChatResult>`（非流式，含结构化工具调用）、`stream(messages, tools?, opts?)` 返回 `EventStream<LLMStreamEvent>`（流式）。

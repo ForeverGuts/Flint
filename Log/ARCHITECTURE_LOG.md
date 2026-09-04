@@ -11,6 +11,36 @@
 
 ---
 
+## 2026-09-04 15:30 | 更正一条贯穿五处的错误前提“会话存储只存纯文本”，并查出被它掩盖的承重结构（runtime 的历史丢弃 ↔ Anthropic 安全阀）
+
+**牵连系统 / 层次**：LLM 协议层（llm/types.ts 的 thinkingBlocks 注释、llm/anthropic.ts 的 resolveAnthropicThinking 注释）· 运行时编排层（runtime.ts 的 toolMessages 组装点与两处 appendMessage 调用点，各加承重警告注释）· 会话存储层（session/jsonl-storage.ts 的 appendMessage / getMessages 两处注释）· 文档层（GLOSSARY 两个词条、ARCHITECTURE.md 第四节新增第 9 条、本文件 2026-08-31 那块的两处行内更正标注）· 验证层（verify-session.ts 新增 ⑨ 段）。注：**运行时行为一行未改**，本轮全部是注释、文档与断言
+
+**面向的问题**：
+- 2026-08-31 定义 C3 回放作用域时依据的事实是错的：那块写着“已查证只存纯文本”“会话存储只存纯文本（tool_calls 都不存）”。而 jsonl-storage.ts 自 version 2 起 MessageEntry 就带 tool_calls / tool_call_id / name，appendMessage 的 extra 能写、getMessages() 会还原。错的前提复制进了 llm/types.ts 与 anthropic.ts 的注释、GLOSSARY 的两个词条，共五处，彼此互相印证，读代码的人无从怀疑
+- 错前提掩盖了一处真正的架构事实：跨用户轮历史之所以是纯文本，成因不在存储层而在 runtime.ts 的 `history.map((m) => ({ role, content }))`。这道丢弃此前无任何注释，看上去像遗漏，实际是承重的——一旦“顺手补全”成透传，历史里带 tool_calls 的 assistant 轮就没有配对的 thinkingBlocks（块永不落盘），resolveAnthropicThinking 的第一条分支会把 extended thinking 静默全程关闭
+- 同一次核对还查出 GLOSSARY 的 JsonlSessionStorage 词条写着“压缩摘要另存在 sessions/*_summary.jsonl”，而全 src/ 无一行代码写该文件：摘要自 v2 起入树为 compaction entry，isSessionFileName() 还专门把含 _summary 的文件排除在 /sessions 列表外。照文档去找摘要文件必然找不到
+- 结构化字段的入口同样是断的：runtime.ts 两处 appendMessage 都不传 extra，agent-loop.ts 里一处 appendMessage 都没有，而 jsonl-storage.ts 的头注释声称调用方含“Agent 循环（tool 结果消息）”。于是 tool_calls 持久化是双向死路——没人写、写了也没人读
+
+**做出的改动**：
+- 五处错误措辞全部改正，并统一改为“结论不变、换掉理由”：跨用户轮无回放义务这个结论成立，但依据从“存储不存结构化信息”改成“thinkingBlocks 不落盘 + runtime 组装时丢弃 role/content 之外的字段”
+- 在三处承重位置加警告注释（runtime.ts 的组装点与写入点、anthropic.ts 的安全阀），写明“这道丢弃不能直接修好，要接通必须先解决历史 thinking 块的回放”，并互相指回 ARCHITECTURE.md 第四节第 9 条
+- ARCHITECTURE.md 第四节 8 条 → 9 条，第 9 条按“格式支持 / 入口未接线 / 出口被堵 / 为何不能直接修 / 本轮处理”五段记全，并标明这是项目里第二处“支持但未接线”（第一处 runtime.onInput()，见第 7 条）
+- 本文件 2026-08-31 那块的两处错话**不改写原文**（append-only），只在句末加 ⚠ 行内更正标注指向本块——沿用 ARCHITECTURE.md 第四节“保留原状描述以便回溯”的既有惯例
+- verify-session.ts 新增 ⑨ 段把事实钉死：真往返（写 tool_calls → 落盘含该键 → getMessages 还原 → reopen 后仍在）证明存储不是纯文本；源码文本断言证明 runtime 两处 appendMessage 不传 extra、组装点只映射 role+content、全 src/ 无 _summary 写入。下次谁想“顺手补全”，先撞上测试
+
+**解决的问题**：
+- 错误前提不再自我印证：五处措辞统一到同一个正确成因，且每处都指向 ARCHITECTURE.md 第 9 条这个单一权威叙述
+- 承重结构从“隐形”变“显形”：runtime.ts 的丢弃点此前无一句注释，现在任何人改它都会先读到“这会让 extended thinking 全程关闭”
+- 文档可信度：GLOSSARY 的 _summary.jsonl 是会导致读者去文件系统里找不到东西的硬错，已消除
+- 事实有了防线：⑨ 段断言使“存储只存纯文本”这个说法再也无法被当成事实写回代码或文档而不被测试反驳
+
+**未来可优化**：
+- 真要接通历史结构化数据，得先定 thinking 块的持久化策略（落盘 signature 涉及体积与敏感数据，折叠成文本会丢工具调用语义），这是独立的一件事，已记入 ROADMAP 的剩余项
+- jsonl-storage.ts 的头注释“调用方”一栏与真实调用点长期不一致（本次是第二处：先前 Agent 循环、这次 _summary），可考虑给“调用方”注释加一条 verify 断言，或干脆改用工具生成
+- ARCHITECTURE_LOG 的行内 ⚠ 标注是本次新引入的手法，若后续更正频繁，需要一条规则说明“历史块可以加标注、不可以改原文”
+
+---
+
 ## 2026-09-03 10:44 | 把 span 配对从可选扩展抽成公共件 SpanCollector，观测的消费端从此有两个互不依赖的出口（落盘 / 上屏）
 
 **牵连系统 / 层次**：契约层（core/events.ts 加 CollectedSpan + SpanCollector，与已有的 Span/SpanRecorder 并列）· 运行时层（新增 runtime/span-collector.ts；runtime.ts 加两个只读 getter；types.ts 的 RuntimeOptions 加一个必注入项）· 装配层（harness/main.ts 在 createRuntime 闭包外建实例并 attach）· 扩展层（extensions/watchers/trace-log.ts 134 → 78 行）· 命令层（新增 commands/builtin/traces.ts）· 验证层（verify-events ⑨ 段 21 项）。注：事件契约的生产端（三处 trace/beginSpan 调用点）、总线的盖戳与广播逻辑、落盘格式与两个开关全部零改动
@@ -221,10 +251,13 @@
 
 **牵连系统 / 层次**：LLM 协议层（llm/types.ts + anthropic.ts）· Agent Loop（loop/agent-loop.ts）· 验证脚本（scripts/verify-c3.ts）。注：会话存储（session/jsonl-storage.ts）零改动——已查证只存纯文本，回放义务天然限于单次 run() 内存消息链；问题4（原则边界修订）已随本次一并定调：推理文本展示不持久不变，thinking 块属协议数据例外保留（内存内）
 
+> ⚠ **2026-09-04 行内更正（原文不改）**：上句“已查证只存纯文本”是**错的**。`MessageEntry` 自 version 2 起就带 `tool_calls` / `tool_call_id` / `name`，`appendMessage` 的 `extra` 能写、`getMessages()` 会还原。**本块的结论不受影响**（回放义务确实限于单次 run()），但成因不是存储层：`thinkingBlocks` 不落盘，且 `runtime.ts` 组装请求时只映射 `role` + `content`。详见本文件顶部 2026-09-04 那块与 [ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第四节第 9 条。
+
 **面向的问题**：
 - 问题1+2 留下的临时安全阀是粗粒度关闭（有 assistant 历史就不开）：工具循环从第 2 轮起永久裸答，六杠杆①在 Anthropic 路径实际只覆盖首轮——根因不是规则太严，而是没有"还债能力"（上一轮带签名的 thinking 块无处可寄）
 - Anthropic 协议硬约束：开 thinking 的请求里，带 tool_use 的历史 assistant 轮必须原样回放其 thinking 块（一字不改，验 signature），否则 400——需要一条贯穿流解析、循环状态、请求构造三处的数据管道，而三处分属两个文件，缺任何一环都是断头路
 - 回放作用域必须先定界：会话存储只存纯文本（tool_calls 都不存），若误把回放义务扩到跨用户轮，会去设计根本不需要的持久化格式——先查证事实再定边界，把问题空间收敛到单次 run()
+  - ⚠ **2026-09-04 行内更正（原文不改）**：括号里“tool_calls 都不存”**是错的**——格式支持往返，只是入口无人写（`appendMessage` 不传 `extra`）、出口被 `runtime.ts` 丢弃。“把问题空间收敛到单次 run()”这个结论仍成立，因为 `thinkingBlocks` 确实不落盘。见 [ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第四节第 9 条。
 
 **做出的改动**：
 - 数据模型（types.ts）：ThinkingBlock 接口（推理文本+signature）；LLMMessage 加可选 thinkingBlocks（注释点明作用域：仅内存消息链，存储不碰）；LLMStreamEvent 加 thinking_block 变体（成品事件，与 reasoning 原料分片分工明确）

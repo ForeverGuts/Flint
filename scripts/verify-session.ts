@@ -21,6 +21,7 @@ import { PromptEventEmitter } from '../src/runtime/events.js';
 import { JsonlSessionStorage } from '../src/session/jsonl-storage.js';
 import { InMemorySession } from '../src/session/in-memory.js';
 import { MockSession } from '../src/session/mock.js';
+import type { LLMToolCall } from '../src/llm/types.js';
 
 /* ── 断言 ── */
 
@@ -196,6 +197,94 @@ console.log('\n⑧ sessionDir（Jsonl 走 getDir，其余退回 ./sessions）');
 
   const fallback = await makeRuntime(inMemory).listSessions();
   check('InMemory：退回 ./sessions 且不抛错', Array.isArray(fallback));
+}
+
+/* ── ⑨ 结构化字段：格式支持 / 入口未接线 / 出口承重 ── */
+
+// 背景：项目里曾流传“会话存储只存纯文本”这个说法（同时出现在 llm/types.ts 与 anthropic.ts 注释、
+// GLOSSARY 两个词条、ARCHITECTURE_LOG 一处），2026-09-04 查出是错的。本段把三层真相钉死：
+// A 存储层真能往返结构化字段；B thinkingBlocks 确实无处可存；C 但没人写入；D 且读出后又被丢弃（承重）。
+console.log('\n⑨ tool_calls 持久化（钉死“存储只存纯文本”这个错说法，见 ARCHITECTURE.md 第四节第 9 条）');
+{
+  // ── A. 真往返：存储层**不是**纯文本 ──
+  const structured = await JsonlSessionStorage.create(tmpDir, 'structured.jsonl');
+  const calls: LLMToolCall[] = [
+    { id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"path":"a.ts"}' } },
+  ];
+  await structured.appendMessage('assistant', '我来读文件', { tool_calls: calls });
+  await structured.appendMessage('tool', '[OK] 文件内容', { tool_call_id: 'call_1', name: 'read' });
+
+  const raw = fs.readFileSync(structured.getFilePath(), 'utf8');
+  check('A1 落盘的行里真含 tool_calls 键（不是只在内存里）', raw.includes('"tool_calls"'));
+  check('A2 落盘的行里真含 tool_call_id 与 name 键',
+    raw.includes('"tool_call_id"') && raw.includes('"name":"read"'));
+
+  const back = await structured.getMessages();
+  check('A3 getMessages 还原 assistant 的 tool_calls',
+    back[0].tool_calls?.[0]?.function.name === 'read', JSON.stringify(back[0]));
+  check('A4 getMessages 还原 tool 角色的 tool_call_id 与 name',
+    back[1].tool_call_id === 'call_1' && back[1].name === 'read', JSON.stringify(back[1]));
+
+  const reopened = await JsonlSessionStorage.open(structured.getFilePath());
+  check('A5 reopen 后 tool_calls 仍在（真持久化，不是内存残留）',
+    (await reopened.getMessages())[0].tool_calls?.[0]?.id === 'call_1');
+
+  // ── B. thinkingBlocks 确实无处可存（“跨轮无回放义务”结论成立的真正依据）──
+  const storageSrc = fs.readFileSync(path.join(ROOT, 'src/session/jsonl-storage.ts'), 'utf8');
+  check('B1 MessageEntry 声明了 tool_calls / tool_call_id / name 三个可选字段',
+    /tool_calls\?: LLMToolCall\[\]/.test(storageSrc)
+    && /tool_call_id\?: string/.test(storageSrc)
+    && /\bname\?: string/.test(storageSrc));
+  check('B2 存储层全文无 thinkingBlocks（块永不落盘）', !/thinkingBlocks/.test(storageSrc));
+  check('B3 落盘内容里不含 thinkingBlocks', !raw.includes('thinkingBlocks'));
+
+  // ── C. 入口未接线：没人写入结构化字段 ──
+  const runtimeSrc = fs.readFileSync(path.join(ROOT, 'src/runtime/runtime.ts'), 'utf8');
+  const appendCalls = runtimeSrc.match(/appendMessage\([^\n]*/g) ?? [];
+  check('C1 runtime.ts 恰好两处 appendMessage 调用', appendCalls.length === 2, JSON.stringify(appendCalls));
+  check('C2 两处都只传两个参数（不传 extra → 结构化字段从未被写进会话文件）',
+    appendCalls.every((c) => /appendMessage\('(user|assistant)', \w+\);/.test(c)), JSON.stringify(appendCalls));
+  const loopSrc = fs.readFileSync(path.join(ROOT, 'src/loop/agent-loop.ts'), 'utf8');
+  check('C3 agent-loop.ts 一处 appendMessage 都没有（存储层头注释声称的“Agent 循环”调用方从未接线）',
+    !/appendMessage/.test(loopSrc));
+
+  // ── D. 出口承重：这道丢弃**不能**被“顺手补全” ──
+  check('D1 runtime.ts 组装历史时只映射 role + content',
+    /history\.map\(\(m\) => \(\{ role: m\.role as LLMMessage\['role'\], content: m\.content \}\)\)/.test(runtimeSrc));
+  check('D2 丢弃点留有承重警告注释（没注释下一个人会当遗漏补掉，从而静默关闭 extended thinking）',
+    /这道丢弃是\*\*承重的\*\*/.test(runtimeSrc) && /extended thinking 全程静默关掉/.test(runtimeSrc));
+  const anthropicSrc = fs.readFileSync(path.join(ROOT, 'src/llm/anthropic.ts'), 'utf8');
+  const typesSrc = fs.readFileSync(path.join(ROOT, 'src/llm/types.ts'), 'utf8');
+  check('D3 anthropic.ts 的安全阀注释点明成因在 runtime 组装而非存储层',
+    /而是 runtime\.ts 组装 toolMessages 时只映射 role \+ content/.test(anthropicSrc));
+  check('D4 types.ts 的 thinkingBlocks 注释点明 MessageEntry 无此字段',
+    /MessageEntry 没有这个字段/.test(typesSrc));
+  check('D5 三处注释都指回 ARCHITECTURE.md 第四节第 9 条（单一权威叙述）',
+    /第四节第 9 条/.test(anthropicSrc) && /第四节第 9 条/.test(typesSrc) && /第四节第 9 条/.test(runtimeSrc));
+
+  // ── E. 压缩摘要入树，没有独立 _summary 文件 ──
+  const cp = await JsonlSessionStorage.create(tmpDir, 'compact.jsonl');
+  await cp.appendMessage('user', 'A');
+  await cp.appendMessage('assistant', 'B');
+  await cp.appendCompaction('前情提要', cp.getAllMsgIds()[1]);
+  check('E1 compaction 摘要写进**同一个**会话文件（GLOSSARY 旧词条说的独立 _summary.jsonl 不存在）',
+    fs.readFileSync(cp.getFilePath(), 'utf8').includes('"type":"compaction"')
+    && !fs.existsSync(path.join(tmpDir, 'compact_summary.jsonl')));
+  check('E2 getMessages 把 compaction entry 转成 [对话摘要] 的 system 消息',
+    (await cp.getMessages()).some((m) => m.role === 'system' && m.content === '[对话摘要] 前情提要'));
+
+  const srcFiles: string[] = [];
+  const walk = (d: string): void => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.ts')) srcFiles.push(p);
+    }
+  };
+  walk(path.join(ROOT, 'src'));
+  check('E3 全 src/ 无任何代码**写入** _summary 文件（只有 jsonl-storage.ts 的读侧排除判断）',
+    srcFiles.every((f) => !/(writeFile|appendFile|createWriteStream)[^\n]*_summary/.test(fs.readFileSync(f, 'utf8')))
+    && srcFiles.filter((f) => /_summary/.test(fs.readFileSync(f, 'utf8'))).length === 1);
 }
 
 /* ── 收尾 ── */

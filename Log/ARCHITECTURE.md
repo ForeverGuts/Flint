@@ -185,13 +185,13 @@
 | 扩展机制 | 完整的 Extension 插件体系 | **已落地三类口子**：sections / hooks / watchers，`extension-loader` 自动扫描装载 |
 | 配置 | 分层 SettingsManager（全局/项目/会话） | **部分落地**：密钥分三层（环境变量 > 全局 `~/.ts-agent/config.json` > 项目 `config/provider-keys.json`），其余配置项还没分层（`config/manager.ts` 里标着 TODO） |
 | 观测 | docs/observability.md | **已落地**：SpanCollector 公共配对件 + `/traces` 内置命令 + `trace.jsonl` 落盘；不引 LangSmith / LangFuse 这类外部服务 |
-| 测试 | vitest 全套 | **路线不同、且已定调**：12 套零依赖验证脚本、359 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
+| 测试 | vitest 全套 | **路线不同、且已定调**：12 套零依赖验证脚本、379 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
 
 ---
 
 ## 四、已知架构债
 
-> 2026-09-03 校准文档时查出 7 条，**同日下午已处理 4 条**（下面标 ✅，保留原描述以便回溯“当初为何算债”）；剩 3 条仍成立；另在修第 7 条时又查出 1 条（第 8 条）。
+> 2026-09-03 校准文档时查出 7 条，**同日下午已处理 4 条**（下面标 ✅，保留原状描述以便回溯“当初为何算债”）；剩 3 条仍成立；另在修第 7 条时又查出 1 条（第 8 条）。2026-09-04 修正一批文档失真时又查出 1 条（第 9 条）。
 
 1. ✅ **两个同名 `SessionStorage` 接口，注释还互相矛盾**（已收敛）
    - 原状：`core/storage.ts` 版有三必需方法 + 三可选成员（`getAllStored?` / `forkTo?` / `getDir?`），注释说“这样 Runtime **无需 instanceof** 判断”，三个实现 implements 的是这一版；`types.ts` 版只有三必需方法，注释说“Runtime **通过 instanceof 分支调用**”，而 `RuntimeOptions.session` 声明的是这一版——于是可选成员在接口层面拿不到，`runtime.ts` 里只能写 `if (this.session instanceof JsonlSessionStorage)`。
@@ -210,3 +210,10 @@
 7. ✅ **演示文件与空目录**（部分处理）。`runtime/input-handler-demo.ts` **已删**（连同 `main.ts` 里的 import 与注册）——它会静默吞掉 `@@` 开头的输入、把 `/ask ` 转成加问号，属**未文档化的魔法行为却挂在生产路径上**；`runtime.onInput()` 这个能力本身保留，给 ROADMAP 里的 Hook 系统。`src/runtime/commands/` 空目录**仍在**：git 本来就不跟踪空目录，所以仓库里不存在它，只是本地残留。
 
 8. **`InputHandler` 同名冲突**（修第 7 条时查出）。`runtime.ts` 导出的是**函数类型** `type InputHandler = (text: string) => InputEventResult | Promise<...>`（输入预处理器），`io/ui/input-handler.ts` 导出的是**类** `class InputHandler`（raw mode 逐键解析）。删掉 demo 前，`main.ts` 里两者相隔两行同时出现（一行用函数类型注册、下一行注释在说那个类），同一段代码里两个含义混用。这是项目里第三组同名混淆（前两组：两个 `SessionStorage`——本日已收敛；`Provider` vs `LLMProvider`——仍成立，见第 3 条）。未改，只在两处各加了注释互指。
+
+9. **`tool_calls` 持久化是双向死路，而堵住出口的那道丢弃是承重的**（2026-09-04 修文档失真时查出）。
+   - **格式支持**：`MessageEntry` 声明了 `tool_calls?` / `tool_call_id?` / `name?`，`appendMessage(role, content, extra?)` 能写，`getMessages()` 会还原。所以“会话存储只存纯文本”这个流传很广的说法是**错的**（它曾同时出现在 `llm/types.ts` 注释、`llm/anthropic.ts` 注释、GLOSSARY 两个词条、ARCHITECTURE_LOG 一处，本轮全部改正）。
+   - **入口未接线**：`runtime.ts` 两处调用是 `appendMessage('user', currentText)` / `appendMessage('assistant', finalText)`，**都不传第三个参数**；`agent-loop.ts` 里一处 `appendMessage` 都没有（尽管 `jsonl-storage.ts` 的头注释声称调用方含“Agent 循环（tool 结果消息）”）。所以结构化字段从未被写进任何会话文件。
+   - **出口被堵**：`runtime.ts` 组装 `toolMessages` 时 `history.map((m) => ({ role, content }))`，把 `getMessages()` 刚还原的 `tool_calls` 又丢掉。
+   - **为何不能直接“修好”出口**：`resolveAnthropicThinking` 的安全阀是“存在带 `tool_calls` 但无 `thinkingBlocks` 的 assistant 消息就强制关 thinking”，而 `thinkingBlocks` 永不落盘（`MessageEntry` 无此字段）。一旦透传历史 `tool_calls`，任何有过工具调用的会话都会让 extended thinking 被**静默全程关闭**——看上去像“修好了历史保真度”，实际是拿推理能力换了它。要接通必须同时解决历史 thinking 块的回放（要么落盘 signature，要么把带工具调用的历史轮折叠成文本）。
+   - **本轮处理**：行为一行未改（改它是独立的一件事），只改正全部失真注释/文档，并把“入口未接线 + 出口承重”固化为断言（`verify-session.ts` ⑨ 段），让下次想“顺手补全”的人先撞上测试。这是项目里第二处“支持但未接线”（第一处：`runtime.onInput()`，见第 7 条）。

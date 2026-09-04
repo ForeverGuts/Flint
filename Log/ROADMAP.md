@@ -133,6 +133,11 @@
   - ✅ **GLOSSARY 5 处同文件锚点死链修好**（`#项目元数据` ×4、`#event-subscription` ×1，按该文件其余 30+ 处已用的“全 slug 含中文后缀”约定对齐），并把检查固化为 `verify-docs.mjs`；其中“入站锚点契约”6 条把被 DECISION_LOG / GLOSSARY 引用的标题文字钉死（DECISION_LOG 是 append-only，断链没法在源头修，只能不让标题变）
   - ⏸ **压缩用量没回流（`/usage` 少算）本轮不做**：要改就得改 `ChatResult` 的形状，牵连两个 provider 的非流式路径 + `stream-helper` + 多套 verify 脚本，是独立的一件事，已在上面“可观测性增强”的剩余项里
   - 遗留两项：`src/runtime/commands/` 空目录仍在（git 不跟踪空目录，仓库里本就没它，只是本地残留）；另查出 **`InputHandler` 同名冲突**（`runtime.ts` 的函数类型 vs `io/ui/input-handler.ts` 的类），未改、只在两处各加注释互指，详见 ARCHITECTURE.md 第四节第 8 条
+- [ ] **历史结构化数据接通** —（2026-09-04 立项）让跨用户轮的历史带上 `tool_calls` / `tool_call_id` / `name`，使模型看得到上一轮真正调了什么工具、结果是什么
+  - 现状：`MessageEntry` 的格式**早就支持**（三个可选字段 + `appendMessage` 的 `extra` + `getMessages()` 的还原），但是**双向死路**——入口没人写（`runtime.ts` 两处 `appendMessage` 都不传 `extra`，`agent-loop.ts` 里一处 `appendMessage` 都没有，尽管存储层头注释声称调用方含“Agent 循环”），出口被堵（`runtime.ts` 组装 `toolMessages` 时只映射 `role` + `content`）
+  - **前置障碍（不能只接线）**：出口那道丢弃是**承重的**。`resolveAnthropicThinking` 的安全阀一见“带 `tool_calls` 但无 `thinkingBlocks` 的 assistant 消息”就强制关 thinking，而 `thinkingBlocks` 永不落盘——直接透传会让任何有过工具调用的会话把 extended thinking **静默全程关闭**（看上去像修好了历史保真度，实际是拿推理能力换了它）。要接通必须先定 thinking 块的历史策略：要么落盘 `signature`（体积 + 敏感数据），要么把带工具调用的历史轮折叠成文本（丢工具语义）
+  - 依赖：无硬依赖；但若同时要落盘 tool 结果消息，需给 `AgentLoopServiceImpl` 注入 session（当前它拿不到，只拿到 events）
+  - 本轮已做的部分：行为一行未改，只把五处失真措辞改正、三处承重位置加警告注释，并把“入口未接线 + 出口承重”固化为 `verify-session.ts` ⑨ 段断言（下次谁想“顺手补全”先撞上测试）。详见 ARCHITECTURE.md 第四节第 9 条
 
 ### P7 — 业务能力强化（让 Agent 真正解决实际问题）
 

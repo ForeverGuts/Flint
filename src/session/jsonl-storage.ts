@@ -181,8 +181,10 @@ export class JsonlSessionStorage implements SessionStorage, CompactionStore {
 
   /**
    * 追加一条消息到当前分支。
-   * 调用方：runtime.ts（用户/助手消息）、Agent 循环（tool 结果消息）
+   * 调用方：runtime.ts（用户/助手消息，两处均**不传 extra**）。
+   * ⚠ “Agent 循环（tool 结果消息）”这一路**从未接线**：agent-loop.ts 里一处 appendMessage 都没有。
    * 支持 function calling：可传结构化工具调用（tool_calls）或 tool 结果（tool_call_id/name）
+   * ——但这条能力至今无人使用，详见 Log/ARCHITECTURE.md 第四节第 9 条。
    */
   async appendMessage(
     role: string,
@@ -210,6 +212,8 @@ export class JsonlSessionStorage implements SessionStorage, CompactionStore {
    * 读取当前分支的对话消息（遇 compaction 转成摘要 system 消息）。
    * 调用方：runtime.ts（LLM 上下文）
    * 服务于：让 LLM 看到"当前路径上的历史"，含压缩摘要、结构化工具调用（function calling）
+   * ⚠ 其中 tool_calls / tool_call_id / name 的还原在 LLM 路径上**无人消费**：runtime.ts 组装请求时
+   * 只取 role + content（那道丢弃是承重的，理由见 Log/ARCHITECTURE.md 第四节第 9 条）。
    */
   async getMessages(): Promise<LLMMessage[]> {
     return this.getPathToRoot(this.currentLeafId)

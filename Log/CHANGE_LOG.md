@@ -14,6 +14,13 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-09-04 15:54 | [Docs📝] 更正贯穿五处的错误前提“会话存储只存纯文本”：jsonl-storage.ts 自 version 2 起 MessageEntry 就带 tool_calls / tool_call_id / name，appendMessage 的 extra 能写、getMessages() 会还原；改正 llm/types.ts 与 llm/anthropic.ts 的注释、GLOSSARY 两个词条，并统一改为“结论不变、换掉理由”——跨用户轮无回放义务仍成立，但成因是 thinkingBlocks 不落盘 + runtime.ts 组装时只映射 role/content，而不是存储层不存
+2026-09-04 15:54 | [Docs📝] GLOSSARY 的 JsonlSessionStorage 词条删掉“压缩摘要另存在 sessions/*_summary.jsonl”这句硬错（全 src/ 无一行代码写该文件，摘要自 v2 起入树为 compaction entry，isSessionFileName() 还专门把含 _summary 的文件排除在 /sessions 列表外，照文档去找必然找不到），并注明现存 archive-v1/default_summary.jsonl 只是归档遗物
+2026-09-04 15:54 | [Docs📝] 三处承重位置加警告注释（runtime.ts 的历史组装点与消息写入点、anthropic.ts 的 resolveAnthropicThinking 安全阀）：那道 `history.map((m) => ({ role, content }))` 丢弃此前无一句注释、看上去像遗漏，实际不能直接“修好”——透传历史 tool_calls 会让带工具调用的会话被安全阀静默全程关闭 extended thinking；jsonl-storage.ts 头注释同时改正虚假调用方（声称含“Agent 循环（tool 结果消息）”，而 agent-loop.ts 里一处 appendMessage 都没有）
+2026-09-04 15:54 | [Docs📝] ARCHITECTURE_LOG.md 置顶新块 + 对 2026-08-31 那块的两处错话做行内 ⚠ 更正标注（append-only 不改原文，沿用“保留原状描述以便回溯”惯例）；ARCHITECTURE.md 第四节加第 9 条架构债“tool_calls 持久化是双向死路，而堵住出口的那道丢弃是承重的”（项目里第二处“支持但未接线”，第一处是 runtime.onInput()）；ROADMAP.md P6 新立“历史结构化数据接通”一项，写明前置条件是解决历史 thinking 块的回放
+2026-09-04 15:54 | [CI✅] verify-session.ts 新增 ⑨ 段 19 项（47 → 66）把事实钉死：真往返（写 tool_calls → 落盘含该键 → getMessages 还原 → reopen 后仍在）证明存储不是纯文本、MessageEntry 无 thinkingBlocks 字段、源码文本断言 runtime 两处 appendMessage 不传 extra + 组装点只映射 role/content + 全 src/ 无 _summary 写入；全量回归 12 套 379/379 全绿（verify-docs 因本轮文档新增锚点引用 13 → 14），tsc --noEmit 零错误
+2026-09-04 15:54 | [Docs📝] 三份现状快照文档同步项数 359 → 379（TESTING.md 清单表 verify-session 47 → 66、verify-docs 13 → 14；ARCHITECTURE.md 对比表测试行；目录.md 脚本注释与职责表）；ROADMAP / DECISION_LOG / CHANGE_LOG 里带日期的历史条目按惯例保留原状
+
 2026-09-03 15:11 | [CI✅] 全量回归：tsc --noEmit 零错误；12 套 verify 全绿 359/359（8+16+17+13+76+21+22+13+47+32+72+22），退出码全 0；三个 npm 入口（verify / typecheck / clean）均实测跑通——PowerShell 下 `npm` 被执行策略挡住（报“无法加载文件 npm.ps1，因为在此系统上禁止运行脚本”），须用 `npm.cmd` 或直连 node
 2026-09-03 15:11 | [Docs📝] 现状文档跟着本轮代码改动同步：TESTING.md 299 → 359 项 / 10 → 12 套（清单表补 verify-session 与 verify-docs、断言函数名 check 从 3 套变 5 套、退出码第三种变体从 1 套变 3 套、第四节改写成 `npm run verify`、第七节划掉两条已修的缺口并补“文档只查锚点不查路径”）；ARCHITECTURE.md 第四节 7 条 → 8 条（1/2/5/7 标 ✅ 已处理并保留原状描述以便回溯、新增第 8 条 InputHandler 同名冲突）、对比表测试行改 12 套 359 项、决策 6 的 .ts 计数 71 → 70（删了 demo 文件）；目录.md 删 input-handler-demo 条目、types.ts 的两处 ⚠ 改为收敛说明、scripts/ 补 4 个新文件、职责表 10 套 299 → 12 套 359；GLOSSARY 的 SessionStorage 词条整段重写（不再是“两个同名接口互相矛盾”）、Agent 词条的 AgentConfig 改为已删
 2026-09-03 15:11 | [Docs📝] 不引入 vitest 落地（用户拍板）：ROADMAP P6“正式测试套件”勾选关闭并写明原案与关闭理由、DECISION_LOG 顶部追加一块二选一决策（含“立项时写的痛点已消失”与“迁移期会出现两套测试体系”两条理由、以及放弃覆盖率/watch/隔离/describe 组织力的代价）、TESTING.md 第一节补一句消除与 ROADMAP 的立场冲突

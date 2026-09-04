@@ -565,6 +565,11 @@ export class Runtime {
       historyCount: history.length,
     });
 
+    // 历史只映射 role + content —— 这道丢弃是**承重的**，不要“顺手补全”：
+    // getMessages() 其实会还原 tool_calls / tool_call_id / name（虽然当前也没人写入，见下方 appendMessage），
+    // 但 thinkingBlocks 永不落盘；一旦透传，历史里带 tool_calls 的 assistant 轮就没有配对的 thinking 块，
+    // anthropic.ts 的 resolveAnthropicThinking 安全阀会因此把 extended thinking 全程静默关掉。
+    // 详见 Log/ARCHITECTURE.md 第四节第 9 条（已固化为 verify-session.ts ⑨ 段断言）。
     const toolMessages: LLMMessage[] = [
       ...systemMessages.map(({ content }) => ({ role: 'system' as const, content })),
       ...history.map((m) => ({ role: m.role as LLMMessage['role'], content: m.content })),
@@ -585,6 +590,8 @@ export class Runtime {
     });
     this.events.emit({ type: 'message_end' });
 
+    // 只传 role + content，不传第三个参数 extra：tool_calls / tool_call_id / name 从未被写进会话文件。
+    // 于是 MessageEntry 的结构化字段是“格式支持、入口未接线”，与上面那道丢弃合起来构成双向死路。
     await this.session?.appendMessage('user', currentText);
     await this.session?.appendMessage('assistant', finalText);
     // 用量：优先 API 真值（Agent Loop 已合计各轮），缺失才回退估算——
