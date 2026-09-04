@@ -1,6 +1,6 @@
 # 🧪 测试策略
 
-> 现状：**不用任何测试框架**。12 套零依赖验证脚本、合计 **379 项**断言，`npm run verify` 一条命令串跑；另有 1 个真实链路冒烟脚本。
+> 现状：**不用任何测试框架**。14 套零依赖验证脚本、合计 **482 项**断言，`npm run verify` 一条命令串跑；另有 1 个真实链路冒烟脚本。
 > 本文档描述"实际是怎么测的"，不是"打算怎么测"。（旧版写的"测试框架未选型"已过期多年。）
 
 ---
@@ -17,7 +17,7 @@
 
 ## 二、验证脚本清单
 
-全部在 `scripts/` 下，**项数合计 379**（其中 11 套是 `.ts` 走 tsx、`verify-docs.mjs` 一套直跑；末尾两套为 2026-09-03 新增）：
+全部在 `scripts/` 下，**项数合计 482**（其中 13 套是 `.ts` 走 tsx、`verify-docs.mjs` 一套直跑；`verify-edit.ts` 与 `verify-permission.ts` 为 2026-09-04 新增）：
 
 | 脚本 | 项数 | 验什么 | 手法 |
 |------|-----:|--------|------|
@@ -32,13 +32,15 @@
 | `verify-events.ts` | 76 | 总线盖戳、四组骨架段配对守恒、便签通道、落盘端到端、`/traces` 排版 | **手工构造事件对象喂给 SpanCollector** |
 | `verify-extensions.ts` | 21 | 三类扩展各自装载、watcher 的 ctx 里确实没有 `on` | **探针法**（见第六节） |
 | `verify-session.ts` | 66 | 会话存储契约收敛后的行为等价：三个实现的可选成员真值表、“能力探测 ≡ instanceof”穷举对比（3 实现 × 3 成员）、`msgId` 兜底链、fork 后**原文件一字未动**；⑨ 段（2026-09-04 新增 19 项）钉死 `tool_calls` 持久化的三层真相——真往返证明存储**不是**纯文本、`thinkingBlocks` 无处可存、入口未接线、出口那道丢弃是承重的 | 造真 `Runtime` 但只注入真 session（其余 10 个必注入用替身）+ `fs.mkdtempSync` 临时目录 |
+| `verify-edit.ts` | 41 | `edit` 工具的“肯拒绝”性质与字节级保真：唯一命中才改、0 命中与多命中都拒绝且文件**逐字节一字不动**、多命中回报正确的候选行号、`replaceAll` 才全改、纯 CRLF / BOM / 混合行尾、参数边界（newText 空串=删除、缺参不静默删光）、权限弹窗文案的单行契约 | 真 `ToolRegistry` + `registerBuiltinTools`（不打桩），`fs.mkdtempSync` 临时目录里造各种行尾/BOM 的文件，按**字节**比对（不去断言 Node 编码读会不会剥 BOM 这类行为细节） |
+| `verify-permission.ts` | 62 | 授权键的边界与匹配规则：`write` / `edit` 的键是路径、`bash` 的键是完整命令且**一字不截**；`PermissionManager` 精确匹配（截断级与前缀级授权都已消失，含“改前确实会放行”的**对照组**）；文件级放宽是刻意的；`clear()` 接线的**行为证明** | 真 `ToolRegistry` + 真 `PermissionManager`（不打桩）；⑦ 段造真 `Runtime`，只把 permission 与 session 换成会计数的替身 |
 | `verify-docs.mjs` | 14 | `Log/` 下全部 markdown 的**锚点死链**（同文件 + 跨文件）+ 入站锚点契约 | 按 GitHub slug 规则算标题锚点再比对引用 |
 
-另有 `scripts/rpc-smoke.mjs`：起真子进程走 JSON-RPC、打**真实 API**，验"装配起来真能跑通一轮对话"。唯一会花钱的一项，不计入 379。
+另有 `scripts/rpc-smoke.mjs`：起真子进程走 JSON-RPC、打**真实 API**，验"装配起来真能跑通一轮对话"。唯一会花钱的一项，不计入 482。
 
 `verify-docs.mjs` **只查锚点、不查“文档里提到的文件路径是否存在”**：后者实测误报率过高（扫出 31 个候选，28 个是裸文件名、运行时产物、或“故意提到不存在的东西”的说明性引用），要压住得维护一张例外表，收益不抵成本；锚点检查则零误报。理由写在脚本头注释里。
 
-另注，这套的项数**不固定**：①② 两段是“每份有引用的文档一条断言”，所以 Log/ 下新增文档、或给原本没外链的文档加一条引用，项数就会变（本轮就从 12 变成 13，因为本文加了指向 DECISION_LOG 的引用）。其余十一套的项数是固定的。
+另注，这套的项数**不固定**：①② 两段是“每份有引用的文档一条断言”，所以 Log/ 下新增文档、或给原本没外链的文档加一条引用，项数就会变（2026-09-03 从 12 变 13，因为本文加了指向 DECISION_LOG 的引用；2026-09-04 从 13 变 14，因为 ARCHITECTURE_LOG 的行内 ⚠ 更正标注加了指向 ARCHITECTURE.md 的外链）。同一份文档里再加几条引用不会变（每份只算一条），本日新增 `edit` 与权限相关的那两批链接就没动过这个数。其余十三套的项数是固定的。
 
 ## 三、写法约定（现状，含不统一之处）
 
@@ -49,16 +51,16 @@
 | 名字 | 签名 | 哪几套 |
 |------|------|--------|
 | `assert` | `(name, cond, detail = '')` | c1 / c2 / c3 / startup / usage（5 套） |
-| `check` | `(name, cond, detail?)` | events / phase-ab / session / docs（4 套）；extensions 那套参数名不同，是 `(desc, ok, extra?)` |
+| `check` | `(name, cond, detail?)` | events / phase-ab / session / docs / edit / permission（6 套）；extensions 那套参数名不同，是 `(desc, ok, extra?)` |
 | `ok` | `(name, cond)` | input / ui（2 套） |
 
-**退出码行为一致、写法有四种变体**：`setTimeout(() => process.exit(failed > 0 ? 1 : 0), 100)`（5 套，留给异步句柄收尾）、`process.exit(failed === 0 ? 0 : 1)`（3 套）、`process.exit(failed > 0 ? 1 : 0)`（3 套：input / session / docs）、`if (failed > 0) process.exit(1)`（1 套）。**十二套都会在有断言失败时返回非零**，所以串跑靠退出码判定是安全的。
+**退出码行为一致、写法有四种变体**：`setTimeout(() => process.exit(failed > 0 ? 1 : 0), 100)`（5 套，留给异步句柄收尾）、`process.exit(failed === 0 ? 0 : 1)`（3 套）、`process.exit(failed > 0 ? 1 : 0)`（5 套：input / session / docs / edit / permission）、`if (failed > 0) process.exit(1)`（1 套）。**十四套都会在有断言失败时返回非零**，所以串跑靠退出码判定是安全的。
 
 串跑入口 `run-verify.mjs` 自己还有第五种写法（`process.exit(bad > 0 || totalFail > 0 ? 1 : 0)`），它不算套件——名字不匹配 `^verify-`，所以不会把自己也跑一遍。
 
 ## 四、怎么跑
 
-全量 12 套，一条命令：
+全量 14 套，一条命令：
 
 ```
 npm run verify
@@ -72,7 +74,7 @@ Windows PowerShell 下 `npm` 会被执行策略挡住（报 `无法加载文件 
 node scripts/run-verify.mjs
 ```
 
-单套。`.ts` 的十一套**必须**直连 node 走 tsx——`npx tsx` 同样被执行策略挡住：
+单套。`.ts` 的十三套**必须**直连 node 走 tsx——`npx tsx` 同样被执行策略挡住：
 
 ```
 node node_modules/tsx/dist/cli.mjs scripts/verify-events.ts
@@ -102,11 +104,11 @@ node node_modules/tsx/dist/cli.mjs scripts/verify-events.ts
 
 ## 七、缺口（已知未做，别误以为已覆盖）
 
-- **无覆盖率统计**：379 项覆盖了什么、漏了什么，只能人工判断。已知的漏：compaction / commands / rpc 三个子系统没有专套（只被其他脚本间接碰到）
+- **无覆盖率统计**：482 项覆盖了什么、漏了什么，只能人工判断。已知的漏：compaction / commands / rpc 三个子系统没有专套（只被其他脚本间接碰到）；tools 子系统自 2026-09-04 起只有 `edit` 一个工具有**功能**专套（`verify-edit.ts`），ls / read / write / grep / bash 五个的文件与进程行为仍无直接断言；permission 子系统同日起也有专套（`verify-permission.ts`），但它验的是**授权面**（键的边界、匹配规则、`clear()` 接线），write / edit / bash 在那套里只被问到“键是什么、文案是什么”，不问它们干活干得对不对
 - **无 CI**：仓库里没有 `.github/workflows`（也没任何其他 CI 配置）。`npm run verify` 的退出码已经能直接交给 CI，但**还没人接**，仍是手工跑，忘了跑就没有防线
 - 断言函数名三种并存、退出码写法四种变体（见第三节）
 - E2E 只有 RPC 冒烟一条，**REPL 交互没有端到端脚本**（输入处理只在单元层验）
-- 集成层薄弱：多数脚本直接调子系统，**没有一套真起 `Harness.run()`**（最接近的是 `verify-session.ts`，它造了真 `Runtime`，但 11 个必注入里只有 session 是真的，其余用替身）
+- 集成层薄弱：多数脚本直接调子系统，**没有一套真起 `Harness.run()`**（最接近的是 `verify-session.ts`，它造了真 `Runtime`，但 11 个必注入里只有 session 是真的，其余用替身；`verify-permission.ts` ⑦ 段也造真 `Runtime`，且注入的是**真 `PermissionManager`**，其余 10 个仍是替身）
 - **文档只查锚点不查路径**：`verify-docs.mjs` 管不到“文档里提到的文件是否存在”，而这类失真真发生过（上一轮就从 `目录.md` 里删了三个幽灵条目：`CLAUDE.init.md` / `src/utils/error-log.ts` / `src/persistence.ts`）。不查的理由见第二节
 
 （2026-09-03 从本节划掉两条已修的：“`package.json` 里没有 verify / test 入口”→ 现有 `verify` / `typecheck` / `clean` 三个；“`clean` 是 `rm -rf dist` 在 Windows 跑不通”→ 改为 `node scripts/clean.mjs`，用 `fs.rmSync` 的 recursive + force。）

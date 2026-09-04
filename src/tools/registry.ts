@@ -36,6 +36,22 @@ export class ToolRegistry implements ToolProvider {
     return this.tools.get(name)?.requirePermission ?? false;
   }
 
+  /**
+   * 取工具自定义的权限弹窗文案（实现 core ToolProvider 的可选成员）。
+   * 工具没定义 permissionDetail、或工具名不存在时返回 undefined，由调用方退回默认。
+   */
+  permissionDetail(name: string, args: Record<string, unknown>): string | undefined {
+    return this.tools.get(name)?.permissionDetail?.(args);
+  }
+
+  /**
+   * 取工具自定义的授权匹配键（实现 core ToolProvider 的可选成员）。
+   * 工具没定义 permissionKey、或工具名不存在时返回 undefined，由调用方退回默认。
+   */
+  permissionKey(name: string, args: Record<string, unknown>): string | undefined {
+    return this.tools.get(name)?.permissionKey?.(args);
+  }
+
   /** 执行工具调用 */
   async execute(name: string, args: Record<string, unknown>): Promise<string> {
     const tool = this.tools.get(name);

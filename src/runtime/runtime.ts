@@ -264,8 +264,17 @@ export class Runtime {
 
   /* ── 公开方法 ── */
 
+  /**
+   * 开启新会话：清历史 + 清授权。
+   * 调用方：/clear 命令（commands/builtin/clear.ts）、RPC 的 clear（harness/rpc.ts）。
+   *
+   * 为什么连带清授权："本次全部允许"的"本次"就是本次会话。在此之前 permission.clear()
+   * 契约声明了、PermissionManager 实现了、permission 还是 public 字段，却全 src/ 零调用方
+   * ——那个"本次"实际是"本进程"，一直有效到退出为止。
+   */
   async clearSession(): Promise<void> {
     await this.session?.clear();
+    this.permission.clear();
   }
 
   /**
