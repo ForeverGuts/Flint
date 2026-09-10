@@ -136,10 +136,17 @@ interface AnthropicStreamUsage {
  *
  * 转换规则：
  *   system → 提取到顶级 system 参数（多条分层消息逐条保留，稳定段设缓存断点）
- *   user   → 直接映射，content 包装为 content block 数组
+ *   user   → 映射为 content block 数组；**上一条已是 user 时并入它**（同角色相邻归并）
  *   assistant → 直接映射，content 为文本/tool_use content block
  *   tool   → 转为 tool_result content block（连续 tool 结果合并进同一条 user 消息，
  *            role 设为 user，避免违反 Anthropic 的 user/assistant 交替约束）
+ *
+ * 关于「同角色相邻归并」：Anthropic 的 messages 要求 user/assistant 交替，而本层收到的
+ * 内部序列可能带连续两条 user（来源：runtime 落盘的内层引导，会话历史里是 user,user,assistant）。
+ * 官方 API 参考称「连续同角色轮会被服务端合并成一条」，但第三方有大量 roles-must-alternate
+ * 的 400 报告，两种说法冲突且本机无法实测（见 Log/ARCHITECTURE.md 第四节第 11 条）。
+ * 本地归并让线上形状在**两种世界里都合法**，且是幂等的：服务端本来会合并时它无害，
+ * 服务端真的拒绝时它救命。归并放在适配器（而非 runtime 历史映射处）的理由见 DECISION_LOG。
  */
 function toAnthropicMessages(msgs: LLMMessage[]): {
   system?: AnthropicContentBlock[];
@@ -155,12 +162,19 @@ function toAnthropicMessages(msgs: LLMMessage[]): {
         systemParts.push(msg.content);
         break;
 
-      case 'user':
-        messages.push({
-          role: 'user',
-          content: [{ type: 'text', text: msg.content }],
-        });
+      case 'user': {
+        // 同角色相邻归并（与下面 tool 分支同一手法）：上一条已是 user 就把文本块并进去，
+        // 而不是再 push 一条 —— 改前这里是无条件 push，是架构债第 11 条点名的那个洞。
+        // 触发场景：内层引导落盘后，会话历史里出现 user,user,assistant（runtime.ts 负责写）。
+        const block: AnthropicContentBlock = { type: 'text', text: msg.content };
+        const prev = messages[messages.length - 1];
+        if (prev && prev.role === 'user' && Array.isArray(prev.content)) {
+          prev.content.push(block);
+        } else {
+          messages.push({ role: 'user', content: [block] });
+        }
         break;
+      }
 
       case 'assistant': {
         // 解析 tool_calls 或纯文本

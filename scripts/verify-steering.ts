@@ -20,15 +20,23 @@
  *   S5 向后兼容：不传 takeSteer / 回调恒返回 null → 行为与改造前完全一致
  *   S6 端到端（真 Runtime）：prompt(text,'steer') 入队 → 下一轮 LLM 请求里出现 [用户引导]
  *   S7 端到端兜底：本轮无工具调用 → 引导退回外层循环，成为一条**真正的 user 消息**
+ *   S8 落盘：被内层吸收的引导落成独立 user 条目，位置在本轮 assistant **之前**，内容带标记
+ *   S9 适配器归并：会话历史里的 user,user,assistant → Anthropic 线上并成一条（抓真实请求体），
+ *      序列严格交替；含「没有连续同角色时不合并」与「连续 tool 结果仍合并」两条对照组
+ *   S10 对照组：OpenAI 兼容路径**原样透传**连续 user —— 本方案刻意的不对称，登记为现状
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { AgentLoopServiceImpl } from '../src/loop/agent-loop.js';
-import { Runtime } from '../src/runtime/runtime.js';
+import { Runtime, STEER_PREFIX } from '../src/runtime/runtime.js';
 import { PromptEventEmitter } from '../src/runtime/events.js';
 import { EventStream } from '../src/runtime/event-stream.js';
 import { InMemorySession } from '../src/session/in-memory.js';
+import { AnthropicProvider } from '../src/llm/anthropic.js';
+import { DeepSeekProvider } from '../src/llm/deepseek.js';
 import type { LLMMessage, LLMProvider, LLMStreamEvent } from '../src/llm/types.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -118,10 +126,11 @@ function makeSteerSource(initial: string[] = []) {
 }
 
 /* ── Runtime 端到端：11 个必注入，这里只有 llm / session 是真的 ── */
-function makeRuntime(llm: LLMProvider): Runtime {
+/** session 可外部传入，便于直接断言落盘结果（S8 用） */
+function makeRuntime(llm: LLMProvider, session?: InMemorySession): Runtime {
   return new Runtime({
     llm,
-    session: new InMemorySession(),
+    session: session ?? new InMemorySession(),
     tools: {
       getLLMTools: () => [],
       requiresPermission: () => false,
@@ -316,6 +325,159 @@ async function main(): Promise<void> {
       (seen[1] ?? []).filter((l) => l.startsWith('user\u0000')).join(' | '));
     check('S7-3 用户的话没被吞：确实多跑了一回合', seen.length === 2, `rounds=${seen.length}`);
     check('S7-4 最终回复是第 2 回合的产物', finalText === '答2', `finalText=${finalText}`);
+  }
+
+  /* ── S8 落盘：被内层吸收的引导成为本轮 assistant 之前的独立 user 条目 ── */
+  console.log('\n[S8] 落盘：内层吸收的引导落成本轮 assistant 之前的独立 user 条目');
+  {
+    const session = new InMemorySession();
+    let rt: Runtime | null = null;
+    const llm = makeScriptedLlm(
+      [{ toolCall: true }, { toolCall: true }, { text: '完成' }],
+      undefined,
+      (turn) => {
+        // 与 S6 同一时点入队：第 2 次 LLM 往返期间（Agent 正在调工具）用户插入
+        if (turn === 1) void rt!.prompt('改成 B', undefined, 'steer').catch(() => {});
+      },
+    );
+    rt = makeRuntime(llm, session);
+    await rt.prompt('开始');
+
+    const stored = await session.getMessages();
+    check('S8-1 会话历史变成 3 条（user,user,assistant）', stored.length === 3,
+      stored.map((m) => m.role).join(','));
+    check('S8-2 第 1 条是用户原始输入，内容未被改写', stored[0]?.content === '开始',
+      stored[0]?.content);
+    check('S8-3 第 2 条是引导条目，且带标记前缀',
+      stored[1]?.role === 'user' && stored[1]!.content.startsWith(STEER_PREFIX),
+      stored[1]?.content);
+    check('S8-4 引导正文完整保留（不只是标记）', stored[1]!.content.includes('改成 B'));
+    check('S8-5 位置正确：引导在 assistant **之前**（不是等回复完才补）',
+      stored[2]?.role === 'assistant', stored[2]?.content);
+
+    const hist = await rt.getHistoryMessages();
+    check('S8-6 债 11 正题：下一次请求的历史里看得见它（模型不再"不知道你中途改过方向"）',
+      hist.some((h) => h.role === 'user' && h.steer && h.content.includes('改成 B')));
+    check('S8-7 /history 视图把它标记出来（不会被当成普通用户输入）',
+      hist.length === 3 && hist[0]?.steer === false && hist[1]?.steer === true && hist[2]?.steer === false,
+      hist.map((h) => `${h.role}:${h.steer}`).join(' | '));
+  }
+
+  /* ── S8 对照组：没有引导时历史形状完全不变 ── */
+  console.log('\n[S8-对照组] 没有引导时：历史形状与标记都不得发生变化');
+  {
+    const session = new InMemorySession();
+    const llm = makeScriptedLlm([{ toolCall: true }, { text: '完成' }]);
+    const rt = makeRuntime(llm, session);
+    await rt.prompt('开始');
+
+    const stored = await session.getMessages();
+    const hist = await rt.getHistoryMessages();
+    check('S8c-1 仍是 2 条（user,assistant），没有凭空多出条目', stored.length === 2,
+      stored.map((m) => m.role).join(','));
+    check('S8c-2 两条都不带 steer 标记', hist.every((h) => h.steer === false),
+      hist.map((h) => `${h.role}:${h.steer}`).join(' | '));
+    check('S8c-3 内容原样', stored[0]?.content === '开始' && stored[1]?.content === '完成');
+  }
+
+  /* ── S9/S10 起一台假服务器，抓真实请求体看线上形状 ── */
+  console.log('\n[S9] 适配器归并：user,user,assistant → Anthropic 线上并成一条（抓真实请求体）');
+  {
+    let lastBody: Record<string, unknown> = {};
+    const server = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      req.on('end', () => {
+        lastBody = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        if (req.url === '/v1/messages') {
+          res.write('event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":0}}}\n\n');
+          res.write('event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"text":"ok"}}\n\n');
+          res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+        } else {
+          res.write('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n');
+          res.write('data: [DONE]\n\n');
+        }
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const drain = async (es: AsyncIterable<unknown>): Promise<void> => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _ of es) { /* 请求体已在服务器侧抓到 */ }
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anWire = async (msgs: LLMMessage[]): Promise<any[]> => {
+      await drain(new AnthropicProvider({ baseUrl: base, apiKey: 'k', model: 'm' }).stream(msgs));
+      return (lastBody.messages ?? []) as unknown[];
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const oaWire = async (msgs: LLMMessage[]): Promise<any[]> => {
+      await drain(new DeepSeekProvider({ baseUrl: `${base}/v1`, apiKey: 'k', model: 'm' }).stream(msgs));
+      return (lastBody.messages ?? []) as unknown[];
+    };
+
+    // S8 落盘后的真实形状
+    const merged = await anWire([
+      { role: 'user', content: '开始' },
+      { role: 'user', content: `${STEER_PREFIX}改成 B` },
+      { role: 'assistant', content: '完成' },
+    ]);
+    check('S9-1 连续两条 user 并成一条（消息数 3 → 2）', merged.length === 2,
+      merged.map((m) => m.role).join(','));
+    check('S9-2 两条正文都保留在同一条 user 里（并成两个文本块，不丢也不粘接）',
+      merged[0]?.content.length === 2
+      && merged[0]!.content[0]!.text === '开始'
+      && merged[0]!.content[1]!.text === `${STEER_PREFIX}改成 B`,
+      JSON.stringify(merged[0]?.content));
+    check('S9-3 线上序列严格交替（无相邻同角色）',
+      merged.every((m, i) => i === 0 || m.role !== merged[i - 1]!.role));
+    check('S9-4 首条仍是 user（协议要求）', merged[0]?.role === 'user');
+    check('S9-5 引导正文在线上可见', JSON.stringify(merged).includes('改成 B'));
+
+    // 对照组一：没有相邻同角色时不得合并
+    // （防"把所有 user 都并成一条"这类蒙混实现 —— 它能让上面四条全绿）
+    const single = await anWire([{ role: 'user', content: '只有一句' }]);
+    check('S9-6 对照组：无相邻同角色时不合并（1 条消息、1 个文本块）',
+      single.length === 1 && single[0]!.content.length === 1
+      && single[0]!.content[0]!.text === '只有一句',
+      JSON.stringify(single));
+
+    // 对照组二：同一函数里的 tool_result 合并不得回归
+    const withTools = await anWire([
+      { role: 'user', content: '任务' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 't1', type: 'function', function: { name: 'ls', arguments: '{}' } }],
+      },
+      { role: 'tool', content: '[OK] a', tool_call_id: 't1' },
+      { role: 'tool', content: '[OK] b', tool_call_id: 't1' },
+    ]);
+    check('S9-7 回归：连续 tool 结果仍合并进同一条 user（两个 tool_result 块）',
+      withTools.length === 3 && withTools[2]?.role === 'user'
+      && withTools[2]!.content.length === 2
+      && withTools[2]!.content.every((b: { type: string }) => b.type === 'tool_result'),
+      withTools.map((m) => `${m.role}/${m.content.length}`).join(' | '));
+
+    console.log('\n[S10] 对照组：OpenAI 兼容路径原样透传连续 user（本方案刻意的不对称，登记为现状）');
+    const oa = await oaWire([
+      { role: 'user', content: '开始' },
+      { role: 'user', content: `${STEER_PREFIX}改成 B` },
+      { role: 'assistant', content: '完成' },
+    ]);
+    check('S10-1 不归并：仍是 3 条、两条 user 相邻', oa.length === 3
+      && oa[0]?.role === 'user' && oa[1]?.role === 'user',
+      oa.map((m) => m.role).join(','));
+    check('S10-2 内容原样透传（未加料、未剥标记）',
+      JSON.stringify(oa[1]?.content).includes('改成 B')
+      && JSON.stringify(oa[1]?.content).includes(STEER_PREFIX));
+    check('S10-3 两条 user 的正文各自独立（没被粘成一条）',
+      JSON.stringify(oa[0]?.content) !== JSON.stringify(oa[1]?.content));
+
+    server.close();
   }
 
   console.log(`\n结果：${passed} 通过，${failed} 失败`);

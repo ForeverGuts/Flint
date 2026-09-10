@@ -1,6 +1,6 @@
 # 🧪 测试策略
 
-> 现状：**不用任何测试框架**。17 套零依赖验证脚本、合计 **633 项**断言，`npm run verify` 一条命令串跑；另有 1 个真实链路冒烟脚本。
+> 现状：**不用任何测试框架**。17 套零依赖验证脚本、合计 **653 项**断言，`npm run verify` 一条命令串跑；另有 1 个真实链路冒烟脚本。
 > 本文档描述"实际是怎么测的"，不是"打算怎么测"。（旧版写的"测试框架未选型"已过期多年。）
 
 ---
@@ -17,7 +17,7 @@
 
 ## 二、验证脚本清单
 
-全部在 `scripts/` 下，**项数合计 633**（其中 16 套是 `.ts` 走 tsx、`verify-docs.mjs` 一套直跑；`verify-edit.ts`、`verify-permission.ts` 与 `verify-tools.ts` 均为 2026-09-04 新增，`verify-spec.ts` 为 2026-09-06 新增，`verify-steering.ts` 为 2026-09-10 新增）：
+全部在 `scripts/` 下，**项数合计 653**（其中 16 套是 `.ts` 走 tsx、`verify-docs.mjs` 一套直跑；`verify-edit.ts`、`verify-permission.ts` 与 `verify-tools.ts` 均为 2026-09-04 新增，`verify-spec.ts` 为 2026-09-06 新增，`verify-steering.ts` 为 2026-09-10 新增）：
 
 | 脚本 | 项数 | 验什么 | 手法 |
 |------|-----:|--------|------|
@@ -36,10 +36,10 @@
 | `verify-permission.ts` | 62 | 授权键的边界与匹配规则：`write` / `edit` 的键是路径、`bash` 的键是完整命令且**一字不截**；`PermissionManager` 精确匹配（截断级与前缀级授权都已消失，含“改前确实会放行”的**对照组**）；文件级放宽是刻意的；`clear()` 接线的**行为证明** | 真 `ToolRegistry` + 真 `PermissionManager`（不打桩）；⑦ 段造真 `Runtime`，只把 permission 与 session 换成会计数的替身 |
 | `verify-tools.ts` | 74 | `grep` 与 `bash` 两个工具的**功能**面。grep：真遍历 / 真行号 / 递归 / 跳过噪音目录与二进制与超大文件 / include glob / JS 正则能力 / 50 命中上限，以及“跑不起来 ≠ 没有匹配 ≠ 我正则写错了”三者必须分开。bash：子进程输出解码（外部程序 UTF-8 vs cmd.exe 内建命令走代码页）、三条返回前缀与 agent-loop 成败判定的**双向**契约、stderr 回传、cwd 继承、maxBuffer 超限、截断前后的行数与字符数一致 | 真 `ToolRegistry`（不打桩），`fs.mkdtempSync` 临时目录里造一棵带 node_modules / .git / 二进制 / 2MB 超大文件的目录树；bash 用临时目录里的 `emit.js` 当被测子进程，**不靠 shell 引号传代码**（避开 cmd.exe 与 sh 的引号规则差异）；⑦ 段是源码文本断言，且**先切出 grep 那一段再断言**——裸扫全文件会被解释性注释误伤（本轮实踩过两次） |
 | `verify-spec.ts` | 45 | 工具**参数规格**框架（`src/tools/spec.ts`）：一份 spec 派生三样（发给 LLM 的 Schema / 运行时 `parse` / handler 入参类型）是不是**真的同源**（含对照组：只改 spec 里一个键，两个派生物必须同时跟着变）、`String(val)` 那个“永远通过的校验”留下的四个类型盲区是不是全堵（数字 / 对象 / 数组 / 布尔）、错误文案逐字不变、6 个工具的 Schema 与改造前**逐字相同**、4 个校验件与手写 boolean 强转的消失、以及 `execute` 真的会跑 `parse`（接线证明） | 真 `ToolRegistry` + `registerBuiltinTools`（不打桩）；样本规格用构造器**现搭**、不从生产源码导（顺带把构造器本身也测了）；④ 段比 `scripts/fixtures/tool-schemas-baseline.json`（改造前**机器导出**的快照，不是手打的）；⑤ 段是源码文本断言，且**先切段再断言**（edit 段按第一个 `handler:` 分界）——整行剥注释剥不掉块注释里折行的续行，本轮实踩过 |
-| `verify-steering.ts` | 28 | 内层引导（steering）：工具跑完、下一次 LLM 调用前取件注入**最后一条 tool 结果**（不是新开 user 消息——tool 结果在 Anthropic 下已是 user 角色）、当轮可见、逐条消费不堆叠、缺省不传时向后兼容；两条**不吞消息**的护栏（本轮无工具调用→不取件、已是最后一轮→不取件） | 脚本化假 LLM；S6/S7 造**真 `Runtime`**（只注入真 llm/session，其余 10 个必注入用替身）端到端验证接线；S4 经**变异测试**验证承重 |
+| `verify-steering.ts` | 48 | 内层引导（steering）：工具跑完、下一次 LLM 调用前取件注入**最后一条 tool 结果**（不是新开 user 消息——tool 结果在 Anthropic 下已是 user 角色）、当轮可见、逐条消费不堆叠、缺省不传时向后兼容；两条**不吞消息**的护栏（本轮无工具调用→不取件、已是最后一轮→不取件）；**落盘**为 assistant **之前**的独立 user 条目（带标记前缀，含"无引导时形状不变"的对照组）；**适配器同角色归并**（抓真实请求体：三条并两条、正文不丢不粘、序列严格交替，含"无相邻同角色时不合并"与"连续 tool 结果仍合并"两条对照组）；OpenAI 兼容路径原样透传的**不对称登记** | 脚本化假 LLM；S6/S7/S8 造**真 `Runtime`**（只注入真 llm/session，其余 10 个必注入用替身）端到端验证接线与落盘；S9/S10 起本地 `http` 假服务器抓**真实请求体**（不走打桩）；S4 与 S8/S9 的四处护栏/接线各经**变异测试**验证承重 |
 | `verify-docs.mjs` | 14 | `Log/` 下全部 markdown 的**锚点死链**（同文件 + 跨文件）+ 入站锚点契约 | 按 GitHub slug 规则算标题锚点再比对引用 |
 
-另有 `scripts/rpc-smoke.mjs`：起真子进程走 JSON-RPC、打**真实 API**，验"装配起来真能跑通一轮对话"。唯一会花钱的一项，不计入 605。
+另有 `scripts/rpc-smoke.mjs`：起真子进程走 JSON-RPC、打**真实 API**，验"装配起来真能跑通一轮对话"。唯一会花钱的一项，不计入 653。
 
 `verify-docs.mjs` **只查锚点、不查“文档里提到的文件路径是否存在”**：后者实测误报率过高（扫出 31 个候选，28 个是裸文件名、运行时产物、或“故意提到不存在的东西”的说明性引用），要压住得维护一张例外表，收益不抵成本；锚点检查则零误报。理由写在脚本头注释里。
 
@@ -87,7 +87,7 @@
 
 ## 四、怎么跑
 
-全量 16 套，一条命令：
+全量 17 套，一条命令：
 
 ```
 npm run verify
@@ -133,7 +133,7 @@ node node_modules/tsx/dist/cli.mjs scripts/verify-events.ts
 
 ## 七、缺口（已知未做，别误以为已覆盖）
 
-- **无覆盖率统计**：605 项覆盖了什么、漏了什么，只能人工判断。已知的漏：compaction / commands / rpc 三个子系统没有专套（只被其他脚本间接碰到）；tools 子系统自 2026-09-04 起有三个工具有**功能**专套（`verify-edit.ts` 覆盖 edit，`verify-tools.ts` 覆盖 grep 与 bash），**ls / read / write 三个仍无功能断言**（2026-09-06 新增的 `verify-spec.ts` 不算：它④ 段钉的是六个工具**发给模型的 Schema 逐字未变**、⑥ 段只借 grep 验 `parse` 的接线，两者都不问 ls / read / write 干活干得对不对）；permission 子系统同日起也有专套（`verify-permission.ts`），但它验的是**授权面**（键的边界、匹配规则、`clear()` 接线），write / edit / bash 在那套里只被问到“键是什么、文案是什么”，不问它们干活干得对不对——那一面由 `verify-edit.ts` 与 `verify-tools.ts` 补
+- **无覆盖率统计**：653 项覆盖了什么、漏了什么，只能人工判断。已知的漏：compaction / commands / rpc 三个子系统没有专套（只被其他脚本间接碰到）；tools 子系统自 2026-09-04 起有三个工具有**功能**专套（`verify-edit.ts` 覆盖 edit，`verify-tools.ts` 覆盖 grep 与 bash），**ls / read / write 三个仍无功能断言**（2026-09-06 新增的 `verify-spec.ts` 不算：它④ 段钉的是六个工具**发给模型的 Schema 逐字未变**、⑥ 段只借 grep 验 `parse` 的接线，两者都不问 ls / read / write 干活干得对不对）；permission 子系统同日起也有专套（`verify-permission.ts`），但它验的是**授权面**（键的边界、匹配规则、`clear()` 接线），write / edit / bash 在那套里只被问到“键是什么、文案是什么”，不问它们干活干得对不对——那一面由 `verify-edit.ts` 与 `verify-tools.ts` 补
 - **`bash` 的 30 秒超时路径无断言**：`timeout: 30000` 是硬编码的，触发一次就得真等 30 秒，串跑里塞不下。`verify-tools.ts` ⑦ 段只钉住这个值还在（G9），不验超时行为本身。为一项断言把 timeout 改成可注入，收益不抵改生产代码形状的风险（2026-09-04 定为不做）
 - **无 CI**：仓库里没有任何 CI 配置。`npm run verify` 的退出码已经能直接交给 CI，但**还没人接**，仍是手工跑，忘了跑就没有防线。2026-09-04 查到一条会**改变方案**的事实：远端 `origin` 是 **Gitee**（`gitee.com/LittleLittleRed/first_-ts_-agent`），而 Gitee 不执行 `.github/workflows`——所以“加个 GitHub Actions 工作流”这个最省事的方案在本仓库会产出一份**永不执行的死配置**；Gitee 自家的 Gitee Go 配置在 `.workflow/` 且需单独开通，账号是否已开通无法从仓库内核实
 - 断言函数名三种并存、退出码写法四种变体（见第三节）

@@ -300,9 +300,10 @@ export class AgentLoopServiceImpl implements AgentLoopService {
       //   等于把用户的话吞掉 —— 既不进上下文、也不再回队。宁可留在队列里，让外层循环
       //   把它当成下一回合正常处理（用户至少能看到它被响应）。
       //
-      //   已知取舍：引导文本只活在本次 toolMessages 里，**不落会话历史**（/history 看不到）。
-      //   落盘会造出 user,user,assistant 的会话序列，下次请求映射历史时又是连续两条 user → 400。
-      //   要持久化得先在历史映射处做一遍同角色合并，属另一件事，本次刻意不做。
+      //   落盘（2026-09-10 补）：取件到的引导由 Runtime 侧记入本轮缓冲，在本轮 assistant
+      //   **之前**落盘为独立 user 条目（见 runtime.ts 的 runSingleTurn）—— 所以它既进本轮
+      //   上下文，也进会话历史（/history 可见）。形状上会产出 user,user,assistant，由
+      //   anthropic.ts 的**同角色相邻归并**消化；OpenAI 兼容路径原样透传，标准语义容忍。
       if (turn < maxTurns - 1) {
         const steer = opts?.takeSteer?.() ?? null;
         if (steer) {

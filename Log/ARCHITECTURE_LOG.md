@@ -11,6 +11,37 @@
 
 ---
 
+## 2026-09-10 19:32 | 内层引导从"不落历史"变成"落盘 + 适配器同角色归并"：债 11 关闭，且它的一半前提被核查推翻
+
+**牵连系统 / 层次**：LLM 协议层（llm/anthropic.ts 的 `toAnthropicMessages` user 分支 + 函数头注释）· 运行时编排层（runtime.ts 新增 `STEER_PREFIX` 常量、`runSingleTurn` 落盘、`getHistoryMessages` 增 `steer` 标记；core/loop.ts 与 loop/agent-loop.ts 的取舍注释改写）· 命令层（commands/builtin/history.ts 的 `labelOf` / `summarize`）· 文档层（ARCHITECTURE 第四节第 9、11 条与表头计数、GLOSSARY 的 Steering 词条、TESTING / 目录 / ROADMAP / CHANGE_LOG / DECISION_LOG 与本文件）· 验证层（`verify-steering.ts` 28 → 48 项；`verify-session.ts` C1/C2 改口径）
+
+**面向的问题**：内层引导（本文件同日 19:01 那块）落地后立刻暴露两个缺口。① 引导文本只活在本次请求的 `toolMessages` 里——`/history` 看不到它，下一次请求的历史也没有它，模型下一轮只知道"最终答案是什么"，不知道用户中途改过方向。② 登记为债 11 时给的理由是"连续两条 user → 400"，而这条**前提从未被核实过**。
+
+**做出的改动**：
+
+1. **先核查前提**（因为它决定措辞与修法）：Anthropic API 参考对 `messages` 参数的原话是 `Consecutive user or assistant turns in your request will be combined into a single turn.`（`docs.anthropic.com` 的 en / fr 两版、`console.anthropic.com`、`platform.claude.com` 的 csharp / cli 两版——5 个镜像逐字一致）；而第三方"roles must alternate"的 400 报告也大量存在（含一篇标注 Verified 2026-04）。两种说法不可能同时严格成立，且**本机无法裁定**：官方站点在此网络返回 `app-unavailable-in-region`，也没有 key 可实测。另查明真正硬的 Anthropic 规则是 `tool_use` 必须紧跟配对的 `tool_result`——那条没有任何自动合并能救，多数 400 疑为把它误读成"角色交替"。
+2. **落盘**：`runSingleTurn` 加一个本轮缓冲，`takeSteer` 回调把取到的引导同时记进去；在 `appendMessage('assistant', finalText)` **之前**按序 `appendMessage('user', STEER_PREFIX + steer)`。位置是关键——引导发生在"用户提问"与"助手回复"之间，落在 assistant 之后就是错的时序。
+3. **归并**：`toAnthropicMessages` 的 `user` 分支从**无条件 push** 改成**能并则并**（上一条已是 user 就把文本块并进去），与它本来就在做的连续 tool 结果合并同层、同一手法。
+4. **可见**：`STEER_PREFIX`（`[用户引导] `）作为唯一标记通道，`getHistoryMessages()` 据此增返回 `steer: boolean`，`/history` 用 `⚡ 中途引导` 单独标记，并在摘要时剥掉前缀。
+5. **修正一条断言口径**：`verify-session.ts` 的 C1/C2 原本裸扫 runtime.ts 数 `appendMessage(` 出现几次，被顶部 `STEER_PREFIX` 的 JSDoc 里那句**引用**误伤。按 TESTING 第八节的"先切段"口径改成只在 `runSingleTurn` 方法体内数，期望从 2 改到 3。
+
+**解决的问题**：
+
+- 债 11 关闭：引导既进本轮上下文（19:01 那块），也进会话历史（`/history` 与后续请求都看得到）。
+- 顺手堵掉 `toAnthropicMessages` user 分支的"无条件 push"——它此前**不可达**（内部格式从未产出连续 user），落盘后才会被踩到，所以两件事必须同轮做。
+- 一个未证实的前提从"确定事实"降级为"未证实但不应依赖"，修法则与它**解耦**（本地归并是幂等的：服务端本会合并时无害、真拒绝时救命，两种世界里都对）。
+
+**已知取舍**：
+
+1. **序列只归一化在 Anthropic 一条线上**。落盘后 OpenAI 兼容路径会真的发出连续两条 user（该路径原样透传、零归一化）。标准 OpenAI 语义容忍它，故风险低，但这是本方案唯一无法替服务端担保的地方——已用 S10 把这一不对称钉成断言，而不是埋在注释里。
+2. **标记走内容前缀而不是结构化字段**。给 `MessageEntry` 加 `steer?` 看起来更正规，但 `session/in-memory.ts` 与 `mock.ts` 的 `appendMessage(role, content)` 不接第三个参数，extra 会被静默丢弃，等于重演债 9 的病。代价是 `/history` 依赖一个字符串约定（已收在 `STEER_PREFIX` 一处，不散落），换来三个后端行为一致。
+3. **引导仍不 abort 在飞的流**。半截 `tool_call` 不可执行、已跑过的 `bash` 副作用不可撤销、部分输出的 assistant 留下就没有配对的 tool 结果——三样无解，【预留】不变。
+
+**未来可优化**：
+
+- 若哪天确认 Anthropic 确实会做服务端合并，适配器那道归并可以退化成"仅作说明"的注释；反之若 OpenAI 兼容侧也出现严格端点，把归并上提到 runtime 历史映射处即可（一处护住所有供应商）。
+- 引导只在"被内层吸收"时走本条落盘路径；被外层兜底消费的那些本来就是独立回合、天然落盘，两条路形状一致，无需额外处理。
+
 ## 2026-09-10 19:01 | 引导（steering）的消费点从“外层循环”下沉到“内层工具边界”：用户执行中途插入的话第一次进**本轮**上下文
 
 **牵连系统 / 层次**：契约层（`core/loop.ts` 的 `AgentLoopOptions` 加**可选**成员 `takeSteer?: () => string | null`）· Agent Loop 子系统（`loop/agent-loop.ts` 新增 ④ 段取件与寄生注入，原 ④/⑤ 顺延为 ⑤/⑥）· Runtime（`runtime.ts`：`agentLoop.run()` 传接线、入队提示文案改写、`steerQueue` 与两处出队点的注释重写为“先内后外”的两级消费模型）· 验证层（新增 `scripts/verify-steering.ts` 28 项）· 文档层（TESTING / 目录 / ARCHITECTURE / GLOSSARY 四份快照同步到 17 套 633 项、GLOSSARY 新增 Steering 词条、DECISION_LOG 记一条三选一、ROADMAP 已完成表补一行、ARCHITECTURE 架构债新增第 11 条）。**未动**：`core/tools.ts`、permission 子系统、任何工具、**事件类型**（复用现成的 `thinking/analyzing`，UI 侧一行未改）

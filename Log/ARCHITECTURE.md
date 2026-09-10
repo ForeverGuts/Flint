@@ -188,13 +188,13 @@
 | 扩展机制 | 完整的 Extension 插件体系 | **已落地三类口子**：sections / hooks / watchers，`extension-loader` 自动扫描装载 |
 | 配置 | 分层 SettingsManager（全局/项目/会话） | **部分落地**：密钥分三层（环境变量 > 全局 `~/.flint/config.json` > 项目 `config/provider-keys.json`），其余配置项还没分层（`config/manager.ts` 里标着 TODO） |
 | 观测 | docs/observability.md | **已落地**：SpanCollector 公共配对件 + `/traces` 内置命令 + `trace.jsonl` 落盘；不引 LangSmith / LangFuse 这类外部服务 |
-| 测试 | vitest 全套 | **路线不同、且已定调**：17 套零依赖验证脚本、633 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
+| 测试 | vitest 全套 | **路线不同、且已定调**：17 套零依赖验证脚本、653 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
 
 ---
 
 ## 四、已知架构债
 
-> 2026-09-03 校准文档时查出 7 条，**同日下午已处理 4 条**（下面标 ✅，保留原状描述以便回溯“当初为何算债”）；剩 3 条仍成立；另在修第 7 条时又查出 1 条（第 8 条）。2026-09-04 修正一批文档失真时又查出 1 条（第 9 条）；同日实现 `edit` 工具时又查出 1 条（第 10 条），**同日晚些时候单独一轮修掉了第 10 条**。2026-09-10 落地内层引导（steering）时登记第 11 条（刻意取舍，非遗漏）。现共 11 条：5 条 ✅、6 条仍成立（第 3 / 4 / 6 / 8 / 9 / 11 条）。同日深夜给 `grep` / `bash` 建功能专套时又查出两个缺陷（`grep` 在 Windows 上完全不可用、且把“命令跑不起来”谎报成“没有匹配”；`bash` 硬编码 GBK 解码使外部程序的中文输出全乱码），两者已修——但它们是**实现 bug 而非架构债**，故不计入本表，详情见 [ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 同日 23:53 那块。
+> 2026-09-03 校准文档时查出 7 条，**同日下午已处理 4 条**（下面标 ✅，保留原状描述以便回溯“当初为何算债”）；剩 3 条仍成立；另在修第 7 条时又查出 1 条（第 8 条）。2026-09-04 修正一批文档失真时又查出 1 条（第 9 条）；同日实现 `edit` 工具时又查出 1 条（第 10 条），**同日晚些时候单独一轮修掉了第 10 条**。2026-09-10 落地内层引导（steering）时登记第 11 条（刻意取舍，非遗漏），**同日晚些时候单独一轮把它修掉**，并顺带核查推翻了它的一半前提（见第 11 条）。现共 11 条：6 条 ✅、5 条仍成立（第 3 / 4 / 6 / 8 / 9 条）。同日深夜给 `grep` / `bash` 建功能专套时又查出两个缺陷（`grep` 在 Windows 上完全不可用、且把“命令跑不起来”谎报成“没有匹配”；`bash` 硬编码 GBK 解码使外部程序的中文输出全乱码），两者已修——但它们是**实现 bug 而非架构债**，故不计入本表，详情见 [ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 同日 23:53 那块。
 
 1. ✅ **两个同名 `SessionStorage` 接口，注释还互相矛盾**（已收敛）
    - 原状：`core/storage.ts` 版有三必需方法 + 三可选成员（`getAllStored?` / `forkTo?` / `getDir?`），注释说“这样 Runtime **无需 instanceof** 判断”，三个实现 implements 的是这一版；`types.ts` 版只有三必需方法，注释说“Runtime **通过 instanceof 分支调用**”，而 `RuntimeOptions.session` 声明的是这一版——于是可选成员在接口层面拿不到，`runtime.ts` 里只能写 `if (this.session instanceof JsonlSessionStorage)`。
@@ -216,7 +216,7 @@
 
 9. **`tool_calls` 持久化是双向死路，而堵住出口的那道丢弃是承重的**（2026-09-04 修文档失真时查出）。
    - **格式支持**：`MessageEntry` 声明了 `tool_calls?` / `tool_call_id?` / `name?`，`appendMessage(role, content, extra?)` 能写，`getMessages()` 会还原。所以“会话存储只存纯文本”这个流传很广的说法是**错的**（它曾同时出现在 `llm/types.ts` 注释、`llm/anthropic.ts` 注释、GLOSSARY 两个词条、ARCHITECTURE_LOG 一处，本轮全部改正）。
-   - **入口未接线**：`runtime.ts` 两处调用是 `appendMessage('user', currentText)` / `appendMessage('assistant', finalText)`，**都不传第三个参数**；`agent-loop.ts` 里一处 `appendMessage` 都没有（尽管 `jsonl-storage.ts` 的头注释声称调用方含“Agent 循环（tool 结果消息）”）。所以结构化字段从未被写进任何会话文件。
+   - **入口未接线**：`runtime.ts` 的 `runSingleTurn` 里三处调用是 `appendMessage('user', currentText)` / `appendMessage('user', STEER_PREFIX + steer)`（2026-09-10 新增的引导落盘，见第 11 条）/ `appendMessage('assistant', finalText)`，**都不传第三个参数**；`agent-loop.ts` 里一处 `appendMessage` 都没有（尽管 `jsonl-storage.ts` 的头注释声称调用方含“Agent 循环（tool 结果消息）”）。所以结构化字段从未被写进任何会话文件。
    - **出口被堵**：`runtime.ts` 组装 `toolMessages` 时 `history.map((m) => ({ role, content }))`，把 `getMessages()` 刚还原的 `tool_calls` 又丢掉。
    - **为何不能直接“修好”出口**：`resolveAnthropicThinking` 的安全阀是“存在带 `tool_calls` 但无 `thinkingBlocks` 的 assistant 消息就强制关 thinking”，而 `thinkingBlocks` 永不落盘（`MessageEntry` 无此字段）。一旦透传历史 `tool_calls`，任何有过工具调用的会话都会让 extended thinking 被**静默全程关闭**——看上去像“修好了历史保真度”，实际是拿推理能力换了它。要接通必须同时解决历史 thinking 块的回放（要么落盘 signature，要么把带工具调用的历史轮折叠成文本）。
    - **本轮处理**：行为一行未改（改它是独立的一件事），只改正全部失真注释/文档，并把“入口未接线 + 出口承重”固化为断言（`verify-session.ts` ⑨ 段），让下次想“顺手补全”的人先撞上测试。这是项目里第二处“支持但未接线”（第一处：`runtime.onInput()`，见第 7 条）。
@@ -233,10 +233,17 @@
      - **前缀匹配换成精确匹配**：`manager.ts` 的 `autoAllowed` 从 `string[]` + `some((prefix) => key.startsWith(prefix))` 换成 `Set<string>` + `has()`；`core/permission.ts` 的参数名 `detail` → `authKey`（detail 在本项目专指弹窗文案，同名正是当初混淆的根源）
      - **`clear()` 接线**：`runtime.clearSession()` 清历史时连带 `this.permission.clear()`；`/clear` 的说明改成“清空当前会话与本次工具授权”、回执写明授权一并撤销——“本次”终于等于本次会话
 
-11. **内层引导的文本不落会话历史（2026-09-10 落地内层引导时登记，**刻意**如此）。** `steerQueue` 的消息现在会在 `AgentLoop` 的工具边界被取走、追加进最后一条 tool 结果的 content（[ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 同日 19:01 那块）。代价：它只活在本次请求的 `toolMessages` 里，`/history` 与下一次请求的历史都看不到它——模型下一轮只知道“最终答案是什么”，不知道用户中途改过方向。
-   - **为什么不能顺手落盘**：`appendMessage('user', 引导)` 会造出 `user,user,assistant` 的会话序列，下次请求组装 `toolMessages` 时就是连续两条 user → Anthropic `toAnthropicMessages` 的 `user` 分支**无条件** `messages.push`（不像连续 tool 结果那样合并），直接 400。要持久化必须先在历史映射处做一遍**同角色相邻合并**，那是独立的一件事。
-   - **与第 9 条的关系**：两条都是“消息形状在历史里被削平”的不同侧面——第 9 条削的是工具调用结构，本条削的是中途引导。第 9 条那道丢弃**承重**（保住 extended thinking），本条的取舍则是**已知的信息损失**，不涉及别的机制。
-   - **怎么看它是否生效**：`scripts/verify-steering.ts` S6 断言引导在第 3 次 LLM 请求里可见（端到端，真 `Runtime`）；S4 用变异测试钉住“最后一轮不取件”这条护栏——把 `turn < maxTurns - 1` 放宽成 `turn < maxTurns`，S4 立刻红两条。
+11. ✅ **内层引导的文本不落会话历史**（2026-09-10 落地内层引导时登记，**同日晚些时候单独一轮修掉**；下面保留原状以便回溯）。
+   - **原状**：`steerQueue` 的消息在 `AgentLoop` 的工具边界被取走、追加进最后一条 tool 结果的 content（[ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 同日 19:01 那块）之后就没了——只活在本次请求的 `toolMessages` 里，`/history` 与下一次请求的历史都看不到它，模型下一轮只知道“最终答案是什么”，不知道用户中途改过方向。
+   - **原前提有一半站不住（本轮核查后修正）**：原文写“连续两条 user → 400”。Anthropic API 参考对 `messages` 参数的**原话是反的**——`Consecutive user or assistant turns in your request will be combined into a single turn.`（`docs.anthropic.com` 的 en / fr 两版、`console.anthropic.com`、`platform.claude.com` 的 csharp / cli 两版，5 个官方镜像**逐字一致**）。而第三方“roles must alternate”的 400 报告也大量存在（含一篇标注 Verified 2026-04），两种说法不可能同时严格成立，**本机无法裁定**（官方站点在此网络返回 `app-unavailable-in-region`；无 key 可实测）。另查明真正硬的 Anthropic 规则是 `tool_use` 必须紧跟配对的 `tool_result`——那条没有任何自动合并能救，多数 400 疑为把它误读成“角色交替”。→ 结论：**修法不变，措辞从“必然 400”改成“不应依赖服务端归一化”**。
+   - **怎么修的**：落盘与归并两件事同轮做，且**与争议前提解耦**——本地同角色归并是幂等的：服务端本会合并时它无害，服务端真的拒绝时它救命，**两种世界里都正确**。
+     1. **落盘**（`runtime.ts`）：`runSingleTurn` 用 `takeSteer` 回调把**被内层吸收**的引导收进本轮缓冲，在 `appendMessage('assistant', finalText)` **之前**按序落盘为独立 user 条目，内容带 `STEER_PREFIX`（`[用户引导] `）。位置是关键——引导发生在“用户提问”与“助手回复”之间，落在 assistant 之后就是错的时序。
+     2. **归并**（`anthropic.ts`）：`toAnthropicMessages` 的 `user` 分支从**无条件 push** 改成**能并则并**（上一条已是 user 就把文本块并进去），与它本来就在做的连续 tool 结果合并同层、同一手法——这同时把原文点名的那个洞堵上了。
+     3. **可见**（`/history`）：`getHistoryMessages()` 增返回 `steer: boolean`（按内容前缀判定），`/history` 把这类条目标成 `⚡ 中途引导` 而不是 `👤 你`。
+   - **为什么用内容前缀而不是给 `MessageEntry` 加结构化字段**：`session/in-memory.ts` 与 `mock.ts` 的 `appendMessage(role, content)` **根本不接第三个参数**，extra 会被静默丢弃 → 同一条引导会“JSONL 里存得下、内存 / Mock 里凭空消失”，重演第 9 条“格式支持、入口未接线”的病。走 `role + content` 则三个后端天然一致。
+   - **与第 9 条的关系**：两条都是“消息形状在历史里被削平”的不同侧面——第 9 条削的是工具调用结构（那道丢弃**承重**，保住 extended thinking），本条削的是中途引导（**已修**）。两条的处理手法刻意不同：第 9 条不动，本条落盘——因为第 9 条的出口堵着是为了保住另一个机制，而本条没有任何机制需要保护。
+   - **已知代价（刻意的不对称，已登记为断言）**：落盘成独立 user 条目后，**OpenAI 兼容路径会真的发出连续两条 user**（该路径原样透传、零归一化）。标准 OpenAI 语义容忍它，故风险低，但这是本方案唯一无法替服务端担保的地方——用 `verify-steering.ts` 的 S10 钉住，不埋在注释里。
+   - **怎么看它是否生效**：`scripts/verify-steering.ts` 48 项。S8 钉落盘（位置在 assistant 之前 / 带标记 / `/history` 标出，并带“无引导时形状不变”的对照组）；S9 起真 `http` 服务器抓**真实请求体**，钉“三条并成两条、正文不丢不粘、序列严格交替”，并带“无相邻同角色时不合并”与“连续 tool 结果仍合并”两条对照组；S10 钉 OpenAI 路径的不对称。**四组变异测试各自精准变红**：摘掉适配器归并 → S9-1/2/3；摘掉落盘 → S8-1/3/4/5/6/7；落盘挪到 assistant 之后 → S8-3/4/5/7；去掉标记前缀 → S8-3/6/7。
      - **为什么不选“把键换成真路径、让前缀匹配生效”**：前缀匹配要求键本身是路径语义才安全，而键由工具自定义——`bash` 的键是完整命令，`cd src/` 就以 `/` 结尾，按“以 / 结尾就前缀放行”等于批准 `cd src/ && rm -rf .`。**目录级授权明确不做**，要做得先有一个“只按路径授权”的独立入口（`verify-permission.ts` C10 / C11 把这条钉死）
      - **一处刻意的放宽**：`write` / `edit` 的键是路径不是内容，所以“本次全部允许” = 本会话内不再问这个文件（改前是“路径 + `oldText` 前 38 字符”，在那个维度上本轮放宽了），换来的是这个选项真的有用。取舍见 [DECISION_LOG.md](./DECISION_LOG.md)，术语见 [GLOSSARY.md](./GLOSSARY.md#permissionkey授权匹配键)
      - **断言**：新增 `scripts/verify-permission.ts`（62 项、7 段），含“改前的截断键确实把 76 字符命令与 104 字符命令判成同一个键”的**对照组**（C1 / C2）与反例钉死（C4 / C7 / C10 / C11），以及 `clear()` 接线的**行为证明**（⑦ 段造真 `Runtime` 数它被调了几次）。该轮收尾时全量 14 套 482 项、`tsc --noEmit` 均 EXIT=0（同日深夜又给 grep / bash 建了 `verify-tools.ts`，现为 15 套 556 项，见上面第二节对比表）

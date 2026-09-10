@@ -486,13 +486,15 @@ NOOP **不是跳过这段代码，是跳过打卡**：回调照常执行，只�
 ### Steering（内层引导）
 用户**在执行中途**插入的指示。落点决定它配不配叫这个名字：只有进**本轮**上下文才算引导，等整轮跑完再处理就只是 followUp 的高优先级版本（2026-09-10 之前本项目正是后者——名字许了一个没兑现的承诺）。
 
-消费分两级（`Runtime` → `AgentLoop`）：① **内层**——`AgentLoop` 每次工具跑完、下一次 `llm.stream()` 之前调 `opts.takeSteer()` 取一条，**追加进最后一条 tool 结果的 content**（前缀 `[用户引导]`）→ 本轮内生效；② **外层兜底**——① 不适用时（本轮没有工具调用 = 没有注入落点；或已是最后一轮 = 取走会无人消费），消息留在 `steerQueue` 里，由 `prompt` 的外层循环当新一回合处理。**两级都不丢消息**，各有独立断言钉住。
+消费分两级（`Runtime` → `AgentLoop`）：① **内层**——`AgentLoop` 每次工具跑完、下一次 `llm.stream()` 之前调 `opts.takeSteer()` 取一条，**追加进最后一条 tool 结果的 content**（前缀 `[用户引导]`）→ 本轮内生效；同时被 `Runtime` 记入本轮缓冲，在**本轮 assistant 之前**落盘为独立 user 条目（内容带 `STEER_PREFIX`）→ 也进会话历史。② **外层兜底**——① 不适用时（本轮没有工具调用 = 没有注入落点；或已是最后一轮 = 取走会无人消费），消息留在 `steerQueue` 里，由 `prompt` 的外层循环当新一回合处理（本来就是独立回合，天然落盘）。**两级都不丢消息**，各有独立断言钉住。
 
-**为什么是“追加”而不是新开一条 user 消息**：tool 结果在 `anthropic.ts` 里已转成 `user` 角色的 `tool_result` block，跟在它后面的 user 就是连续两条 user（`toAnthropicMessages` 的 `user` 分支**无条件** push，不像连续 tool 结果那样合并）→ 违反交替约束直接 400。与重复失败提示 / 收尾提示同一手法、同一条理由。
+**为什么注入是“追加”而不是新开一条 user 消息**：tool 结果在 `anthropic.ts` 里已转成 `user` 角色的 `tool_result` block，在**本轮请求内**再插一条 user 就是连续两条 user。与重复失败提示 / 收尾提示同一手法、同一条理由。
 
-**刻意不做两件事**：① 不 abort 在飞的流——半截 `tool_call` 的 JSON 不可执行、已跑过的 `bash` 副作用无法撤销、部分输出的 assistant 消息留下就没有配对的 tool 结果（协议不合法），仍属【预留】；② 引导文本**不落会话历史**（落盘会造出 `user,user,assistant`，下次请求映射历史时同样连续两条 user），即 [ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第 11 条。
+**落盘后真实出现的连续 user 怎么消化**：会话历史里会是 `user,user,assistant`（用户输入 + 引导 + 回复）。`toAnthropicMessages` 的 `user` 分支**能并则并**——上一条已是 user 就把文本块并进去，与它本来就在做的连续 tool 结果合并同层同手法；OpenAI 兼容路径原样透传，标准语义容忍。归并放适配器而非 runtime 历史映射处的取舍见 [DECISION_LOG.md](./DECISION_LOG.md)。（原前提“连续两条 user 必然 400”经核查**降级**：Anthropic API 参考称连续同角色轮会被服务端合并，与第三方 400 报告冲突且本机无法裁定，故修法与前提解耦。）
 
-参见：`scripts/verify-steering.ts`（28 项，含真 `Runtime` 端到端与两条经**变异测试**验证的护栏）· [ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 2026-09-10 那块 · [DECISION_LOG.md](./DECISION_LOG.md) 同日那条
+**刻意不做一件事**：不 abort 在飞的流——半截 `tool_call` 的 JSON 不可执行、已跑过的 `bash` 副作用无法撤销、部分输出的 assistant 消息留下就没有配对的 tool 结果（协议不合法），仍属【预留】。
+
+参见：`scripts/verify-steering.ts`（48 项，含真 `Runtime` 端到端、抓真实请求体验线上序列，以及四组**变异测试**）· [ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第 11 条 · [ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 2026-09-10 那块 · [DECISION_LOG.md](./DECISION_LOG.md) 同日那条
 
 ## T
 

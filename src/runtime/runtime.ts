@@ -44,6 +44,19 @@ export function loadTaskMemory(taskPath = 'TASK.md'): string | undefined {
 
 /* ── 类型定义 ── */
 
+/**
+ * 落盘后的内层引导（steering）条目前缀 —— 内容即唯一真相源。
+ *
+ * 为什么用内容前缀而不是给 MessageEntry 加一个结构化字段：`session/in-memory.ts` 与
+ * `session/mock.ts` 的 `appendMessage(role, content)` **根本不接第三个参数**，extra 会被
+ * 静默丢弃 → 同一条引导会「JSONL 里存得下、内存/Mock 里凭空消失」，重演架构债第 9 条
+ * 「格式支持、入口未接线」的病。走 role + content 则三个后端天然一致。
+ *
+ * 措辞与 agent-loop 内层注入用的 `[用户引导]` 同一套词表（那里是长句式，这里是紧凑前缀）。
+ * 双消费方：模型（后续轮次能看出这是中途插入的指示）+ `/history`（据此单独标记）。
+ */
+export const STEER_PREFIX = '[用户引导] ';
+
 /** 命令处理函数签名（re-export 自 core，保持兼容） */
 export type CommandHandler = import('../core/commands.js').CommandHandler;
 
@@ -290,7 +303,9 @@ export class Runtime {
    * 调用方：/history 命令
    * 服务于：展示会话历史、定位 fork 点
    */
-  async getHistoryMessages(): Promise<Array<{ msgId: string; role: string; content: string }>> {
+  async getHistoryMessages(): Promise<Array<{ msgId: string; role: string; content: string; steer: boolean }>> {
+    // steer 标记由内容前缀判定（不是结构化字段）——三个存储后端都只保 role + content，
+    // 前缀是唯一通用的标记通道，理由见 STEER_PREFIX 的注释。
     // 能力探测代替 instanceof：契约里 getAllStored 是可选成员，实现了就是 entry 树存储
     if (this.session?.getAllStored) {
       // StoredMessage 的 id/msgId 都可选（兼容 JSONL 用 id、对外 API 用 msgId），这里显式兜底
@@ -298,11 +313,17 @@ export class Runtime {
         msgId: m.msgId ?? m.id ?? '',
         role: m.role,
         content: m.content,
+        steer: m.content.startsWith(STEER_PREFIX),
       }));
     }
     // 非 entry 树存储（InMemory/Mock）：从 getMessages 拼装（无 msgId）
     const msgs = (await this.session?.getMessages()) ?? [];
-    return msgs.map((m, i) => ({ msgId: `m${i}`, role: m.role, content: m.content }));
+    return msgs.map((m, i) => ({
+      msgId: `m${i}`,
+      role: m.role,
+      content: m.content,
+      steer: m.content.startsWith(STEER_PREFIX),
+    }));
   }
 
   /**
@@ -564,6 +585,10 @@ export class Runtime {
     // 发射 thinking 事件（告诉 UI 开始旋转）
     this.events.emit({ type: 'thinking', phase: 'analyzing' });
 
+    // 本轮**被内层吸收**的引导（takeSteer 的副产物）。落盘时要按序补在本轮 assistant 之前，
+    // 否则用户中途改的方向只活在本次请求的 toolMessages 里，下一轮起就无从知晓。
+    const absorbedSteers: string[] = [];
+
     // ⑦: 上下文压缩 —— 委托给 CompactionService（历史超限时 LLM 摘要 + 入树）
     let history = this.session ? await this.session.getMessages() : [];
     const compacted = await this.compaction.maybeCompact(history);
@@ -615,7 +640,11 @@ export class Runtime {
       // 已有现成分支，不需要为新机制加事件类型。
       takeSteer: () => {
         const steer = this.dequeueSteer();
-        if (steer) this.events.emit({ type: 'thinking', phase: 'analyzing' });
+        if (steer) {
+          // 记入本轮缓冲：它已被内层吸收，属于**本轮**，落盘时要补在本轮 assistant 之前
+          absorbedSteers.push(steer);
+          this.events.emit({ type: 'thinking', phase: 'analyzing' });
+        }
         return steer;
       },
     });
@@ -624,6 +653,14 @@ export class Runtime {
     // 只传 role + content，不传第三个参数 extra：tool_calls / tool_call_id / name 从未被写进会话文件。
     // 于是 MessageEntry 的结构化字段是“格式支持、入口未接线”，与上面那道丢弃合起来构成双向死路。
     await this.session?.appendMessage('user', currentText);
+    // 被内层吸收的引导：作为独立 user 条目补在本轮 assistant **之前** —— 时序忠实，
+    // 引导确实发生在「用户提问」与「助手回复」之间，而不是等回复完才冒出来。
+    // 形状上会产出 user,user,assistant：由 anthropic.ts 的 toAnthropicMessages 做**同角色
+    // 相邻归并**消化（Anthropic 线路）；OpenAI 兼容路径原样透传，标准语义容忍连续 user。
+    // 内容带 STEER_PREFIX：三个存储后端都只保 role + content，前缀因此是唯一通用的标记通道。
+    for (const steer of absorbedSteers) {
+      await this.session?.appendMessage('user', STEER_PREFIX + steer);
+    }
     await this.session?.appendMessage('assistant', finalText);
     // 用量：优先 API 真值（Agent Loop 已合计各轮），缺失才回退估算——
     // 估算只算 user 输入 + 最终回复，多轮工具循环的中间 assistant/tool 消息、

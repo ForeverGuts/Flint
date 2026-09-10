@@ -14,6 +14,7 @@
  * 设计：树不可变，无"编辑/删除"。要改历史 = fork 到该点重新提问，原历史可审计。
  */
 import type { Runtime } from '../../runtime/runtime.js';
+import { STEER_PREFIX } from '../../runtime/runtime.js';
 
 /** 角色显示名 + 图标 */
 const ROLE_LABEL: Record<string, string> = {
@@ -23,9 +24,19 @@ const ROLE_LABEL: Record<string, string> = {
   tool: '🔧 工具',
 };
 
-/** 内容摘要：取首行、限 30 可见字符 */
+/**
+ * 条目显示名：内层引导（steering）优先判定。
+ * 引导落盘时是 user 角色（role + content 是三个存储后端都保的通道），只看角色会与用户输入
+ * 混淆，所以按内容前缀单独标一行 —— 用户看得出这句是在助手执行途中插进去的。
+ */
+function labelOf(m: { role: string; steer: boolean }): string {
+  return m.steer ? '⚡ 中途引导' : (ROLE_LABEL[m.role] ?? m.role);
+}
+
+/** 内容摘要：取首行、限 30 可见字符（引导条目剥掉标记前缀，免得每行都以 [用户引导] 开头） */
 function summarize(content: string): string {
-  const firstLine = content.split('\n')[0] || '';
+  const body = content.startsWith(STEER_PREFIX) ? content.slice(STEER_PREFIX.length) : content;
+  const firstLine = body.split('\n')[0] || '';
   return firstLine.length > 30 ? firstLine.slice(0, 30) + '…' : firstLine;
 }
 
@@ -37,7 +48,7 @@ export function activate(runtime: Runtime): void {
     // ── ① 列出当前分支历史消息 ──
     const choices = msgs.map((m, i) => ({
       value: m.msgId,
-      label: `${String(i + 1).padStart(2)} ${ROLE_LABEL[m.role] ?? m.role}  ${summarize(m.content)}`,
+      label: `${String(i + 1).padStart(2)} ${labelOf(m)}  ${summarize(m.content)}`,
       description: '',
     }));
 
@@ -54,12 +65,12 @@ export function activate(runtime: Runtime): void {
         { value: 'fork', label: '从此继续（分叉新分支，保留原历史）', description: '' },
         { value: 'cancel', label: '取消', description: '' },
       ],
-      `选择操作 — ${ROLE_LABEL[chosen.role] ?? chosen.role}  ${summarize(chosen.content)}`,
+      `选择操作 — ${labelOf(chosen)}  ${summarize(chosen.content)}`,
     );
 
     switch (action) {
       case 'view':
-        return `📄 ${ROLE_LABEL[chosen.role] ?? chosen.role}：\n${chosen.content}`;
+        return `📄 ${labelOf(chosen)}：\n${chosen.content}`;
 
       case 'fork': {
         const newName = await runtime.forkSessionAt(chosen.msgId);
