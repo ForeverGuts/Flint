@@ -11,6 +11,33 @@
 
 ---
 
+## 2026-09-10 19:01 | 引导（steering）的消费点从“外层循环”下沉到“内层工具边界”：用户执行中途插入的话第一次进**本轮**上下文
+
+**牵连系统 / 层次**：契约层（`core/loop.ts` 的 `AgentLoopOptions` 加**可选**成员 `takeSteer?: () => string | null`）· Agent Loop 子系统（`loop/agent-loop.ts` 新增 ④ 段取件与寄生注入，原 ④/⑤ 顺延为 ⑤/⑥）· Runtime（`runtime.ts`：`agentLoop.run()` 传接线、入队提示文案改写、`steerQueue` 与两处出队点的注释重写为“先内后外”的两级消费模型）· 验证层（新增 `scripts/verify-steering.ts` 28 项）· 文档层（TESTING / 目录 / ARCHITECTURE / GLOSSARY 四份快照同步到 17 套 633 项、GLOSSARY 新增 Steering 词条、DECISION_LOG 记一条三选一、ROADMAP 已完成表补一行、ARCHITECTURE 架构债新增第 11 条）。**未动**：`core/tools.ts`、permission 子系统、任何工具、**事件类型**（复用现成的 `thinking/analyzing`，UI 侧一行未改）
+
+**面向的问题**：
+- **`steerQueue` 名不副实。** 改前它只有两个出队点，都在 Runtime 外层 `while(true)` 里（`prompt` 轮首、`runSingleTurn` 返回之后），而 `AgentLoop` 的 `for (let turn...)` 工具循环里**一处队列检查都没有**。后果：用户看着 Agent 在调工具、说“别这么干了”，这句话要等**整轮工具循环全部跑完**才被读到。于是 steer 与 followUp 的实质差别只剩**优先级**，不是吸收时机——名字许了一个没兑现的承诺
+- **收益在这一侧，不在 abort 那一侧。** 模型“走错方向”这件事，恰好只在跑完一两个工具之后才看得出来，而那一刻正是内层边界。真·硬打断（abort 在飞的 `fetch`）要面对三件无解的事：半个 `tool_call` 的 JSON **不可执行**、已跑过的 `bash` **副作用无法撤销**、部分输出的 assistant 消息留下就没有配对的 tool 结果（协议不合法）——所以仍留在【预留】，先做改动小、无协议风险的内层吸收
+
+**做出的改动**：
+- **契约**：`AgentLoopOptions` 加**可选**成员 `takeSteer?`（可选的理由与 `ToolDefinition.parse?` / `ToolProvider.permissionKey?` 同一手法：加必需成员会打坏既有替身）。注释里把两条语义边界写死，由实现侧负责——调用方只需给一个“取一条，没有返回 null”的函数
+- **实现**（`agent-loop.ts` ④ 段）：工具执行完、下一次 `llm.stream()` 之前取件，把文本**追加进最后一条 tool 结果的 content**，前缀一行 `[用户引导] 用户在你执行过程中插入了新指示，优先级高于当前步骤，必要时放弃当前方向：`
+- **两条“不吞消息”护栏**（各有独立断言，且都做过变异测试）：① 只在 `turn < maxTurns - 1` 时取件——最后一轮取走会**无人消费**（本轮之后没有 LLM 调用了），既不进上下文也不再回队；② 只在**本轮产出过工具调用**时取件——没有工具就没有注入落点（循环在 ② 段就 break 了），留给外层循环当新回合
+- **Runtime 接线**：`takeSteer: () => { const s = this.dequeueSteer(); if (s) this.events.emit({ type: 'thinking', phase: 'analyzing' }); return s; }`——内层吸收同样是“模型要重新生成”的信号，UI 的封框/状态行已有现成分支，不必为新机制加事件类型
+
+**解决的问题**：
+- 用户在工具执行期间插入的指示**当轮生效**。端到端实测（`verify-steering.ts` S6）：3 次 LLM 往返之内就把它送达模型；而**摘掉接线后立刻变成 4 次**——多出来的那一次就是“退回外层当新回合”的成本，也正是 ② 与 ③ 之间的全部差别
+- steer 与 followUp 从此有了**真实**的机制差别，不再只是同一落点上的优先级
+- 入队提示文案同步改写：`（消息已插入，当前回复完成后立即处理）` → `（已插入，当前步骤结束后立即采纳）`（前者在内层吸收落地后已经不成立）
+
+**已知取舍（刻意不做，已登记为架构债第 11 条）**：
+- **引导文本不落会话历史**（`/history` 看不到它）。落盘会造出 `user,user,assistant` 的会话序列，下次请求映射历史时又是连续两条 user → Anthropic 直接 400（`toAnthropicMessages` 的 `user` 分支**无条件** push，不像 tool 结果那样合并）。要持久化得先在历史映射处做一遍同角色合并，属另一件事
+- **不能新开一条 user 消息**：tool 结果在 `anthropic.ts` 里已转成 user 角色，跟在它后面的 user 就是连续两条 user。这与既有的重复失败提示 / 收尾提示是同一个手法、同一条理由
+
+**未来可优化**：内层引导暂不参与“重复失败保护”计数器（引导是**换方向**，不是重试同一调用，混进同一个计数器会污染“同一调用连续失败”的语义）；硬打断仍需 `llm.stream()` 支持 `AbortSignal`，且要先解决半截 `tool_call` 与工具副作用的善后
+
+---
+
 ## 2026-09-06 10:44 | 工具参数从“两份手写副本”收敛成“一份 spec 派生三样”：发给模型的 Schema 第一次成为契约
 
 **牵连系统 / 层次**：工具子系统（新增 `tools/spec.ts`；`tools/builtin.ts` 的 6 个工具全改走 `defineTool()`、删掉 4 个校验件共 18 处；`tools/registry.ts` 的 `execute()` 从 3 行变成“先 parse 再 handler”）· 契约层（`core/tools.ts` 的 `ToolDefinition` 加第三个**可选**成员 `parse?`；`ToolProvider` 本轮**未动**）· 验证层（新增 `verify-spec.ts` 45 项 + `fixtures/tool-schemas-baseline.json` 基线快照；`verify-edit.ts` / `verify-permission.ts` 两处段头的替身计数 7 → 9）· 文档层（TESTING / 目录 / ARCHITECTURE / GLOSSARY 四份快照同步到 16 套 605 项、GLOSSARY 新增 spec / defineTool / ToolInputError 三个词条、DECISION_LOG 记一条三选一、ROADMAP 关掉 P6 “工具参数校验框架”待办）。**未动**：`loop/agent-loop.ts` 的前缀分类与判定式、任何工具的返回前缀、任何错误文案（逐字未变，③ 段钉着）、permission 子系统——`[INVALID]` 这个信号本身是 09-05 那轮建好的，本轮只是让它**真的能被触发**

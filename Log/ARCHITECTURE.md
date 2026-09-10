@@ -152,6 +152,8 @@
 
 **现状（这条已被事件系统取代，签名保留）：** 真实签名是 `prompt(input, onToken?, streamingBehavior = 'followUp')`，但**三个调用点全都不传 `onToken`**——`repl.ts` 与 `rpc.ts` 只传 input，`tree-ui.ts` 甚至显式写 `undefined` 跳过它去传第三个参数。UI 联动实际全部走 EventBus 订阅。Runtime 内部个别分支仍会调它（插入 steer 消息时回一句提示），所以它没死，只是**没人从外面接**。
 
+`streamingBehavior='steer'` 走**两级消费**：第一级在 `AgentLoop` 的工具边界（`opts.takeSteer`，工具跑完、下一次 `llm.stream()` 之前取件，追加进最后一条 tool 结果 → **本轮内**生效）；第一级不适用时（本轮无工具调用、或已是最后一轮）退回第二级，由外层循环当新一回合处理（退化成高优先级 followUp）。两级都不 abort 在飞的流——硬打断仍需 `AbortSignal`，属【预留】。
+
 **理由（当初）：**
 - 向后兼容——不传 `onToken` 时行为与旧版一致
 - 调用方自由选择流式或非流式
@@ -186,13 +188,13 @@
 | 扩展机制 | 完整的 Extension 插件体系 | **已落地三类口子**：sections / hooks / watchers，`extension-loader` 自动扫描装载 |
 | 配置 | 分层 SettingsManager（全局/项目/会话） | **部分落地**：密钥分三层（环境变量 > 全局 `~/.flint/config.json` > 项目 `config/provider-keys.json`），其余配置项还没分层（`config/manager.ts` 里标着 TODO） |
 | 观测 | docs/observability.md | **已落地**：SpanCollector 公共配对件 + `/traces` 内置命令 + `trace.jsonl` 落盘；不引 LangSmith / LangFuse 这类外部服务 |
-| 测试 | vitest 全套 | **路线不同、且已定调**：16 套零依赖验证脚本、605 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
+| 测试 | vitest 全套 | **路线不同、且已定调**：17 套零依赖验证脚本、633 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
 
 ---
 
 ## 四、已知架构债
 
-> 2026-09-03 校准文档时查出 7 条，**同日下午已处理 4 条**（下面标 ✅，保留原状描述以便回溯“当初为何算债”）；剩 3 条仍成立；另在修第 7 条时又查出 1 条（第 8 条）。2026-09-04 修正一批文档失真时又查出 1 条（第 9 条）；同日实现 `edit` 工具时又查出 1 条（第 10 条），**同日晚些时候单独一轮修掉了第 10 条**。现共 10 条：5 条 ✅、5 条仍成立（第 3 / 4 / 6 / 8 / 9 条）。同日深夜给 `grep` / `bash` 建功能专套时又查出两个缺陷（`grep` 在 Windows 上完全不可用、且把“命令跑不起来”谎报成“没有匹配”；`bash` 硬编码 GBK 解码使外部程序的中文输出全乱码），两者已修——但它们是**实现 bug 而非架构债**，故不计入本表，详情见 [ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 同日 23:53 那块。
+> 2026-09-03 校准文档时查出 7 条，**同日下午已处理 4 条**（下面标 ✅，保留原状描述以便回溯“当初为何算债”）；剩 3 条仍成立；另在修第 7 条时又查出 1 条（第 8 条）。2026-09-04 修正一批文档失真时又查出 1 条（第 9 条）；同日实现 `edit` 工具时又查出 1 条（第 10 条），**同日晚些时候单独一轮修掉了第 10 条**。2026-09-10 落地内层引导（steering）时登记第 11 条（刻意取舍，非遗漏）。现共 11 条：5 条 ✅、6 条仍成立（第 3 / 4 / 6 / 8 / 9 / 11 条）。同日深夜给 `grep` / `bash` 建功能专套时又查出两个缺陷（`grep` 在 Windows 上完全不可用、且把“命令跑不起来”谎报成“没有匹配”；`bash` 硬编码 GBK 解码使外部程序的中文输出全乱码），两者已修——但它们是**实现 bug 而非架构债**，故不计入本表，详情见 [ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 同日 23:53 那块。
 
 1. ✅ **两个同名 `SessionStorage` 接口，注释还互相矛盾**（已收敛）
    - 原状：`core/storage.ts` 版有三必需方法 + 三可选成员（`getAllStored?` / `forkTo?` / `getDir?`），注释说“这样 Runtime **无需 instanceof** 判断”，三个实现 implements 的是这一版；`types.ts` 版只有三必需方法，注释说“Runtime **通过 instanceof 分支调用**”，而 `RuntimeOptions.session` 声明的是这一版——于是可选成员在接口层面拿不到，`runtime.ts` 里只能写 `if (this.session instanceof JsonlSessionStorage)`。
@@ -204,7 +206,7 @@
 
 4. **压缩用量没回流。** `context/compaction.ts` 走非流式 `llm.chat()`，而 `ChatResult` 没有 usage 字段，全文件也没有 `usage` 字样 → 压缩消耗的 token 从未计入 `/usage` 的合计。**本轮判定不做**：要改就得改 `ChatResult` 的形状，牵连两个 provider 的非流式路径 + `stream-helper` + 多套 verify 脚本，是独立的一件事（已记在 ROADMAP P6 “可观测性增强”的剩余项里）。
 
-5. ✅ **`package.json` 的工程化缺口**（已补）。原状：没有 verify / test 入口（10 套脚本只能手工循环跑）；`clean` 写的是 `rm -rf dist`，Windows 下根本跑不通。现有 `verify`（`run-verify.mjs` 串跑，现 16 套）/ `typecheck` / `clean`（`clean.mjs` 用 `fs.rmSync` 跨平台删 dist）三个入口，三个都实测跑通。
+5. ✅ **`package.json` 的工程化缺口**（已补）。原状：没有 verify / test 入口（10 套脚本只能手工循环跑）；`clean` 写的是 `rm -rf dist`，Windows 下根本跑不通。现有 `verify`（`run-verify.mjs` 串跑，现 17 套）/ `typecheck` / `clean`（`clean.mjs` 用 `fs.rmSync` 跨平台删 dist）三个入口，三个都实测跑通。
 
 6. **`scripts/` 不受 tsc 检查。** `tsconfig.json` 的 `include` 只有 `["src/**/*.ts"]`。这是有意的取舍（脚本要造替身、塞假字段），代价是脚本必须真跑才算验过。
 
@@ -230,6 +232,11 @@
      - **截断没了**：`agent-loop.ts` 的 `autoKey` 兜底从 `argsJson.slice(0, 80)` 改成**完整** `argsJson`；`detail` 仍截 80（弹窗标题只有 1 行）。两个变量的截断策略**刻意相反**，承重注释写在调用点（防后人“为了一致”把它们对齐）
      - **前缀匹配换成精确匹配**：`manager.ts` 的 `autoAllowed` 从 `string[]` + `some((prefix) => key.startsWith(prefix))` 换成 `Set<string>` + `has()`；`core/permission.ts` 的参数名 `detail` → `authKey`（detail 在本项目专指弹窗文案，同名正是当初混淆的根源）
      - **`clear()` 接线**：`runtime.clearSession()` 清历史时连带 `this.permission.clear()`；`/clear` 的说明改成“清空当前会话与本次工具授权”、回执写明授权一并撤销——“本次”终于等于本次会话
+
+11. **内层引导的文本不落会话历史（2026-09-10 落地内层引导时登记，**刻意**如此）。** `steerQueue` 的消息现在会在 `AgentLoop` 的工具边界被取走、追加进最后一条 tool 结果的 content（[ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 同日 19:01 那块）。代价：它只活在本次请求的 `toolMessages` 里，`/history` 与下一次请求的历史都看不到它——模型下一轮只知道“最终答案是什么”，不知道用户中途改过方向。
+   - **为什么不能顺手落盘**：`appendMessage('user', 引导)` 会造出 `user,user,assistant` 的会话序列，下次请求组装 `toolMessages` 时就是连续两条 user → Anthropic `toAnthropicMessages` 的 `user` 分支**无条件** `messages.push`（不像连续 tool 结果那样合并），直接 400。要持久化必须先在历史映射处做一遍**同角色相邻合并**，那是独立的一件事。
+   - **与第 9 条的关系**：两条都是“消息形状在历史里被削平”的不同侧面——第 9 条削的是工具调用结构，本条削的是中途引导。第 9 条那道丢弃**承重**（保住 extended thinking），本条的取舍则是**已知的信息损失**，不涉及别的机制。
+   - **怎么看它是否生效**：`scripts/verify-steering.ts` S6 断言引导在第 3 次 LLM 请求里可见（端到端，真 `Runtime`）；S4 用变异测试钉住“最后一轮不取件”这条护栏——把 `turn < maxTurns - 1` 放宽成 `turn < maxTurns`，S4 立刻红两条。
      - **为什么不选“把键换成真路径、让前缀匹配生效”**：前缀匹配要求键本身是路径语义才安全，而键由工具自定义——`bash` 的键是完整命令，`cd src/` 就以 `/` 结尾，按“以 / 结尾就前缀放行”等于批准 `cd src/ && rm -rf .`。**目录级授权明确不做**，要做得先有一个“只按路径授权”的独立入口（`verify-permission.ts` C10 / C11 把这条钉死）
      - **一处刻意的放宽**：`write` / `edit` 的键是路径不是内容，所以“本次全部允许” = 本会话内不再问这个文件（改前是“路径 + `oldText` 前 38 字符”，在那个维度上本轮放宽了），换来的是这个选项真的有用。取舍见 [DECISION_LOG.md](./DECISION_LOG.md)，术语见 [GLOSSARY.md](./GLOSSARY.md#permissionkey授权匹配键)
      - **断言**：新增 `scripts/verify-permission.ts`（62 项、7 段），含“改前的截断键确实把 76 字符命令与 104 字符命令判成同一个键”的**对照组**（C1 / C2）与反例钉死（C4 / C7 / C10 / C11），以及 `clear()` 接线的**行为证明**（⑦ 段造真 `Runtime` 数它被调了几次）。该轮收尾时全量 14 套 482 项、`tsc --noEmit` 均 EXIT=0（同日深夜又给 grep / bash 建了 `verify-tools.ts`，现为 15 套 556 项，见上面第二节对比表）

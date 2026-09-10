@@ -32,6 +32,7 @@
 | **工具可靠性修复（P7）** | `grep` 从“shell 出去调系统 grep”改成纯 Node 遍历（改前在中文 Windows 上**一次也搜不到**，且把“命令跑不起来”谎报成 `[NO_MATCH]`），四类返回前缀分开；`bash` 的子进程输出解码从硬编码 GBK 改成“UTF-8 严格探测 + 平台代码页回退”（`decodeChildOutput`），行数/字符数统一按截断前算；配套 `scripts/verify-tools.ts` 74 项，全库 15 套 556 项 |
 | **失败分类补全（P7）** | `[INVALID]`（参数不合法）计入失败——改前“重复失败保护”对“模型把参数写错”这一整类**完全失效**（实测 grep 缺 `pattern` 连传三次，`if (failed)` 一次也没进、`[系统提示]` 一次也没注入）；根因是分类表里没给它留位置（判定式是白名单，落不进任何一类就等于默认不计）。配套 A4/A5 **对照组**（有效否定 `[NO_MATCH]` 仍不计），并查出两条**假绿**源码断言（E11/C4 的子串匹配在第三个前缀同行时照样绿）改为名单精确相等，全库 15 套 560 项 |
 | **工具参数校验框架（P6）** | 新增 `tools/spec.ts`（自研，**不引** Zod / TypeBox）：一份 spec 派生三样——发给 LLM 的 `parameters` / 运行时 `parse` / handler 入参类型，6 个工具全走 `defineTool`；`ToolDefinition.parse?` + `registry.execute()` 接线，让那份 Schema **第一次真正生效**（改前 `execute()` 只有 3 行、`tool.parameters` 一个字段都没读，实测缺参 / 传对象 / 传 Schema 里不存在的参数名——三次全部 `[OK]`）。堵住 `String(val)` 那个“永远通过的校验”留下的四个类型盲区与多余参数静默忽略；配套 `scripts/verify-spec.ts` 45 项 + `fixtures/tool-schemas-baseline.json` 护栏（Schema 逐字未变），全库 16 套 605 项 |
+| **内层引导（P7）** | steering 的消费点从**外层循环**下沉到**内层工具边界**：`AgentLoopOptions.takeSteer?` 在工具跑完、下一次 `llm.stream()` 之前取件，追加进最后一条 tool 结果，让用户执行中途插入的话进**本轮**上下文。改前 `AgentLoop` 的 `for` 循环**一处队列检查都没有**，steer 与 followUp 的实质差别只剩优先级——名字许了没兑现的承诺。**不能新开 user 消息**：tool 结果在 `anthropic.ts` 里已是 `user` 角色，连续两条 user 直接 400，故沿用重复失败提示 / 收尾提示的“寄生追加”手法。两条“不吞消息”护栏（本轮无工具调用 → 不取件；已是最后一轮 → 不取件）经**变异测试**验证承重；端到端实测 3 次 LLM 往返内送达（摘掉接线立刻变 4 次）；配套 `scripts/verify-steering.ts` 28 项，全库 17 套 633 项 |
 
 ---
 

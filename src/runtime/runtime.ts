@@ -123,8 +123,16 @@ export class Runtime {
   private followUpQueue: string[] = [];
 
   /**
-   * steering 队列（预留）：立即打断当前流并处理的消息。
-   * 需 llm.stream() 支持 AbortSignal 才能中断进行中的流 —— 暂未接入。
+   * 内层引导（steering）队列：用户在执行中途插入的指示。
+   *
+   * 消费顺序（两处，先内后外）：
+   *   1) 内层 —— AgentLoop 每次**工具执行完、下一次 LLM 调用之前**取一条，
+   *      追加进最后一条 tool 结果 → 引导在**本轮内**生效（真·引导）
+   *   2) 外层 —— 本轮没有工具调用、或已经是最后一轮（内层不取，避免吞消息）时，
+   *      由外层循环取走，当**下一回合**处理（退化成高优先级的 followUp）
+   *
+   * 注意这里**不做** abort：中断在飞的 fetch 需 llm.stream() 支持 AbortSignal，
+   * 而且半截 tool_call 的 JSON 不可执行、已跑过的工具副作用无法撤销 —— 仍属【预留】。
    */
   private steerQueue: string[] = [];
 
@@ -142,8 +150,8 @@ export class Runtime {
   }
 
   /**
-   * 发送一条 steering 消息（仿 Pi：不 abort 当前流，当前轮结束后优先处理）。
-   * 与 followUp 的区别：steering 在"本轮完成后、外层循环查 followUp 之前"先被处理。
+   * 发送一条 steering 消息（内层引导）。
+   * 消费点有两处，先内后外：AgentLoop 的工具边界（本轮内生效）→ 外层循环（退化成高优先级 followUp）。
    */
   private queueSteer(text: string): void {
     this.steerQueue.push(text);
@@ -450,11 +458,13 @@ export class Runtime {
 
     // ⑤ 流式队列检查 —— 外层循环进行中，新消息按 streamingBehavior 分流
     //   - 'followUp'（默认）：等当前所有回复完全结束后处理
-    //   - 'steer'：当前轮跑完后优先处理（仿 Pi，不 abort 当前流）
+    //   - 'steer'：尽快采纳。第一消费点是 AgentLoop 的工具边界（下一次 LLM 调用前追加进
+    //     tool 结果 → 本轮内生效）；本轮没有工具调用或已是最后一轮时，退回外层循环当新回合处理。
+    //     两条路都不 abort 在飞的流（中断需 AbortSignal + 半截 tool_call 不可执行，仍属【预留】）
     if (this.isStreaming) {
       if (streamingBehavior === 'steer') {
         this.queueSteer(currentText);
-        if (onToken) onToken('（消息已插入，当前回复完成后立即处理）');
+        if (onToken) onToken('（已插入，当前步骤结束后立即采纳）');
         return '（已插入）';
       }
       this.queueFollowUp(currentText);
@@ -470,7 +480,10 @@ export class Runtime {
     //     - 无 followUp → 退出外层循环
     //
     //   内层 = runSingleTurn()（单条消息的 LLM + 工具循环）。
-    //   【预留】steering 打断需内层 stream 支持 AbortSignal，暂未接入。
+    //   steering 的**常规**消费点已经下沉到内层（AgentLoop 的工具边界，见 opts.takeSteer）；
+    //   下面两处出队是**兜底**：本轮没有工具调用（没有注入落点）或已是最后一轮（取走会吞消息）时，
+    //   引导词仍留在队列里，由这里当下一回合处理 —— 退化成"优先级更高的 followUp"，但绝不丢失。
+    //   【预留】硬打断（abort 在飞的流）仍需内层 stream 支持 AbortSignal，暂未接入。
     //
     //   整段包在 prompt span 里（根段）：这是观测树的树根，所有 llm_request / tool_call /
     //   compaction 段都落在它的 turnId 下。用 beginSpan 而非 trace()：本段跨 continue/finally，
@@ -484,9 +497,10 @@ export class Runtime {
     try {
       let turnText = currentText;
       while (true) {
-        // ── ① steering 检查（优先于 followUp，仿 Pi：不 abort 当前流） ──
-        //   用户等待时输入的新消息进入 steerQueue，当前轮跑完后立即处理它。
-        //   优先级：steering > followUp（先打断，再排队）。
+        // ── ① steering 兜底出队（优先于 followUp） ──
+        //   常规路径已在内层工具边界消费掉；这里能取到，说明上一轮**没有工具调用**
+        //   （没地方注入）或**已是最后一轮**（内层刻意不取）。两种情况都只能另起一回合。
+        //   优先级：steering > followUp。
         const steer = this.dequeueSteer();
         if (steer) {
           turnText = steer;
@@ -499,7 +513,7 @@ export class Runtime {
         finalResult = result;
         turnCount++;
 
-        // ── ③ 本轮结束后，先看有没有新 steering（可能在上轮处理期间入队） ──
+        // ── ③ 本轮结束后再查一次 steering（兜底，同上：内层没消费掉的才落这里） ──
         //   有 → 下一轮优先处理它（steering 优先于 followUp）
         const steerAfterTurn = this.dequeueSteer();
         if (steerAfterTurn) {
@@ -596,6 +610,14 @@ export class Runtime {
       maxTurns: taskMemory ? WITH_PLAN_MAX_TURNS : DEFAULT_MAX_TURNS,
       thinking: thinkingOn,
       model: this.currentModel,
+      // 内层引导取件：让用户在工具执行期间插入的话进**本轮**上下文（AgentLoop ④ 段负责注入）。
+      // 顺带发 thinking 事件——内层吸收同样是"模型要重新生成"的信号，UI 的封框/状态行
+      // 已有现成分支，不需要为新机制加事件类型。
+      takeSteer: () => {
+        const steer = this.dequeueSteer();
+        if (steer) this.events.emit({ type: 'thinking', phase: 'analyzing' });
+        return steer;
+      },
     });
     this.events.emit({ type: 'message_end' });
 

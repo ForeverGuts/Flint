@@ -10,6 +10,9 @@
  *   - 轮数耗尽收尾：最后一轮前注入收尾提示（写进度入 TASK.md + 总结回复），
  *     耗尽时优雅兜底（回溯最后 assistant 进展说明，不向用户抛工具原始输出）
  *   - maxTurns 可按次传入（Runtime 层：TASK.md 存在时放大轮数预算）
+ *   - 内层引导（steering）：工具跑完、下一次 LLM 调用**之前**取件（opts.takeSteer），
+ *     追加进最后一条 tool 结果 —— 用户执行中途插入的指示进的是**本轮**上下文，
+ *     而不是等整轮结束才另起一回合（那样就叫 followUp 了）。见 ④ 段。
  *
  * 依赖（core 接口 + 注入回调）：
  *   - llm（LLMProvider）流式生成
@@ -286,7 +289,31 @@ export class AgentLoopServiceImpl implements AgentLoopService {
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: resultContent });
       }
 
-      // ④ 工具执行完 → 下一轮
+      // ── ④ 内层引导（steering）：工具跑完、下一次 LLM 调用之前，是本轮唯一的注入窗口 ──
+      //   为什么落在这里而不是外层循环：模型"跑偏"只有执行过一两个工具才看得出来，
+      //   而用户此刻输入的话必须进**本轮**的上下文才算引导；等整轮跑完再处理就退化成 followUp。
+      //   吸收方式沿用同一手法（重复失败提示 / 收尾提示）：追加进最后一条 tool 结果的 content。
+      //   **不能**新开一条 user 消息 —— tool 结果在 anthropic.ts 里已转成 user 角色，
+      //   再插一条 user 就是连续两条 user，违反交替约束直接 400（见 toAnthropicMessages）。
+      //
+      //   只在 turn < maxTurns - 1 时取件：最后一轮取走会无人消费（本轮之后没有 LLM 调用了），
+      //   等于把用户的话吞掉 —— 既不进上下文、也不再回队。宁可留在队列里，让外层循环
+      //   把它当成下一回合正常处理（用户至少能看到它被响应）。
+      //
+      //   已知取舍：引导文本只活在本次 toolMessages 里，**不落会话历史**（/history 看不到）。
+      //   落盘会造出 user,user,assistant 的会话序列，下次请求映射历史时又是连续两条 user → 400。
+      //   要持久化得先在历史映射处做一遍同角色合并，属另一件事，本次刻意不做。
+      if (turn < maxTurns - 1) {
+        const steer = opts?.takeSteer?.() ?? null;
+        if (steer) {
+          const lastMsg = toolMessages[toolMessages.length - 1];
+          if (lastMsg && lastMsg.role === 'tool') {
+            lastMsg.content += `\n\n[用户引导] 用户在你执行过程中插入了新指示，优先级高于当前步骤，必要时放弃当前方向：\n${steer}`;
+          }
+        }
+      }
+
+      // ⑤ 工具执行完 → 下一轮
       // 收尾提示：下一轮即最后一轮时，追加到最后一条工具结果，让模型收敛（协议安全，同上）
       if (turn === maxTurns - 2) {
         const lastMsg = toolMessages[toolMessages.length - 1];
@@ -296,7 +323,7 @@ export class AgentLoopServiceImpl implements AgentLoopService {
       }
     }
 
-    // ⑤ 循环结束后仍无回复 → 按退出原因分别兜底（不向用户抛工具原始输出）
+    // ⑥ 循环结束后仍无回复 → 按退出原因分别兜底（不向用户抛工具原始输出）
     if (!finalText) {
       if (finishedEarly) {
         // 空流提前退出：流被异常中断（如余额不足/密钥无效，provider 层已记录真实错误）——不误报为轮数耗尽

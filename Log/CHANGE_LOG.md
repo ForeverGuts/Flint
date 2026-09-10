@@ -14,6 +14,10 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-09-10 19:01 | [Feature✨] steering 的消费点从**外层循环**下沉到**内层工具边界**：`AgentLoopOptions` 加可选成员 `takeSteer?`，`AgentLoop` 在工具跑完、下一次 `llm.stream()` 之前取件并**追加进最后一条 tool 结果**（前缀 `[用户引导]`）→ 用户执行中途插入的话第一次进**本轮**上下文。改前 `steerQueue` 两个出队点都在外层 `while(true)`、`for (let turn...)` 里一处检查都没有，于是 steer 与 followUp 的实质差别只剩优先级。**不能新开 user 消息**：tool 结果在 `anthropic.ts` 里已转成 user 角色，跟在后面的 user 就是连续两条 user → 400，故沿用重复失败提示 / 收尾提示的“寄生追加”手法
+2026-09-10 19:01 | [Feature✨] 两条“不吞消息”护栏（各有独立断言，且都做过**变异测试**）：① 只在 `turn < maxTurns - 1` 时取件——最后一轮取走会无人消费，既不进上下文也不再回队（实测把判定放宽成 `turn < maxTurns`，S4 立刻红两条）；② 只在**本轮产出过工具调用**时取件——没有工具就没有注入落点，留给外层循环当新回合。入队提示文案同步改写：`（消息已插入，当前回复完成后立即处理）` → `（已插入，当前步骤结束后立即采纳）`（前者在内层吸收落地后已不成立）
+2026-09-10 19:01 | [CI✅] 新增 `scripts/verify-steering.ts` 28 项（S0 契约形状 / S1 内层吸收当轮可见 / S2 逐条消费不堆叠 / S3 无工具不取件 / S4 最后一轮不取件 / S5 向后兼容 / S6·S7 造**真 Runtime** 端到端验接线）；全量 17 套 **633 通过 / 0 失败**、`tsc --noEmit` EXIT=0
+2026-09-10 19:01 | [Docs📝] 现状快照四份同步（TESTING / 目录 / ARCHITECTURE / GLOSSARY）+ ROADMAP 已完成表补一行 + **ARCHITECTURE 架构债新增第 11 条**（引导文本不落会话历史——刻意的信息损失：落盘会造出 `user,user,assistant` 序列，下次请求映射历史时同样连续两条 user → 400，要持久化得先在历史映射处做同角色合并）；ARCHITECTURE_LOG 与 DECISION_LOG 各追加一块，记“为什么选寄生追加、以及另外两个方案为什么不行”
 2026-09-10 15:34 | [Refactor♻️] 项目更名 `ts-agent` → **flint**（打火石）：取"一块石头自带火源、一擦即着"的意象，同时编码两条不可退让的约束——零运行时依赖（不含引火物）与秒级启动；`package.json` 的 name / bin / description / keywords 与 `package-lock.json` 四处同步；`ts-agent-run.bat` 经 `git mv` 更名 `flint-run.bat`（保留重命名历史）并同步 `start.bat` 两处引用
 2026-09-10 15:34 | [Refactor♻️] 随更名收敛三处"旧名即接口"的隐式依赖，**改前先取证**：① 环境变量前缀 `TS_AGENT_*` → `FLINT_*`（MODE / TRACE / TRACE_FILE / CONFIG / DEBUG_INPUT / DEBUG_SCREEN / DEBUG_DIAG 共 7 个，牵 13 个文件）；② 全局配置目录 `~/.ts-agent` → `~/.flint`（`config/manager.ts` 的 `GLOBAL_DIR` 常量 + 7 处注释）；③ UI 标签 `TS AGENT` → `FLINT`（tree-ui / index 两处 + `verify-ui.ts` 三条断言）。取证结论：本机既无 `~/.ts-agent` 目录、也无任何 `TS_AGENT_*` 变量，故前两处均为**零失联风险**；框宽由 `label.length` 反算（`宽 - 6 - 标签长`），标签 10 字变 7 字后总宽不变，verify-ui 的 76 列夹逼断言原样通过
 2026-09-10 15:34 | [CI✅] 更名后全量 16 套 **605 通过 / 0 失败**、`tsc --noEmit` EXIT=0；npm 输出已显示 `flint@0.1.0`

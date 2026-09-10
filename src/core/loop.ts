@@ -20,6 +20,19 @@ export interface AgentLoopOptions {
    * 构造快照会在切换后永久陈旧（报出来的耗时归到错误的模型头上）。
    */
   model?: string;
+  /**
+   * 内层引导（steering）取件回调 —— 每次工具执行完、下一次 LLM 调用之前调用一次。
+   *
+   * 返回非空文本时，实现侧把它追加进**最后一条 tool 结果**的 content：
+   * 不能新开一条 user 消息 —— tool 结果在 Anthropic 转换后已经是 user 角色，
+   * 再插一条 user 会连续两条 user（roles must alternate）直接 400。
+   *
+   * 语义边界（实现侧负责，调用方只需给一个「取一条，没有返回 null」的函数）：
+   *   - 只在**确实还有下一次 LLM 调用**时取件（最后一轮取走 = 吞掉用户的话）
+   *   - 只在**本轮产出过工具调用**时取件（没有工具就没有注入落点，留给外层循环当新回合）
+   * 缺省不传 = 无内层引导，行为与改造前完全一致。
+   */
+  takeSteer?: () => string | null;
 }
 
 /** Agent Loop 执行结果 */
