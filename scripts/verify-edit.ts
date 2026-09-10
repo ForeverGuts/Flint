@@ -7,9 +7,11 @@
  *       行尾/BOM 保真钉死。
  *
  * 三段承重设计（改代码前请先读，别"顺手修好"）：
- *   ① 拒绝路径用 [ERROR] 前缀：agent-loop 只把 [ERROR]/[VERIFY_FAILED] 记作失败，
- *      而"重复失败保护"只在失败时计数——换成 [NO_MATCH]/[INVALID] 等于关掉那层保护，
+ *   ① 拒绝路径用 [ERROR] 前缀：agent-loop 把 [ERROR]/[VERIFY_FAILED]/[INVALID] 记作失败，
+ *      而"重复失败保护"只在失败时计数——换成 [NO_MATCH]/[NOT_FOUND] 等于关掉那层保护，
  *      模型会拿同一个错 oldText 一直空转烧轮次。
+ *      （2026-09-05 起 [INVALID] 也计失败，行为上已等价；但 0 命中不是"参数格式不合法"，
+ *      而是"文件内容与模型预期不符"——参数本身完全合法，语义上仍属执行失败，故保留 [ERROR]）
  *   ② permissionDetail 必须返回单行：selector 标题只占 1 行且按 fitWidth 截断，
  *      文案里带 \n 会多出一个物理行，把"固定行数 + 回退清行"算错 → 选择器漂移。
  *   ③ 弹窗文案与授权匹配键是两个变量：匹配键（autoKey）由 permissionKey 定、**不截断**，
@@ -65,7 +67,7 @@ const coreSrc = fs.readFileSync(path.join(ROOT, 'src/core/tools.ts'), 'utf-8');
 
 /* ── ① 契约：可选成员不打坏现有实现 ── */
 
-console.log('\n① 契约与注册（加的是**可选**成员，7 处 ToolProvider 替身不受影响）');
+console.log('\n① 契约与注册（加的是**可选**成员，9 处 ToolProvider 替身不受影响）');
 {
   const llmTools = registry.getLLMTools();
   const names = llmTools.map((t) => t.function.name);
@@ -111,8 +113,12 @@ console.log('\n③ 0 命中 → 拒绝（模型记错原文时任何"猜"都是�
   check('C2 文件逐字节一字不动', bytes(p).equals(before));
   check('C3 文案给出可操作的下一步：报文件行数 + 要求逐字符一致 + 让模型先 read',
     r.includes('文件共 3 行') && r.includes('逐字符一致') && r.includes('read'), r);
-  check('C4 agent-loop 的失败判定口径确实只认 [ERROR]/[VERIFY_FAILED]（C1 的意义依赖这条）',
-    /startsWith\('\[ERROR\]'\) \|\| resultContent\.startsWith\('\[VERIFY_FAILED\]'\)/.test(loopSrc));
+  // 判定式从"子串存在"改成"名单精确相等"：原写法只验前两个前缀连续出现，第三个前缀
+  // 加在同一行时它照样绿 —— 名字说"只认两个"，判定式却拦不住第三个，是假绿。
+  const c4Stmt = loopSrc.match(/failed = resultContent[\s\S]*?;/)?.[0] ?? '';
+  const c4Prefixes = [...c4Stmt.matchAll(/startsWith\('\[([A-Z_]+)\]'\)/g)].map((m) => m[1]);
+  check('C4 agent-loop 认作失败的前缀恰好是 ERROR / VERIFY_FAILED / INVALID 三个（C1 的意义依赖这条）',
+    c4Prefixes.join(',') === 'ERROR,VERIFY_FAILED,INVALID', `实际=${JSON.stringify(c4Prefixes)}`);
 }
 
 /* ── ④ 多命中：拒绝并回报候选行号；replaceAll 才全改 ── */

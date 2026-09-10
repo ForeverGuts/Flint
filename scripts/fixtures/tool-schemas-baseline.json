@@ -1,0 +1,114 @@
+{
+  "ls": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "目录路径，默认当前目录。示例: \"src/\" 或 \"C:/Users/name/project\""
+      },
+      "depth": {
+        "type": "number",
+        "description": "递归深度（1=仅当前层）。默认 1。示例: 2 列出两层"
+      }
+    }
+  },
+  "read": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "文件路径，绝对路径或相对当前工作目录。示例: \"C:/Users/name/file.txt\" 或 \"src/data/config.json\""
+      },
+      "offset": {
+        "type": "number",
+        "description": "起始行号，从 1 开始。默认 1。示例: 10 （从第 10 行开始读）"
+      },
+      "limit": {
+        "type": "number",
+        "description": "读取行数。默认不限制。示例: 50 （最多读 50 行）"
+      }
+    },
+    "required": [
+      "path"
+    ]
+  },
+  "write": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "文件路径，绝对路径或相对当前工作目录。示例: \"C:/Users/name/output.txt\" 或 \"src/data/config.json\""
+      },
+      "content": {
+        "type": "string",
+        "description": "要写入的文件完整内容。会完全覆盖已存在的文件。示例: \"{\\n  \\\"name\\\": \\\"test\\\"\\n}\""
+      }
+    },
+    "required": [
+      "path",
+      "content"
+    ]
+  },
+  "edit": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "文件路径，绝对路径或相对当前工作目录。示例: \"src/tools/builtin.ts\""
+      },
+      "oldText": {
+        "type": "string",
+        "description": "要被替换的原文片段，逐字符照抄文件里的内容（缩进与空格全算）。不确定就先用 read 看清原文，不要凭记忆填。片段要带足够上下文以保证在文件中唯一。示例: \"const count = 1;\""
+      },
+      "newText": {
+        "type": "string",
+        "description": "替换后的新文本。传空字符串表示删掉 oldText 这一段。示例: \"const count = 2;\""
+      },
+      "replaceAll": {
+        "type": "boolean",
+        "description": "命中多处时是否全部替换。默认 false，即多命中直接拒绝并回报候选行号。仅在确认每一处都该改成同样内容时才传 true。示例: false"
+      }
+    },
+    "required": [
+      "path",
+      "oldText",
+      "newText"
+    ]
+  },
+  "grep": {
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "description": "搜索模式，支持正则表达式。特殊字符请转义。示例: \"function\\s+\\w+\" 或 \"TODO|FIXME\" 或 \"console\\.log\""
+      },
+      "path": {
+        "type": "string",
+        "description": "搜索路径，文件或目录。默认当前目录。示例: \"src/\" 或 \"C:/Users/name/project\""
+      },
+      "include": {
+        "type": "string",
+        "description": "文件类型过滤 glob 模式。示例: \"*.ts\" 或 \"*.{ts,js,json}\" 或 \"*.txt\""
+      }
+    },
+    "required": [
+      "pattern"
+    ]
+  },
+  "bash": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "要执行的 shell 命令。多行命令用 && 连接。Windows 下路径用正斜杠或用 \\\\ 转义。示例: \"node build.js\" 或 \"cd src && dir /b\""
+      },
+      "description": {
+        "type": "string",
+        "description": "命令用途说明（仅用于权限确认提示，不影响执行）。示例: \"编译 TypeScript 项目\""
+      }
+    },
+    "required": [
+      "command"
+    ]
+  }
+}

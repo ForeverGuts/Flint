@@ -87,7 +87,7 @@ export interface ToolExecutionEndEvent {
   type: 'tool_execution_end';
   name: string;
   result: unknown;
-  /** 是否成功（false = 抛异常 / [ERROR] / [VERIFY_FAILED] / 用户拒绝） */
+  /** 是否成功（false = 抛异常 / [ERROR] / [VERIFY_FAILED] / [INVALID] / 用户拒绝） */
   ok: boolean;
 }
 

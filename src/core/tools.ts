@@ -18,6 +18,29 @@ export interface ToolDefinition {
   description: string;
   parameters: ToolParameterSchema;
   handler: (args: Record<string, unknown>) => Promise<string>;
+  /**
+   * 参数校验（**可选**成员，与 permissionDetail / permissionKey 同一手法：调用方判空回退）。
+   *
+   * 由 ToolProvider.execute 在 handler **之前**调用：把模型传来的原始 args 校验一遍、
+   * 补齐可选字段的默认值，产出 handler 真正需要的形状。校验不过抛 ToolInputError，
+   * execute 就地转成 `[INVALID] ...` 回给模型（agent-loop 把这个前缀计入失败）。
+   *
+   * 为什么它必须是契约的一部分而不是各 handler 自己的事：改前 parameters 与 handler 里的
+   * 校验是**同一套规则的两份手写副本**，而 execute() 只有 3 行、parameters 一个字段都没读
+   * ——那份 Schema 因此只是"给模型的建议书"，不是契约。声明这个成员，才让"规则只写一遍"
+   * 在类型上有了落点（实现见 tools/spec.ts 的 defineTool）。
+   *
+   * 为什么是**可选**：理由是行为面的，不是编译面的。本轮实测过——把它改成必需成员，
+   * tsc --noEmit 仍 0 错误：全项目只有 defineTool 一处构造 ToolDefinition（6 个内置工具全走它），
+   * 而 scripts/ 下 9 处替身实现的是 ToolProvider、根本不构造 ToolDefinition（且 tsconfig 的
+   * include 只列了 src 一个目录，那些替身本来也不在类型检查的射程内）。早先这里写的"必需成员
+   * 会打坏 7 处替身"是从 permissionKey 那轮抄来的，对 parse 不成立：permissionKey 在
+   * ToolDefinition 与 ToolProvider 两个接口上都有，parse 只在前者上。
+   * 真正的代价在**以后**：必需成员会逼每一个手写工具（扩展注册的、测试里临时造的）都编一个
+   * 恒等 parse。可选 + execute 里 `if (tool.parse)` 判空，才让不声明它的工具行为一字不变：
+   * args 原样进 handler。
+   */
+  parse?: (args: Record<string, unknown>) => Record<string, unknown>;
   /** 是否需要用户确认才能执行（写/改类工具为 true，只读类为 false） */
   requirePermission?: boolean;
   /**
@@ -72,7 +95,8 @@ export interface ToolProvider {
   /**
    * 取某工具自定义的授权匹配键；工具没定义、返回空串、或工具名不存在时返回 undefined，
    * 由调用方退回默认（完整的 args JSON，不截断）。
-   * 与 permissionDetail 同为**可选成员**（同一手法）：加它不打坏现有实现与 7 处 ToolProvider 替身。
+   * 与 permissionDetail 同为**可选成员**（同一手法）：加它不打坏现有实现与 scripts/ 下 9 处
+   * ToolProvider 替身（2026-09-06 逐处数过；旧注释写的 7 处不准）。
    */
   permissionKey?(name: string, args: Record<string, unknown>): string | undefined;
   /** 执行工具调用 */

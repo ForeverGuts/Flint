@@ -70,7 +70,7 @@ const clearCmdSrc = read('src/commands/builtin/clear.ts');
 
 /* ── ① 契约：可选成员 + 注册表转发 ── */
 
-console.log('\n① 契约与转发（加的是**可选**成员，7 处 ToolProvider 替身不受影响）');
+console.log('\n① 契约与转发（加的是**可选**成员，9 处 ToolProvider 替身不受影响）');
 {
   check('A1 ToolDefinition.permissionKey 声明为**可选**成员（必需成员会打坏替身与实现）',
     /permissionKey\?: \(args: Record<string, unknown>\) => string;/.test(coreSrc));
@@ -187,7 +187,7 @@ console.log('\n③ 精确匹配（截断级授权与前缀级授权都已消失�
     !/授权了一个目录，该目录下所有文件自动放行/.test(managerSrc)
     && /目录级授权要真做/.test(managerSrc));
 
-  check('C13 manager 已改用 Set.has 精确匹配，不再有 autoAllowed.some(前缀)',
+  check('C13 manager 用精确匹配、不再有 autoAllowed.some(前缀)。**这条钉的是手段**：判定式正则读源码文本找 autoAllowed.has( ，换成任何等价的精确匹配实现都会红（2026-09-05 实测：换成遍历全等，语义不变，只有本条红）——行为面由 C4/C7/C8/C10/C11 钉，那五条才是要求',
     /autoAllowed\.has\(/.test(managerSrc) && !/autoAllowed\.some\(/.test(managerSrc));
   check('C14 重复授权同一个键不会堆积（Set 去重）',
     (() => {

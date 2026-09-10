@@ -11,6 +11,105 @@
 
 ---
 
+## 2026-09-06 10:44 | 工具参数从“两份手写副本”收敛成“一份 spec 派生三样”：发给模型的 Schema 第一次成为契约
+
+**牵连系统 / 层次**：工具子系统（新增 `tools/spec.ts`；`tools/builtin.ts` 的 6 个工具全改走 `defineTool()`、删掉 4 个校验件共 18 处；`tools/registry.ts` 的 `execute()` 从 3 行变成“先 parse 再 handler”）· 契约层（`core/tools.ts` 的 `ToolDefinition` 加第三个**可选**成员 `parse?`；`ToolProvider` 本轮**未动**）· 验证层（新增 `verify-spec.ts` 45 项 + `fixtures/tool-schemas-baseline.json` 基线快照；`verify-edit.ts` / `verify-permission.ts` 两处段头的替身计数 7 → 9）· 文档层（TESTING / 目录 / ARCHITECTURE / GLOSSARY 四份快照同步到 16 套 605 项、GLOSSARY 新增 spec / defineTool / ToolInputError 三个词条、DECISION_LOG 记一条三选一、ROADMAP 关掉 P6 “工具参数校验框架”待办）。**未动**：`loop/agent-loop.ts` 的前缀分类与判定式、任何工具的返回前缀、任何错误文案（逐字未变，③ 段钉着）、permission 子系统——`[INVALID]` 这个信号本身是 09-05 那轮建好的，本轮只是让它**真的能被触发**
+
+**面向的问题**：
+- **同一套参数规则写了两遍，且没有任何机制保证一致**：① `builtin.ts` 里 6 份手打 JSON Schema（序列化后发给模型）② 14 处校验件调用 + 1 处手写 boolean 强转（工具层拿到 args 自己再查一遍）。两者之间唯一的纽带是**人手把同一个词打了多遍**：`grep` 的 `'pattern'` 在这一个工具里出现 7 次（4 处是协议性的：文案 1、属性名 1、字符串字面量 2），而 TS 一处都不检查（校验件的 key 形参类型是 `string`，什么都能塞）。写成 `'patern'` 编译通过、测试不红，只在运行时让模型收到一句“patern 是必填参数”，而它手上的单子写的是 pattern
+- **那份 Schema 改前的身份是“给模型的建议书”，不是契约**（实测，不是推导）：`registry.execute()` 只有 3 行，`tool.parameters` 一个字段都没读。造一个 `required: ['mustHave']` 的工具，①什么都不传 ②传一个对象 ③传 Schema 里根本不存在的参数名——三次全部返回 `[OK]`。所以收敛要做的不只是“让两处一致”，而是**让那份单子第一次真正生效**
+- **`String(val)` 是一个永远通过的校验**：`requireString` 里那句 `const str = String(val)` 让 `123` / `{a:1}` / `['src']` / `true` 全部过关，被强转成 `"123"` / `"[object Object]"` / `"src"` / `"true"`，然后在**文件系统层**才失败并报 `[NOT_FOUND]` / `[NOT_FILE]`。模型收到“路径不存在”而真因是它传了个数字 → 它会开始猜路径。**与 09-04 那个 grep bug 同构**（都是“错误被算成了正常答案”），区别是那次错在前缀选择，这次错在校验根本没发生
+- **多余参数静默忽略**：`{pattern:'x', pathh:'typo'}` 让 `path` 退回默认 `'.'`，搜完整个项目还报 `[OK]`——模型以为自己在搜指定目录，实际搜的是全库
+- **上一轮把“参数写错”接进了重复失败保护，但那条链路对“类型不对”和“参数名写错”两类完全不响**：它们根本走不到 `[INVALID]`，而是走到 `[NOT_FOUND]`（不计失败的有效否定）或静默 `[OK]`（成功）。09-05 修的是消费侧的名单，本轮修的是生产侧根本没把这两类归到 `[INVALID]` 里
+
+**做出的改动**：
+- **一份定义派生三样**：`toJsonSchema(spec)` → 发给 LLM 的 `parameters`；`parseSpec(spec, args)` → 运行时审核并补齐默认值；`Infer<typeof spec>` → handler 的入参类型（“撬参数”这个动作本身消失）。“同源”用**对照组**钉住（1-6~1-8b：只改 spec 里 `age` 一个键，两个派生物必须**同时**跟着变），否则它可以被实现成“两份各自硬编码但恰好一致”而全绿——那正是改造前的病
+- **五个构造器、刻意不做四件事**：`str` / `strAllowEmpty`（必填但允许空串，`edit` 的 `newText` 空串 = 删掉这一段）/ `optStr` / `optPosInt` / `optBool` 覆盖现有 16 个字段；不做跨字段约束、不做嵌套对象、不做 union、不做自定义 refine。也不引 Zod / TypeBox（表达力用不到十分之一，而 `zodToJsonSchema` 是座**有损**的桥，三选一记在 DECISION_LOG）
+- **`execute()` 的失败语义分两边**：`ToolInputError` 就地转成 `[INVALID] 文案`（那是模型的错，得让它看见并改正），**别的异常一律 `throw` 穿透**（规格自己写坏了不是模型的错，报成“参数不合法”会让它去改一个没写错的参数）
+- **`parse` 做成可选成员，且注释里的理由是行为面的而不是编译面的**：本轮实测把它改成必需，`tsc --noEmit` 仍 0 错——全项目只有 `defineTool` 一处构造 `ToolDefinition`（6 个内置工具全走它），而 `scripts/` 下 9 处替身实现的是 `ToolProvider`（`parse` 不在这个接口上）、且 `tsconfig` 的 include 只列了 src 一个目录。早先 `core/tools.ts` 里写的“必需成员会打坏 7 处替身”是从 `permissionKey` 那轮抄来的，对 `parse` 不成立，已连同数字（7 → 9）一起改
+- **全项目唯一一次类型收窄留在 `defineTool` 里那一行 `as`**：`core/tools.ts` 的 handler 契约仍是 `Record<string, unknown>`。跟着泛型化就得给 `ToolDefinition` 加类型参数，而它是三个文件的公共词汇（core 的接口与 `ToolProvider.register` 入参、`registry.ts` 那个 Map 的值类型、`spec.ts` 的返回类型），改一处要跟改三处，换来的只是省掉一行 `as`。收窄的正确性靠“execute 一定先跑 parse 再跑 handler”保证，⑥ 段钉的就是这条接线
+- **`permissionKey` / `permissionDetail` 刻意不跟着泛型化**：权限确认发生在 `agent-loop` 调 `execute` **之前**，那时参数还没校验过，它们拿的仍是未经 parse 的原始 args。`edit` 的 permissionDetail 里那句 `String(args.replaceAll)` 因此消不掉——5-5 不假装它不存在，而是先切段再分开钉“handler 区 0 处 / permissionDetail 区 1 处”
+- **护栏用机器导出的基线，不用手打的期望值**：`scripts/fixtures/tool-schemas-baseline.json` 是改造**前**跑一次导出的 6 份 parameters 快照，④ 段按 `JSON.stringify` 逐字比对。它是先行断言里**应当全绿**的那一段（钉的是“收敛源头不许顺手改契约”），与 ①②③⑤⑥ 先红后绿的先行段刻意分开
+
+**解决的问题**：
+- 参数名在源码里只剩 spec 里那一处：`grep` 段里 `'pattern'` 的协议性副本 3 → 1，4 个校验件（定义+调用共 18 处）从 `builtin.ts` 整体消失，写错参数名从此**编译就红**（它现在只以属性名形式存在）
+- 四个类型盲区全堵（`coerce` 是全项目唯一做参数类型判断的地方），多余参数从“静默忽略”变成“拒并列出可用参数名”——后者是 `'patern'` 那类拼写错误唯一能被当场纠正的机会
+- 09-05 那条链路接上了：参数错误现在真的能走到 `[INVALID]` → 计入失败 → 连错两次注入 `[系统提示]`。在那之前它对“类型不对”与“参数名写错”两类完全不响
+
+**未来可优化**：
+- **结构化返回值仍未做**：09-05 那块写“彻底的做法是让 handler 返回结构化结果（`{ status: 'ok' | 'invalid' | 'not_found' | 'error' }` + 文本），那是工具参数校验框架那一步的事”——本轮就是那一步，但只兑现了参数校验这一半：handler 仍返回字符串，前缀仍是工具层与消费层之间唯一的协议，加一个新前缀仍要靠人记得改 agent-loop 的名单。但本轮把参数层的入口收成了一处（`coerce`），要做结构化返回，“参数不合法”这一类已经有唯一的生产点了
+- **`parse` 是可选成员 → 绕过是合法的**：手写一个不走 `defineTool` 的 `ToolDefinition` 就没有任何校验，编译期不拦（实测改成必需也拦不住，理由见上）。现在的防线是 ⑤/⑥ 段的源码断言，属**手段断言**，改写措辞会误报
+- **spec 的形状是穷举的**：要“数组参数”或“路径必须存在”就得改框架文件（加构造器 + 加 `coerce` 分支 + 加断言）。刻意如此（不做通用表达力就不长死代码），但代价是这类需求的改动点在 `spec.ts` 而不在工具里
+- **两处宽容没有到期机制**：数字字段接受数字字符串、布尔字段接受 `'true'` / `'false'`（模型常这么传）。哪天模型不再这么传，`coerce` 里那两条分支就是死代码，而现在没有任何东西会把这件事说出来
+- **本轮自己踩的方法论坑：源码文本断言的口径得自己划**（5-5）。数 `String(args.replaceAll)` 期望 1、实测 2，多出的那处是 `builtin.ts` 顶部注释里**逐字引用这句代码**的散文（而它引用的目的正是解释“这处为什么消不掉”）。先加的“剔掉整行注释”只解决了一半：块注释里**折行的续行**既不以 `*` 也不以 `//` 开头，照样漏网；最终解法与 `verify-tools.ts` ⑦ 段同一手法——先切段再断言。这是本项目**第三次**踩同一个坑（前两次在 verify-edit / verify-tools），已写进 TESTING.md 第三节
+- **同一轮里重演了 09-05 记下的那个坑**：修 GLOSSARY 一个错字时，把 `original_text` 与 `new_text` 写成了完全相同的文本，工具返回 success 但**什么也没改**（全靠写完回读 diff 才发现）；本轮新写的文档里又出了三个形近字（“跳字段”应为“跨字段”、“纯正”应为“纠正”、“框框架”），全部靠回读 diff 抓到——“不能信工具返回的 success”这条仍然只能靠人执行
+
+---
+
+## 2026-09-05 21:42 | 失败分类从“两类进判定式”改成“三类写清、两类进判定式”：[INVALID] 归入计失败的一侧
+
+**牵连系统 / 层次**：Agent Loop 子系统（loop/agent-loop.ts：`failed` 判定式加第三个前缀 + 上方注释从两类扩成三类）· 事件契约层（runtime/events.ts 的 `ok` 字段注释）· 工具子系统（tools/builtin.ts 的 edit 承重注释：原第 1 行理由已变，精确化而非删除）· 验证层（verify-phase-ab.ts 新增 A4/A5 共 4 项 13 → 17；verify-tools.ts 的 E11 与 verify-edit.ts 的 C4 两条**源码文本断言**判定式升级）· 文档层（GLOSSARY 的 grep 词条与前缀表、TESTING / 目录 / ARCHITECTURE 三份快照同步到 15 套 560 项、DECISION_LOG 记一条二选一、ROADMAP 已完成表补一行）。**未动**：core/tools.ts 的契约、任何工具的返回前缀、提示文案——全库 12 处 `[INVALID]` 一个字没改，改的是消费侧怎么读它
+
+**面向的问题**：
+- **重复失败保护对“模型把参数写错”这一整类完全失效**（实测，不是推导）：`failed` 只认 `[ERROR]`/`[VERIFY_FAILED]`，grep 缺 `pattern` 连传三次，三次都只拿回干净的 `[INVALID]`，`if (failed)` 一次也没进，两条 `[系统提示]` 一次也没注入。模型能在同一个错参数上烧完全部轮次，收不到任何“你在重复犯错”的信号
+- **根因是分类表里没有它的位置**：2026-09-03 那块记的“失败三分类”是**硬失败 / 有效否定 / 用户拒绝**，而 `[INVALID]` 三类都不属于——它既不在硬失败的名单里，也不在列出的有效否定名单（NOT_FOUND/NO_MATCH/EMPTY）里。判定式是白名单，落不进任何一类就等于默认不计。**一个没被想到的分类，行为上等同于“最宽松的那一类”**
+- **这与 09-04 那个 grep bug 同构**：都是“工具没能工作”被归到“工具正常工作但答案是没有”。区别是那次错在工具层选错了前缀，这次错在消费层的名单不全
+- **改之前先查出两条假绿断言**：E11（verify-tools）与 C4（verify-edit）钉的正是这一行，判定式却是子串匹配 `startsWith('[ERROR]') || resultContent.startsWith('[VERIFY_FAILED]')`。把第三个前缀加在**同一行**时子串仍在 → 断言继续绿，而名字还写着“只认 [ERROR]/[VERIFY_FAILED]”。**它们本该是这次改动的护栏，实际是装饰**
+
+**做出的改动**：
+- **判定式加第三个前缀**，并**故意写成多行**（三个 `startsWith` 各占一行）：这样 E11/C4 的子串匹配立刻断掉、逼它们红。写成单行就会静默放过去——这次是拿它当探针用
+- **注释从两类扩成三类**，写清分界不是“前缀长什么样”而是“工具到底工作没工作”：① 硬失败 = 抛异常或 `[ERROR]`/`[VERIFY_FAILED]`；② 无效输入 = `[INVALID]`，工具**没能工作**，原样重试必然再错，故计入；③ 有效否定 = NOT_FOUND/NO_MATCH/NOT_FILE/NOT_DIR/EMPTY，工具**正常工作**了、答案是“没有”，不计入——连查三个不同的词都落空是合法探索。把③当②会让模型每查一个不存在的符号都被念一次；把②当③就是改前那个洞
+- **E11/C4 判定式升级为“名单精确相等”**：先切出 `failed = resultContent...;` 整句，提取其中全部前缀，再比对 `ERROR,VERIFY_FAILED,INVALID`。既验存在（三个都得在）也验排他（不能有第四个）、且对换行鲁棒。名字与判定式从此**等宽**
+- **A5 对照组是 A4 的必要条件**：A4 只钉“`[INVALID]` 连续 2/3 次触发提示”，没有 A5（`[NO_MATCH]` 反复出现**不**触发），A4 可以被“顺手”实现成“除了 `[OK]` 都算失败”而照样全绿。两条一起才钉住“改的是**分类**，不是把闸门全打开”
+- **旧前提的五个传播点全部同步**（全库 Grep 取证后逐处读原文核实）：events.ts 的 `ok` 注释、builtin.ts edit 的承重注释、两个验证脚本的头注释①、GLOSSARY 的 grep 词条与前缀表
+
+**解决的问题**：
+- 参数错误终于进得了重复失败保护：第 2 次同样调用追加“停止用相同参数重试”、第 3 次追加“放弃这条路径”。这两条文案对参数错误恰好是最贴的——它说的就是“别原样重试”
+- 有效否定**没被误伤**（A5 钉住）：`[NO_MATCH]` 连出三次仍然安静，模型的正常探索不会被打断
+- E11/C4 从装饰变成真护栏：以后再加第四个前缀、或删掉任一个，两条都会红
+
+**未来可优化**：
+- **分类靠字符串前缀，仍是一种字符串协议**：工具层与消费层之间没有类型约束，加一个新前缀要靠人记得改 L252 的名单（现在有两处源码断言盯着，但盯的是“名单等于这三个”，不是“名单覆盖了所有工具会返回的前缀”）。彻底的做法是让 handler 返回结构化结果（`{ status: 'ok' | 'invalid' | 'not_found' | 'error' }` + 文本），前缀只用于给模型看的文案——那是工具参数校验框架那一步的事，本轮不做
+- **实测出的前缀全集是 9 个**（`[INVALID]`×12、`[ERROR]`×11、`[OK]`×7、`[NO_MATCH]`×6、`[NOT_FOUND]`×5、`[VERIFY_FAILED]`×3、`[NOT_FILE]`×2、`[NOT_DIR]`×1、`[EMPTY]`×1），而 GLOSSARY 的前缀表只列了 grep 那 5 个。其余前缀散在各工具里，没有一处集中说明它属于三类中的哪一类
+- **`[NOT_FILE]`/`[NOT_DIR]`/`[EMPTY]` 归入有效否定是本轮写进注释的，但没有专套断言钉**（A5 只钉了 `[NO_MATCH]`）。若哪天有人把它们挪进计失败一侧，只有 A5 那一条会红、且红的原因看不出是这四个
+- 本轮自己踩的方法论坑：**不能信工具返回的 success**。修 verify-edit 一处形近字（“拒绍”→“拒绝”）时，我的 `original_text` 与 `new_text` 写成了完全相同的正确文本，工具返回 success 但**什么也没改**，Read 回文件才发现错字仍在。**本轮写这块时又重演了一次同一个坑**：先写出“用户拒绍”“护栁”（应为护栏）与繁体“牽连”，还把这条教训本身写成“（拒绍→拒绍）”两边一样——全靠写完回读 diff 才抓到
+
+---
+
+## 2026-09-04 23:53 | grep 从“shell 出去调系统 grep”改成“纯 Node 遍历”，bash 的子进程输出解码从“硬编码一种”改成“严格探测 + 代码页回退”
+
+**牵连系统 / 层次**：工具子系统（tools/builtin.ts：grep 的 handler 整段重写、bash 的解码与计数两处、模块级新增 decodeChildOutput / globToRegExp / expandBraces 三个辅助函数）· 验证层（新增 scripts/verify-tools.ts 74 项，补上 TESTING.md 第七节记了很久的“五个工具无直接断言”里的两个）· 文档层（TESTING / 目录 / ARCHITECTURE 三份快照同步到 15 套 556 项、DECISION_LOG 记一条三选一、GLOSSARY 新增 grep 词条、ROADMAP 记一条已完成）。**未动**：core/tools.ts 的契约、permission/manager.ts、loop/agent-loop.ts ——两个工具的返回前缀沿用既有分类，所以调用方一行未改
+
+**面向的问题**：
+- **grep 在中文 Windows 上完全不可用，而且它谎报**（实测，不是推导）：它拼的是 POSIX 串 `grep -rn --binary-files=without-match ... 2>/dev/null | head -50`，而 `execSync` 在 Windows 走的是 `cmd.exe /d /s /c`：`grep` 不存在，`2>/dev/null` 被当成路径（实测报“系统找不到指定的路径”）。实测搜一个**确实存在**的符号（`permissionKey`）与搜一个绝不存在的串，返回**一模一样**的 `[NO_MATCH]`。而 `agent-loop.ts` 明确把 `NOT_FOUND/NO_MATCH/EMPTY` 归为“有效否定（不计失败）”，所以它不触发重复失败保护：模型会安静地拿着“项目里没有这个符号”的错误结论继续走。这比乱码严重：它让模型对代码库形成错误认知
+- **grep 的 description 还写着“基于 ripgrep (rg) 或系统 grep”**，而代码里两者都没有、也没有回退分支——工具对自己的描述与实现不一致，模型据此选型会选错
+- **bash 硬编码 GBK 解码，对外部程序的中文输出全乱码**（实测）：进程之间传的是**字节**，字节不带“我是谁的编码”这个属性，而**谁产生的输出决定编码**：cmd.exe 内建命令（echo / dir / type / chcp）走控制台代码页（中文 Windows = 936，实测 `echo 中文测试` → `d6d0cec4b2e2cad4`），外部程序（node / npm / git / tsc）走自己的编码（通常 UTF-8，实测 → `e4b8ade69687...`）。改前 `node -e "console.log('编译通过')"` 返回“缂栬瘧閫氳繃”，而模型正是靠这段文本判断编译结果的
+- **bash 的计数自相矛盾**：`lineCount` 取的是截断后的串，而同一句里的“共 N 字符”取的是截断前的数——输出一万行被截到 4000 字符时标签显示“(50 行输出)”
+- **两个缺陷能长期存在的共同原因**：它们都属于“跨进程 / 跨平台”的活，却被当成纯函数写；而 TESTING.md 第七节虽然记着“ls/read/write/grep/bash 五个工具无直接断言”，**已知缺口 ≠ 有人会去补**——没有断言盯着，这两个洞就在生产路径上活了很久
+
+**做出的改动**：
+- **grep 改为纯 Node 遍历**：递归 `readdirSync(withFileTypes)` + `readFileSync` + `new RegExp(pattern)` 逐行试。不再依赖系统里装没装 grep / rg，也不再有 shell 引号与重定向的平台差异。上限与跳过规则：`.git`/`node_modules`/`dist` 与点开头目录（与 `ls` 同一份清单）、头部 8KB 内有 NUL 字节的二进制文件（不跳的话一个 .png 能把 50 个名额吃光）、>2MB 的超大文件、5000 个文件总量上限（防误指向盘符根目录）、50 命中上限（与改前的 `head -50` 同量级）
+- **四类返回分开**：跑不起来 `[ERROR]`（计入失败、会触发重复失败保护）、真没有 `[NO_MATCH]`、正则编译不了 `[INVALID]`、路径不存在 `[NOT_FOUND]`。`[NO_MATCH]` 里额外回显“已扫 N 个文件”：0 命中时模型需要能区分“扫了 300 个文件确实没有”与“过滤器把所有文件都排除了”（后者是它自己 include 写错了）
+- **bash 解码改为探测 + 回退**：新增模块级 `decodeChildOutput(raw)`——先按 UTF-8 **严格**解（`fatal: true`），解得通就是 UTF-8（纯 ASCII 是两者公共子集，怎么解都一样）；解不通再退平台代码页；连回退解码器本身都不可用时（Node 未带 full-icu 则 `'gbk'` 构造抛 RangeError）还有最后一层 `raw.toString('utf-8')`——**这一层是承重的**：改前解码器抛错会落在 handler 的 `try` 里，被报成 `[ERROR] 命令执行失败`，模型会去排查一个根本没坏的执行环境
+- **计数改为都按截断前**：`(N 行输出，M 字符)` 与截断提示里的数字一致，不再一前一后矛盾
+- **globToRegExp 判掉未闭合的 `{`**：`new RegExp` 按 Annex B 把落单的 `{` 当字面量，编译不报错却匹配不到任何文件——“过滤掉一切”被报成 `[NO_MATCH]`，比“不过滤”更难发现。本缺陷是新建专套的 B11 断言红着查出来的
+
+**解决的问题**：
+- 模型对代码库的搜索从“在 Windows 上永远得到假的空结果”变成“真能搜到、且搜不到时会说清扫了多少”（真仓库冒烟：`grep permissionKey src` → 13 处命中、已扫 70 个文件、行号准确；`grep 静默扩权 Log` → 5 处中文命中不乱码）
+- 模型跑 `node` / `npm` / `tsc` / `git` 时不再拿到乱码（真仓库冒烟：`git log -1 --format=%s` 从“绮惧噯缂栬緫宸ュ叿”变回正确中文），而 cmd.exe 内建命令那条**没被修坏**（`echo 编译通过` 仍正确）——两侧都有断言
+- TESTING.md 第七节“五个工具无直接断言”的缺口收窄到三个（ls / read / write）
+- 失败分类从此有双向源码断言盯着（⑤ 段 E11/E12）：改前缀会同时改坏两处，删不掉
+
+**未来可优化**：
+- **ls / read / write 三个工具仍无功能专套**（read 的 offset/limit 边界、write 的写回验证、ls 的 depth 与 MAX_ENTRIES）
+- **bash 混合编码输出仍会部分乱码**：一条命令同时含两种编码时（如 `echo x && node y`），GBK 字节会让 UTF-8 严格解失败，于是整段按 GBK 解。逐段判编码要先按行切字节再分别试解，代价是可能把一行 UTF-8 中文误判成 GBK（GBK 字符集覆盖面极大，几乎所有双字节组合都“合法”），理由写在 `decodeChildOutput` 头注释里
+- **bash 的 30 秒超时不可注入**，超时路径永远无法快速断言（本轮定为不做，已记进 TESTING.md 第七节）
+- **grep 的 include 只支持 `*` `?` `{}`**，不支持 `**` 与字符类 `[abc]`；要支持就得自己写半个 glob 引擎，当前判定不值
+- **CI 仍未接**，且“远端是 Gitee”这个事实改变了方案（`.github/workflows` 在本仓库会是死配置），见 TESTING.md 第七节
+- 本轮自己踩的方法论坑：**源码文本断言不能裸扫全文件**。⑦ 段第一版拿 `grep -rn` / `2>/dev/null` / `execSync` 这些字面串扫整个 builtin.ts，结果 G1/G2/G3 三条被我自己写的“解释改前为什么坏”的注释全部误伤，改完 G1 又红了一次（代码当时已经对了）。现在先切出 grep 那一段、再用**调用形态**（`execSync\(`带括号）而非裸标识符断言，并加了一条 G0 先证明切片本身有效（否则下面几条是空转的假绿）
+
+---
+
 ## 2026-09-04 21:54 | 授权键从“args JSON 前 80 字符 + 前缀匹配”改成“工具定义的边界 + 精确匹配”，并把 clear() 接进会话生命周期
 
 **牵连系统 / 层次**：公共接口层（core/tools.ts 加第二个可选成员 `permissionKey?`、core/permission.ts 参数改名 `detail` → `authKey`）· 工具子系统（tools/registry.ts 转发、tools/builtin.ts 三个需确认的工具各给一个键 + `bash` 补弹窗文案）· 权限子系统（permission/manager.ts 换 `Set` 精确匹配并重写注释）· Agent Loop 子系统（loop/agent-loop.ts 权限段：两个变量的截断策略分开）· 运行时编排层（runtime/runtime.ts 的 `clearSession`）· 命令层（commands/builtin/clear.ts 的说明与回执）· 验证层（新增 scripts/verify-permission.ts 62 项；verify-edit.ts 的 A5 与头部承重设计③ 跟着改，因为源码形状变了）· 文档层（ARCHITECTURE.md 第四节第 10 条债标 ✅ 并补“怎么修的”、GLOSSARY 新增 `permissionKey` 词条并改正 `permissionDetail` 词条里已失真的一句、DECISION_LOG 记一条取舍、TESTING / 目录 两份快照同步到 14 套 482 项、ROADMAP 记一条已完成）
