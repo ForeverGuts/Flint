@@ -68,7 +68,7 @@ export async function check(): Promise<CheckResult> {
   }
 
   // RPC 模式：快速启动（网络探测本来就不做）
-  if (process.env.TS_AGENT_MODE === 'rpc') {
+  if (process.env.FLINT_MODE === 'rpc') {
     diagnostics.push(pass('network', `「${providerName}」RPC 模式跳过网络检查（快速启动）`));
     const llm = createProvider(config);
     return { llm, config, diagnostics, providerName };

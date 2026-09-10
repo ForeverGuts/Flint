@@ -45,7 +45,7 @@ const CMD_HINTS = [
 ];
 
 /**
- * 消息框（YOU / TS AGENT）边框总宽（列）——随终端宽度自适应。
+ * 消息框（YOU / FLINT）边框总宽（列）——随终端宽度自适应。
  * 顶行 = 2空格 + ┌──(3) + 标签 + ─×N + ┐(1) → N = 宽 - 6 - 标签长
  * 底行 = 2空格 + └(1) + ─×M + ┘(1)          → M = 宽 - 4
  *
@@ -263,7 +263,7 @@ export class TreeUI {
 
     this.headerBackend = new Text('');
     this.headerModel = new Text('');
-    box.addChild(new Text(`  ${C.bgGreen}${C.bold}   ◆  Ts Agent v0.1.0  ◆   ${C.reset}`));
+    box.addChild(new Text(`  ${C.bgGreen}${C.bold}   ◆  Flint v0.1.0  ◆   ${C.reset}`));
     box.addChild(this.headerBackend);
     box.addChild(this.headerModel);
     box.addChild(new Text(`  ${C.dim}${pad('Mode')}${C.reset}   ${C.bold}REPL${C.reset}  │  ${C.dim}tools${C.reset} ${this.info.toolCount}  ${C.dim}skills${C.reset} ${this.info.skillCount}  ${C.dim}cmds${C.reset} ${this.info.cmdCount}`));
@@ -674,7 +674,7 @@ export class TreeUI {
 
   /** 打开流式回复框：顶边框 + 摘要行（若已可结算）+ 可变正文 + 开口底边，挂入 chat */
   private openLiveBox(): void {
-    const label = ' TS AGENT ';
+    const label = ' FLINT ';
     const w = boxWidth();
     const box = new Container();
     box.addChild(new Text(`  ${C.green}┌──${C.reset}${C.bold}${C.green}${label}${C.reset}${C.green}${'─'.repeat(w - 6 - label.length)}┐${C.reset}`));
@@ -791,7 +791,7 @@ export class TreeUI {
       this.lastUsage = null;
       return;
     }
-    const label = ' TS AGENT ';
+    const label = ' FLINT ';
     const w = boxWidth();
     const box = new Container();
     box.addChild(new Text(`  ${C.green}┌──${C.reset}${C.bold}${C.green}${label}${C.reset}${C.green}${'─'.repeat(w - 6 - label.length)}┐${C.reset}`));

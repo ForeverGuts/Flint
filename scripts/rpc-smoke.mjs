@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 const child = spawn(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'src/index.ts'], {
-  env: { ...process.env, TS_AGENT_MODE: 'rpc' },
+  env: { ...process.env, FLINT_MODE: 'rpc' },
   stdio: ['pipe', 'pipe', 'inherit'],
 });
 

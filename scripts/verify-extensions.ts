@@ -88,10 +88,10 @@ async function main(): Promise<void> {
     writeFileSync(p, PROBE_SRC[k as keyof typeof PROBE_SRC], 'utf-8');
   }
 
-  const tmp = join(tmpdir(), `ts-agent-ext-${Date.now()}.jsonl`);
+  const tmp = join(tmpdir(), `flint-ext-${Date.now()}.jsonl`);
 
   try {
-    /* ══ 第一轮：不开 TS_AGENT_TRACE —— 测装载、ctx 边界、零开销、容错 ══ */
+    /* ══ 第一轮：不开 FLINT_TRACE —— 测装载、ctx 边界、零开销、容错 ══ */
     console.log('① 三类口子都能被装载器扫到并注册成功');
     const bus1 = new PromptEventEmitter();
     g.__probeBus = bus1;
@@ -121,7 +121,7 @@ async function main(): Promise<void> {
     console.log('');
     console.log('③ 边界的行为证据（不是看声明，是看总线里实际多了什么）');
     const t1 = tablesOf(bus1);
-    check('不开 TS_AGENT_TRACE 时通配订阅表为空 —— "不订阅、零开销"是实证而非注释',
+    check('不开 FLINT_TRACE 时通配订阅表为空 —— "不订阅、零开销"是实证而非注释',
       t1.subs.size === 0, `实际 ${t1.subs.size} 个订阅者`);
     check('精确监听表里只有 example-hook 的 before_request（watcher 一条都没加）',
       t1.hooks.size === 1 && t1.hooks.has('before_request'),
@@ -134,11 +134,11 @@ async function main(): Promise<void> {
     check('坏扩展抛异常后，另两个目录的扩展照常装载（sections 仍 1 个、hook 探针仍被调）',
       ext.sections.length === 1 && Array.isArray(g.__probeHooks));
 
-    /* ══ 第二轮：开 TS_AGENT_TRACE —— 走真实装载路径的端到端落盘 ══ */
+    /* ══ 第二轮：开 FLINT_TRACE —— 走真实装载路径的端到端落盘 ══ */
     console.log('');
     console.log('④ 走真实装载路径的 trace-log 端到端（verify-events 测的是手工注册那条路）');
-    process.env.TS_AGENT_TRACE = '1';
-    process.env.TS_AGENT_TRACE_FILE = tmp;
+    process.env.FLINT_TRACE = '1';
+    process.env.FLINT_TRACE_FILE = tmp;
     const bus2 = new PromptEventEmitter();
     await loadExtensions(bus2);
     const t2 = tablesOf(bus2);
@@ -168,8 +168,8 @@ async function main(): Promise<void> {
     check('坏扩展抛异常也没牵连同目录的 trace-log（它排在坏扩展后面）', lines.length === 1);
   } finally {
     /* 探针必须删干净：残留在 src/extensions/ 里会被每次真实启动装载 */
-    delete process.env.TS_AGENT_TRACE;
-    delete process.env.TS_AGENT_TRACE_FILE;
+    delete process.env.FLINT_TRACE;
+    delete process.env.FLINT_TRACE_FILE;
     delete g.__probeBus;
     delete g.__probeSections;
     delete g.__probeHooks;

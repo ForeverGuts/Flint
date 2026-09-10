@@ -8,7 +8,7 @@ import { Harness } from './harness/index.js';
 
 // RPC 模式（管道 stdin）不初始化 readline 终端 —— initTerminal 的 readline 会干扰管道输入，
 // 导致顶层 await 无法 settle（exit 13）。RPC 由 runRpcMode 自建 readline 读 stdin。
-if (process.env.TS_AGENT_MODE !== 'rpc') {
+if (process.env.FLINT_MODE !== 'rpc') {
   initTerminal();
 }
 

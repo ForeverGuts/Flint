@@ -1,6 +1,6 @@
 /**
  * REPL 模式 —— 交互式命令行界面（TTY 组件树 / 管道 TerminalUI）。
- * 调用方：main.ts（模式分发，TS_AGENT_MODE 非 rpc 时进入）
+ * 调用方：main.ts（模式分发，FLINT_MODE 非 rpc 时进入）
  * 服务于：与 rpc.ts 对称——把 REPL 从 main.ts 抽离，main 只做组装 + 分发
  *
  * 两种 UI：

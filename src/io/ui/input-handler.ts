@@ -94,8 +94,8 @@ export class InputHandler {
   /** 括号粘贴缓冲（粘贴内容跨 chunk 时累积，直到 \x1b[201~ 到达） */
   private pasteBuf: string | null = null;
 
-  /** 调试日志（env TS_AGENT_DEBUG_INPUT=1 时开启，写入 debug-input.log，避免污染 stdout） */
-  static debug = !!process.env.TS_AGENT_DEBUG_INPUT;
+  /** 调试日志（env FLINT_DEBUG_INPUT=1 时开启，写入 debug-input.log，避免污染 stdout） */
+  static debug = !!process.env.FLINT_DEBUG_INPUT;
   private debugLog(msg: string): void {
     if (!InputHandler.debug) return;
     try {

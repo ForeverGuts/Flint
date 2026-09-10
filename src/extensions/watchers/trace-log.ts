@@ -4,8 +4,8 @@
  * 服务于：给骨架 span（prompt/llm_request/tool_call/compaction）与便签 span（note_*）
  *         一个开箱即用的落盘消费者，让"某次行为花了多久、成没成、输入输出是什么"可回放
  *
- * 开关：TS_AGENT_TRACE=1（不设则本 watcher 立即返回，不订阅、零开销）
- *       TS_AGENT_TRACE_FILE 可改输出路径（缺省项目根 trace.jsonl）
+ * 开关：FLINT_TRACE=1（不设则本 watcher 立即返回，不订阅、零开销）
+ *       FLINT_TRACE_FILE 可改输出路径（缺省项目根 trace.jsonl）
  *
  * 为什么住在 watchers/ 而不是 hooks/：两者都是扩展、都自动装载，但用的钥匙不同——
  *   hook    用 ctx.on(type, handler)，返回值经 emitHook 收回，能改写流程（如 before_request 改消息数组）
@@ -59,8 +59,8 @@ function write(file: string, record: Record<string, unknown>): void {
 export function registerWatchers(ctx: {
   events: EventBus;
 }): void {
-  if (process.env.TS_AGENT_TRACE !== '1') return;
-  const file = process.env.TS_AGENT_TRACE_FILE ?? 'trace.jsonl';
+  if (process.env.FLINT_TRACE !== '1') return;
+  const file = process.env.FLINT_TRACE_FILE ?? 'trace.jsonl';
   // 容量 0：落盘型消费者只用 feed 的返回值，不必在内存里再留一份历史
   const collector = new SpanCollectorImpl({ capacity: 0 });
 

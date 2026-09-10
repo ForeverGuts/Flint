@@ -8,6 +8,6 @@ if not exist "node_modules\tsx\dist\cli.mjs" (
     exit /b 1
 )
 
-echo Starting Ts Agent...
+echo Starting Flint...
 node node_modules\tsx\dist\cli.mjs src/index.ts
 pause

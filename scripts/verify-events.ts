@@ -301,9 +301,9 @@ async function main(): Promise<void> {
   /* ── ⑧ trace-log watcher 端到端（住在 extensions/watchers/：只订阅不改流程） ── */
   console.log('⑧ trace-log watcher 端到端（一行一段完整行为，落盘）');
   {
-    const tmp = join(tmpdir(), `ts-agent-trace-${Date.now()}.jsonl`);
-    process.env.TS_AGENT_TRACE = '1';
-    process.env.TS_AGENT_TRACE_FILE = tmp;
+    const tmp = join(tmpdir(), `flint-trace-${Date.now()}.jsonl`);
+    process.env.FLINT_TRACE = '1';
+    process.env.FLINT_TRACE_FILE = tmp;
     const mod = await import('../src/extensions/watchers/trace-log.js');
     const tBus = new PromptEventEmitter();
     mod.registerWatchers({ events: tBus });
@@ -332,8 +332,8 @@ async function main(): Promise<void> {
     check('startedAt 是 ISO 时间串（可直接排序、可人读）',
       rows.every((r) => !Number.isNaN(Date.parse(r.startedAt))));
     if (existsSync(tmp)) unlinkSync(tmp);
-    delete process.env.TS_AGENT_TRACE;
-    delete process.env.TS_AGENT_TRACE_FILE;
+    delete process.env.FLINT_TRACE;
+    delete process.env.FLINT_TRACE_FILE;
   }
 
   /* ── ⑨ SpanCollector 公共件 + /traces 命令（配对抽出后的两个消费者） ── */

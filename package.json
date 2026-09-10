@@ -1,12 +1,12 @@
 {
-  "name": "ts-agent",
+  "name": "flint",
   "version": "0.1.0",
-  "description": "A CLI agent tool built with TypeScript",
+  "description": "A zero-dependency, fast-starting CLI agent built with TypeScript",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "ts-agent": "dist/index.js"
+    "flint": "dist/index.js"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -19,7 +19,9 @@
   "keywords": [
     "cli",
     "agent",
-    "typescript"
+    "typescript",
+    "flint",
+    "zero-dependency"
   ],
   "license": "MIT",
   "devDependencies": {

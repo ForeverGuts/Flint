@@ -129,7 +129,7 @@ assert('无复选框内容 → false', hasUncheckedTask('纯文本没有清单')
 
 console.log('── C2-4 loadTaskMemory 工程侧清理 ──');
 
-const tmp = path.join(os.tmpdir(), `ts-agent-c2-${Date.now()}.md`);
+const tmp = path.join(os.tmpdir(), `flint-c2-${Date.now()}.md`);
 
 assert('文件缺失 → undefined', loadTaskMemory(tmp) === undefined);
 

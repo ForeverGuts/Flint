@@ -78,11 +78,11 @@ globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Respo
 /* ══ 临时配置：三家供应商（有 key / 没 key / 坏地址），跑完即删 ══ */
 
 const stamp = Date.now();
-const providersPath = join(tmpdir(), `ts-agent-startup-${stamp}-providers.json`);
-const keysPath = join(tmpdir(), `ts-agent-startup-${stamp}-keys.json`);
-const activePath = join(tmpdir(), `ts-agent-startup-${stamp}-active.json`);
-/** 刻意指向不存在的文件：免得读到用户真实的 ~/.ts-agent/config.json（里面可能真有 key） */
-const globalPath = join(tmpdir(), `ts-agent-startup-${stamp}-global-missing.json`);
+const providersPath = join(tmpdir(), `flint-startup-${stamp}-providers.json`);
+const keysPath = join(tmpdir(), `flint-startup-${stamp}-keys.json`);
+const activePath = join(tmpdir(), `flint-startup-${stamp}-active.json`);
+/** 刻意指向不存在的文件：免得读到用户真实的 ~/.flint/config.json（里面可能真有 key） */
+const globalPath = join(tmpdir(), `flint-startup-${stamp}-global-missing.json`);
 
 const providers: ProviderConfigJson[] = [
   { id: 'p-key', name: '有钥匙', baseUrl: `${base}/v1`, type: 'openai', staticModels: [{ id: 'static-a', label: '静态 A' }] },

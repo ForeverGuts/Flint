@@ -27,8 +27,8 @@ export class Screen {
   private previousLines: string[] = [];
   /** 光标当前所在的行（0 基，相对内容顶部） */
   private cursorLine = 0;
-  /** 调试日志（env TS_AGENT_DEBUG_SCREEN=1 时开启，写入 debug-screen.log） */
-  static debug = !!process.env.TS_AGENT_DEBUG_SCREEN;
+  /** 调试日志（env FLINT_DEBUG_SCREEN=1 时开启，写入 debug-screen.log） */
+  static debug = !!process.env.FLINT_DEBUG_SCREEN;
 
   /** 调试日志（写入文件，避免污染 stdout） */
   private debugLog(msg: string): void {
@@ -108,7 +108,7 @@ export class Screen {
     this.previousLines = [...newLines];
     this.cursorLine = Math.max(0, newLines.length - 1);
 
-    // ── 调试：记录每次渲染的关键状态（env TS_AGENT_DEBUG_SCREEN=1） ──
+    // ── 调试：记录每次渲染的关键状态（env FLINT_DEBUG_SCREEN=1） ──
     if (Screen.debug) {
       const cols = process.stdout.columns ?? 80;
       let warn = '';

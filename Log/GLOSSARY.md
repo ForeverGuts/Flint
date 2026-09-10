@@ -62,13 +62,46 @@ Agent 内部持有 `while(true)` 循环、自驱动运行的交互方式。**本
 ### Config（配置）
 项目的运行参数文件，如 `package.json`、`tsconfig.json`。属于[项目元数据](#project-metadata项目元数据)的一类。
 
-运行期配置由 `config/manager.ts` 统一读取，**四份文件 + 一条优先级链**（高 → 低）：环境变量（`apiKeyEnv` 指定）> 全局 `~/.ts-agent/config.json` > 项目 `config/provider-keys.json`（密钥，gitignore）> 项目 `config/active-config.json`（当前激活，不含 key）> 代码默认。供应商预设另在 `config/providers.json`（公开可提交）。
+运行期配置由 `config/manager.ts` 统一读取，**四份文件 + 一条优先级链**（高 → 低）：环境变量（`apiKeyEnv` 指定）> 全局 `~/.flint/config.json` > 项目 `config/provider-keys.json`（密钥，gitignore）> 项目 `config/active-config.json`（当前激活，不含 key）> 代码默认。供应商预设另在 `config/providers.json`（公开可提交）。
 
-测试可用 `TS_AGENT_CONFIG` 环境变量把激活配置指向临时文件。
+测试可用 `FLINT_CONFIG` 环境变量把激活配置指向临时文件。
 
 **没有 `config/api.json` 这个文件**（旧文档里这个路径是错的）。目前只有“密钥”分了三层存在域，供应商定义与 baseUrl 仍只在项目单一域（manager.ts 里记着这条 TODO）。
 
 ## D
+
+### decodeChildOutput（子进程输出解码）
+`tools/builtin.ts` 里的模块级函数（签名 `(raw: Buffer) => string`），`bash` 工具拿它把子进程的输出字节解成字符串。2026-09-04 新增，替掉改前的硬编码 GBK。
+
+存在的理由是一句话：**进程之间传的是字节，不是字符串**。字节不带“我是谁的编码”这个属性，而**谁产生的输出决定编码**：
+
+- **cmd.exe 内建命令**（echo / dir / type / chcp）走控制台代码页——中文 Windows = 936(GBK)，实测 `echo 中文测试` → `d6d0cec4b2e2cad4`
+- **外部程序**（node / npm / git / tsc）走自己的编码，通常 UTF-8，实测同一句话 → `e4b8ade69687...`
+
+所以同一条 `bash` 命令里两种编码都可能出现，硬编码任何一种都会错一半。改前硬编码 GBK，`node -e "console.log('编译通过')"` 返回“缂栬瘧閫氳繃”，而模型正是靠这段文本判断编译结果的。
+
+**三层，顺序不能反**：先 UTF-8 **严格**解（`fatal: true`，解得通就是 UTF-8；纯 ASCII 是两者公共子集，怎么解都一样）→ 解不通再退平台代码页（win32 取 `'gbk'`，否则 UTF-8 宽容解）→ 连回退解码器本身都不可用时（Node 未带 full-icu 则 `new TextDecoder('gbk')` 抛 RangeError）还有一层 `raw.toString('utf-8')` 兜底。
+
+两个易错点：
+
+- **先试 GBK 会静默错**：GBK 字符集覆盖面极大（几乎所有双字节组合都“合法”），UTF-8 的中文字节会被解成另一串合法汉字——不报错、只是错。所以必须拿 `fatal: true` 的 UTF-8 当第一道门
+- **兜底那一层是承重的**：改前解码器抛错会落在 handler 的 `try` 里，被报成 `[ERROR] 命令执行失败`——模型会去排查一个根本没坏的执行环境
+
+**残留限制**：一条命令同时混两种编码时（如 `echo x && node y`），GBK 字节会让 UTF-8 严格解失败，于是整段按 GBK 解，外部程序那半会乱。逐段判编码要先按行切字节再分别试解，代价是可能把一行 UTF-8 中文误判成 GBK（同上理由），本轮定为不做。
+
+参见：[grep（递归搜索工具）](#grep递归搜索工具)、[ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 2026-09-04 23:53 那块
+
+### defineTool（工具定义构造器）
+`tools/spec.ts` 的导出函数（2026-09-06 新增），`tools/builtin.ts` 用它造全部 6 个内置工具——全项目**唯一**构造 `ToolDefinition` 的地方。入参是 `{ name, description, spec, handler, requirePermission?, permissionDetail?, permissionKey? }`，产出里 `parameters` 与 `parse` 都从 [spec](#spec工具参数规格) 派生，`handler` 的入参类型也从它推出（`Infer<S>`）。
+
+它换来的一件事：**参数名在源码里只剩 spec 里那一处**。改前 `grep` 的 `'pattern'` 在这一个工具里出现 7 次（其中 4 处是协议性的：description 文案 1、对象属性名 1、字符串字面量 2），而 TS 一处都不检查——校验件的 key 形参类型是 `string`，什么都能塞。把它写成 `'patern'`（漏一个 t），编译通过、测试不红，只在运行时让模型收到一句“patern 是必填参数”，而它手上的单子写的是 pattern。
+
+两条边界要知道：
+
+- **`permissionKey` / `permissionDetail` 没跟着泛型化**：权限确认发生在 `agent-loop` 调 `execute` **之前**，那时参数还没校验过，这两个成员拿的仍是未经 parse 的原始 args（`edit` 的 permissionDetail 里那句 `String(args.replaceAll)` 就是这么留下的、消不掉）
+- **`handler` 那一行 `as` 是全项目唯一一次类型收窄**：`core/tools.ts` 的 handler 契约仍是 `Record<string, unknown>`。跟着泛型化就得给 `ToolDefinition` 加类型参数，而它是三个文件的公共词汇（core 的接口与 `ToolProvider.register` 入参、`registry.ts` 那个 Map 的值类型、`spec.ts` 的返回类型），改一处要跟改三处，换来的只是省掉这一行 `as`。收窄的正确性靠“execute 一定先跑 parse 再跑 handler”保证，这条接线由 `verify-spec.ts` ⑥ 段钉住
+
+参见：[spec（工具参数规格）](#spec工具参数规格)、[ToolInputError](#toolinputerror参数不合法错误)
 
 ### Diagnostic（诊断条目）
 统一“启动检查结果”与“运行时错误”的结构，UI 一套渲染（定义在 `types.ts`）：`level`（`pass` / `warn` / `fail`）、`item`（来源标识：config / apikey / network / models / model / tool / llm）、`message`（人类可读说明）。
@@ -115,7 +148,7 @@ Agent 内部持有 `while(true)` 循环、自驱动运行的交互方式。**本
 三条实现约束值得记住：
 
 - **不用正则**：`oldText` 里满是 `. * ( [ ?` 等元字符，走正则就得转义，漏转一个就把“改这一处”变成“改一片”
-- **定位失败的前缀必须是 `[ERROR]`**：`agent-loop.ts` 只把 `[ERROR]` / `[VERIFY_FAILED]` 记作失败，而“重复失败保护”只在失败时计数（第 2 次同样调用就追加系统提示叫模型别原样重试、先去 read 确认）。改成 `[NO_MATCH]` 这类软前缀等于把这层保护关掉
+- **定位失败的前缀必须是 `[ERROR]`**：`agent-loop.ts` 把 `[ERROR]` / `[VERIFY_FAILED]` / `[INVALID]` 记作失败（第三个前缀是 2026-09-05 补的，本行早先写的“只把两个前缀记作失败”已失真），而“重复失败保护”只在失败时计数（第 2 次同样调用就追加系统提示叫模型别原样重试、先去 read 确认）。改成 `[NO_MATCH]` 这类软前缀等于把这层保护关掉
 - **CRLF 往返只对纯 CRLF 文件做**：`core.autocrlf=true` 检出的源码是 CRLF，而模型发来的 `oldText` 必然用 `\n`，不归一化则跨行匹配必然 0 命中；混合行尾的文件按字面匹配（宁可拒绝，也不做波及全文的还原）
 
 参见：[permissionDetail](#permissiondetail权限弹窗文案)
@@ -161,6 +194,27 @@ watcher 的 ctx 里刻意不给 `on`——“旁观者改流程”在类型层�
 
 ### Generator（生成器）
 `function*` + `yield` 构成的函数。详见 [TS/生成器与异步生成器](../TS/生成器与异步生成器.md)（注：该链接指向仓库外的个人笔记库，仓库内无此文件）。
+
+### grep（递归搜索工具）
+`tools/builtin.ts` 里的第 4 个内置工具（ls / read / write / **grep** / bash / edit）。返回“路径:行号:该行内容”，`pattern` 按 **JS 正则**编译。不需权限确认（只读）。
+
+**纯 Node 实现，不 shell 出去**（2026-09-04 改）。改前拼的是 POSIX 串 `grep -rn ... 2>/dev/null | head -50`，而 `execSync` 在 Windows 走 `cmd.exe`：`grep` 不存在、`2>/dev/null` 被当成路径，于是在中文 Windows 上**一次也搜不到**；更糟的是失败被报成 `[NO_MATCH]`，搜一个确实存在的符号与搜一个绝不存在的串返回一模一样。工具自己的 description 还写着“基于 ripgrep (rg) 或系统 grep”，而代码里两者都没有。
+
+**返回前缀是分类契约，不是文案**（`agent-loop.ts` 把 `[ERROR]` / `[VERIFY_FAILED]` / `[INVALID]` 记作失败，`NO_MATCH` / `NOT_FOUND` / `EMPTY` 归为“有效否定（不计失败）”）。改前把“命令跑不起来”也报成 `[NO_MATCH]`，等于把这层保护关掉：
+
+| 前缀 | 含义 |
+|------|------|
+| `[OK]` | 真命中，附命中数与“已扫 N 个文件” |
+| `[NO_MATCH]` | 扫完了、确实没有 |
+| `[INVALID]` | 正则编译不了，或 include 过滤模式无法编译；**参数级的那几条**（缺 `pattern` / 传了非字符串 / 传了不存在的参数名）自 2026-09-06 起由 `registry.execute()` 的 [parse](#spec工具参数规格) 在进 handler **之前**报出（改前是 handler 里的 `requireString`），缺参那句文案逐字未变、另两种是新拦的。两类都**计入失败**（2026-09-05 起） |
+| `[NOT_FOUND]` | 搜索路径不存在 |
+| `[ERROR]` | 其他意外（计入失败、会触发重复失败保护） |
+
+**“已扫 N 个文件”是承重的**：0 命中时模型需要能区分“扫了 300 个文件确实没有”与“自己的 include 把所有文件都排除了”——后者是它自己写错了参数，但两种情形看上去都是“空结果”。这个信息 shell 版拿不到（系统 `grep` 不报它跳过了什么）。
+
+**上限与跳过规则**（全是硬编码常量，不可注入）：`.git` / `node_modules` / `dist` 与点开头目录、头部 8KB 内有 NUL 字节的二进制文件（不跳的话一个 .png 能把 50 个名额吃光）、>2MB 的超大文件、5000 个文件总量上限（防误指向盘符根目录）、50 命中上限。`include` 只认 `*` `?` `{a,b}`，不支持 `**` 与字符类 `[abc]`；编译不了时显式报 `[INVALID]`，而不是静默过滤掉一切。
+
+参见：[edit（精准编辑工具）](#edit精准编辑工具)、[decodeChildOutput](#decodechildoutput子进程输出解码)、[DECISION_LOG](./DECISION_LOG.md) 同日“grep 三选一”那条
 
 ## H
 
@@ -271,7 +325,7 @@ LLM 调用抽象接口，位于 `src/llm/types.ts`。两个方法：`chat(messag
 
 它**只管显示**。授权匹配用的是另一个键（`agent-loop.ts` 里的 `autoKey`，见 [permissionKey](#permissionkey授权匹配键)）——若把富文本 detail 当匹配键，“本次全部允许”会永远匹配不上，因为每次文案都不一样。改前匹配、记录（`grantAutoAllow`）与显示这三个职责由同一个 `detail` 变量兼着（一变量三职），2026-09-04 拆成两个变量；同日晚些时候**匹配键本身也换了**（不再是 args 的 JSON 前 80 字符，而是工具定义的授权边界且不截断）——授权只存在内存的 `Set` 里、从不落盘，所以换格式没有迁移问题。
 
-刻意做成**可选**成员（与 `EventBus.emitHook?` 同一手法）：全库有 7 处替身 implements `ToolProvider`，加必需成员会全部打坏。
+刻意做成**可选**成员（与 `EventBus.emitHook?` 同一手法）：全库有 9 处替身 implements `ToolProvider`（2026-09-06 逐处数过；本句早先写的 7 处已失真），加必需成员会全部打坏——但这半句在本仓库**无法用 tsc 验证**（`scripts/` 不进类型检查，实测把 `ToolDefinition.parse` 改成必需 `tsc --noEmit` 仍 0 错），只能逐处数，见 [TESTING.md](./TESTING.md)。
 
 参见：[edit](#edit精准编辑工具)、[EventBus](#eventbus事件总线)、[permissionKey](#permissionkey授权匹配键)
 
@@ -379,6 +433,23 @@ Agent 可调用的能力模块，**已落地**（旧文档标“计划中”已�
 
 不属于[项目元数据](#project-metadata项目元数据)——Skill 是可执行的，元数据是声明式的。
 
+### spec（工具参数规格）
+`tools/spec.ts`（2026-09-06 新增，5 个构造器 + 2 个派生函数 + [defineTool](#definetool工具定义构造器)）。**一份定义派生三样**：`toJsonSchema(spec)` → 发给 LLM 的 `parameters`；`parseSpec(spec, args)` → 运行时审核并补齐默认值；`Infer<typeof spec>` → handler 的入参类型。改一处、三处同时变——`verify-spec.ts` 的 1-6~1-8b 用**对照组**钉住这一点（只改 spec 里一个键，两个派生物必须同时跟着变），否则“同源”可以被实现成“两份各自硬编码但恰好一致”而全绿。
+
+五种形状覆盖项目现有 16 个字段：`str` / `strAllowEmpty`（必填但允许空串，`edit` 的 `newText` 空串 = 删掉这一段）/ `optStr` / `optPosInt` / `optBool`。**刻意不做**跨字段约束、嵌套对象、union、自定义 refine——多写一分就是多一处要维护的死代码。这也是不引 Zod / TypeBox 的理由：表达力用不到十分之一，而 Zod 还要 `zodToJsonSchema` 这座**有损**的桥（`.refine()` 之类会被静默丢掉）。取舍见 [DECISION_LOG.md](./DECISION_LOG.md)。
+
+它治的三个病（改前实测取证，不是推导）：
+
+| 病 | 改前 | 现在 |
+|----|------|------|
+| 那份 Schema 是“建议书”不是契约 | `registry.execute()` 只有 3 行，`tool.parameters` **一个字段都没读**：造一个 `required: ['mustHave']` 的工具，①什么都不传 ②传一个对象 ③传 Schema 里根本不存在的参数名——三次全部返回 `[OK]` | `execute` 先跑 `parse`，缺参 / 多余参数 / 类型不对一律 `[INVALID]` |
+| `String(val)` 是**永远通过的校验** | 传 `123` / `{a:1}` / `['src']` / `true` 全部通过，被强转成 `"123"` / `"[object Object]"` / `"src"` / `"true"`，直到**文件系统层**才失败并报 `[NOT_FOUND]` / `[NOT_FILE]`——归因错到另一层，模型会以为是自己路径写错而开始猜路径 | 四个盲区全堵（`coerce` 是全项目**唯一**做参数类型判断的地方） |
+| 多余参数静默忽略 | `{pattern:'x', pathh:'typo'}` 让 `path` 退回默认 `'.'`，搜完整个项目还报 `[OK]` | 拒，且文案里**列出可用参数名**——`'patern'` 那类拼写错误唯一能被当场纠正的机会 |
+
+一处宽容是刻意的：数字字段接受数字字符串（`'3'`）、布尔字段接受 `'true'` / `'false'`（模型常这么传，拒了只是白烧一轮），但数字 `1` 当布尔传会被拒——改前 `String(args.replaceAll) === 'true'` 会把 `1` 静默当成 `false`，模型以为自己开了全量替换。
+
+参见：[defineTool](#definetool工具定义构造器)、[ToolInputError](#toolinputerror参数不合法错误)、[grep（递归搜索工具）](#grep递归搜索工具)
+
 ### Span（行为段）
 一次**有始有终**的行为，用“进门 / 出门”两个事件括起来。生产端拿到的是一个句柄：
 
@@ -427,8 +498,17 @@ C3 的关键约束：`ThinkingBlock` = 推理文本 + `signature`（Anthropic �
 
 参见：[LLMConfig](#llmconfig)、[EventStream](#eventstream推拉通道)
 
+### ToolInputError（参数不合法错误）
+`tools/spec.ts` 的导出类（`extends Error`，多一个 `code` 字段：`missing` / `unknown_param` / `invalid_type` / `invalid_range` / `empty`）。由 `parseSpec` 抛，`registry.execute()` **就地**转成 `[INVALID] 文案` 回给模型；**不是**它的异常（规格自己写坏了）一律 `throw` 穿透——那不是模型的错，不该报成参数不合法。
+
+它存在的理由不是“抛个错”，而是**一个会被分类、会触发保护的信号**：`agent-loop.ts` 把 `[INVALID]` 计入失败（2026-09-05 起），所以同一个错参数连传两次就会注入 `[系统提示]` 叫模型别原样重试。在那之前参数错误完全落在这层保护之外（判定式是白名单，落不进任何一类就等于默认不计）。
+
+错误文案逐字沿用改前 4 个校验件的措辞（`verify-spec.ts` ③ 段按字面钉住），所以模型侧看到的提示没变。
+
+参见：[spec（工具参数规格）](#spec工具参数规格)、[grep（递归搜索工具）](#grep递归搜索工具)、[ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 2026-09-05 21:42 那块
+
 ### trace.jsonl
-`trace-log` watcher 的落盘产物，**一行一段完整行为**。含对话正文片段，**属隐私**，所以默认不写——必须显式设 `TS_AGENT_TRACE=1`（`TS_AGENT_TRACE_FILE` 可改路径，缺省项目根）。
+`trace-log` watcher 的落盘产物，**一行一段完整行为**。含对话正文片段，**属隐私**，所以默认不写——必须显式设 `FLINT_TRACE=1`（`FLINT_TRACE_FILE` 可改路径，缺省项目根）。
 
 进程退出时会把仍没关门的段补记成 `status:'unclosed'`，让“漏关门”从静默变成一眼可见。
 

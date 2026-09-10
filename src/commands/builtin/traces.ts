@@ -1,7 +1,7 @@
 /**
  * /traces 命令 —— 就地查看本次会话的行为分段耗时（内存，不落盘）。
  * 调用方：commands/loader.ts（自动扫描 builtin/ 目录装载）
- * 服务于：可观测性的"随手看一眼"——不必先开 TS_AGENT_TRACE 落盘、再翻 jsonl 文件，
+ * 服务于：可观测性的"随手看一眼"——不必先开 FLINT_TRACE 落盘、再翻 jsonl 文件，
  *         敲一下就知道最近几段各花了多久、成没成、此刻还在跑的是哪段
  *
  * 数据从 runtime.getTraces() / getRunningSpans() 来（Runtime 只读委托 SpanCollector），
@@ -102,7 +102,7 @@ export function activate(runtime: Runtime): void {
     const runningShown = running.filter(match);
 
     if (shown.length === 0 && runningShown.length === 0) {
-      return '📭 还没收到任何行为段。发一轮对话后再看（段是随对话实时收的，不必开 TS_AGENT_TRACE）。';
+      return '📭 还没收到任何行为段。发一轮对话后再看（段是随对话实时收的，不必开 FLINT_TRACE）。';
     }
 
     /* 合计只算 prompt 段：段是嵌套的（prompt 包着 llm_request，llm_request 又包着 tool_call），
@@ -121,7 +121,7 @@ export function activate(runtime: Runtime): void {
     // 走到这里 shown 为空只有一种可能：过滤词没命中已收束的段，但正好有段在跑
     const hint = shown.length === 0
       ? '\n（已收束的段里没有匹配这个过滤词的。段名有 prompt / llm_request / tool_call / compaction）'
-      : `\n（/traces 20 看最近 20 段 · /traces llm 按段名过滤 · 明细落盘需 TS_AGENT_TRACE=1）`;
+      : `\n（/traces 20 看最近 20 段 · /traces llm 按段名过滤 · 明细落盘需 FLINT_TRACE=1）`;
 
     return `${head}\n${shown.map(lineOf).join('\n')}${runningBlock}${hint}`;
   });

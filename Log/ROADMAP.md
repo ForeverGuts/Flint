@@ -29,6 +29,9 @@
 | **启动提速（P6）** | 第一档网络探测后台化 + 第二档启动关键路径 0 网络请求（模型列表内存预热 + /model 按需现拉） |
 | **精准编辑工具（P7）** | `edit`：oldText 唯一命中才改，0 命中 / 多命中都拒绝且一字不落盘（多命中回候选行号），CRLF 与 BOM 字节级保真；配套 `ToolDefinition.permissionDetail?` 让权限弹窗看得清改哪里 |
 | **授权边界精确化（P6）** | 授权匹配从“args JSON 前 80 字符 + 前缀匹配”换成“工具定义的边界 + 精确匹配”（`ToolProvider.permissionKey?`），`clear()` 接进会话生命周期；关掉架构债 #10 |
+| **工具可靠性修复（P7）** | `grep` 从“shell 出去调系统 grep”改成纯 Node 遍历（改前在中文 Windows 上**一次也搜不到**，且把“命令跑不起来”谎报成 `[NO_MATCH]`），四类返回前缀分开；`bash` 的子进程输出解码从硬编码 GBK 改成“UTF-8 严格探测 + 平台代码页回退”（`decodeChildOutput`），行数/字符数统一按截断前算；配套 `scripts/verify-tools.ts` 74 项，全库 15 套 556 项 |
+| **失败分类补全（P7）** | `[INVALID]`（参数不合法）计入失败——改前“重复失败保护”对“模型把参数写错”这一整类**完全失效**（实测 grep 缺 `pattern` 连传三次，`if (failed)` 一次也没进、`[系统提示]` 一次也没注入）；根因是分类表里没给它留位置（判定式是白名单，落不进任何一类就等于默认不计）。配套 A4/A5 **对照组**（有效否定 `[NO_MATCH]` 仍不计），并查出两条**假绿**源码断言（E11/C4 的子串匹配在第三个前缀同行时照样绿）改为名单精确相等，全库 15 套 560 项 |
+| **工具参数校验框架（P6）** | 新增 `tools/spec.ts`（自研，**不引** Zod / TypeBox）：一份 spec 派生三样——发给 LLM 的 `parameters` / 运行时 `parse` / handler 入参类型，6 个工具全走 `defineTool`；`ToolDefinition.parse?` + `registry.execute()` 接线，让那份 Schema **第一次真正生效**（改前 `execute()` 只有 3 行、`tool.parameters` 一个字段都没读，实测缺参 / 传对象 / 传 Schema 里不存在的参数名——三次全部 `[OK]`）。堵住 `String(val)` 那个“永远通过的校验”留下的四个类型盲区与多余参数静默忽略；配套 `scripts/verify-spec.ts` 45 项 + `fixtures/tool-schemas-baseline.json` 护栏（Schema 逐字未变），全库 16 套 605 项 |
 
 ---
 
@@ -108,15 +111,18 @@
   - 对标：Pi 的 jsonl-repo.ts
 - [ ] **技能系统补全** — SkillLoader 热重载 + 依赖追踪（当前 TODO）
   - 对标：Pi 的 skills.ts
-- [ ] **工具参数校验框架** — 从手动 requireString 升级为 schema 自动校验
-  - 理由：工具参数校验标准化
-  - 对标：Cline 工具参数 schema 校验
+- [x] **工具参数校验框架** —（2026-09-06 落地，实现与原案不同）原案：从手动 requireString 升级为 schema 自动校验
+  - 落地的是 `tools/spec.ts`（**自研**，不引 Zod / TypeBox）：5 个构造器（`str` / `strAllowEmpty` / `optStr` / `optPosInt` / `optBool`）覆盖现有 16 个字段，一份 spec 派生三样——`toJsonSchema()` 出发给 LLM 的 parameters、`parseSpec()` 做运行时审核并补默认值、`Infer<typeof spec>` 推 handler 入参类型；`ToolDefinition` 加**可选**成员 `parse?`，`registry.execute()` 在 handler 之前跑它（`ToolInputError` → `[INVALID]`，别的异常穿透），6 个工具全走 `defineTool()`、删掉 4 个校验件共 18 处
+  - “自动校验”这一步的实测根据：改前 `execute()` 只有 3 行、`tool.parameters` **一个字段都没读**——造一个 `required: ['mustHave']` 的工具，①什么都不传 ②传一个对象 ③传 Schema 里根本不存在的参数名，三次全部 `[OK]`，所以那份单子的身份是“给模型的建议书”。另堵掉 `String(val)` 那个**永远通过的校验**留下的四个类型盲区（`123` / `{a:1}` / `['src']` / `true` 改前全过关，到文件系统层才报 `[NOT_FOUND]` / `[NOT_FILE]`，归因错层会让模型去猜路径）与多余参数静默忽略（`{pattern:'x', pathh:'typo'}` 让 `path` 退回默认 `'.'`，搜完整个项目还报 `[OK]`）
+  - 理由：工具参数校验标准化（原案这句成立，但真病不是“两份副本可能不一致”，而是“没人执行”）
+  - 对标：Cline 工具参数 schema 校验——**不引它的依赖**（Zod 还要 `zodToJsonSchema` 这座**有损**的桥，而本项目零运行时依赖是既有立场），三选一取舍见 DECISION_LOG 2026-09-06
+  - 剩余（未立项）：结构化返回值（handler 仍返回字符串前缀，前缀仍是工具层与消费层之间唯一的协议；ARCHITECTURE_LOG 2026-09-05 那块写的“那是工具参数校验框架那一步的事”，本轮只做了参数校验这一半）· `parse` 是可选成员，手写一个不走 `defineTool` 的工具绕过全部校验是合法的（编译期不拦，防线是 verify-spec ⑤/⑥ 段的源码断言）
 - [x] **可观测性增强** — 结构化 trace/span 观测层（2026-09-02 落地：总线 emit() 盖 at/seq/turnId 公共头 + SpanRecorder 打卡机（trace 自动配对 / beginSpan 手动）+ 四组骨架 span 覆盖三重循环（prompt/llm_request/tool_call/compaction）+ note_start/note_end 便签通道 + trace-log hook 落 trace.jsonl，verify-events 55 项）
   - L3 真实 usage 同日补齐：两条流式协议各自取用量（OpenAI 兼容靠 stream_options.include_usage 显式索取 + 撞 400 自动降级，Anthropic 靠 message_start 输入三项相加 + message_delta 输出累计值），AgentLoopResult 逐轮合计、任一轮缺失即整体 null，verify-usage 22 项；实测同一条冒烟的 promptTokens 从估算 26 变真值 2834（估算没算 system prompt 与 5 个工具描述）
   - 对标：Pi 的 docs/observability.md
   - 剩余（未立项，按需再做）：非流式 chat() 的用量回流（ChatResult 无 usage 字段，compaction 摘要调用消耗的 token 从未计入 totalUsage）· 缓存命中率明细（现被合并进 promptTokens，LLMUsage 只有三个槽）· 显式 parentId 树形（现靠 turnId + 时间区间包含关系重建）· 51 处裸 console 收编进总线
 - [x] **/traces 内置命令 + SpanCollector 公共配对件** —（2026-09-03 落地）把 trace-log watcher 里的 span 配对逻辑抽成 runtime/span-collector.ts（契约 SpanCollector / CollectedSpan 进 core/events.ts，与生产端的 SpanRecorder 对称：一个帮打卡、一个帮收段），watcher 从 134 行瘦到 78 行、只剩"开关判定 + 落盘格式 + 退出补记"；新增 /traces 命令就地看最近段的耗时/成败/此刻在跑的是哪段，支持条数与段名过滤；两个消费者各持独立实例（核心命令不反过来依赖可选扩展）；verify-events ⑨ 段 21 项，全量 299 项
-  - 理由：看一段耗时不该先开 TS_AGENT_TRACE 落盘、再翻 jsonl 文件；而配对逻辑虽然只有一份，却住在可选扩展里，核心命令拿不到
+  - 理由：看一段耗时不该先开 FLINT_TRACE 落盘、再翻 jsonl 文件；而配对逻辑虽然只有一份，却住在可选扩展里，核心命令拿不到
   - 对标：把观测结果做成内置命令随手可查（而不是只能翻落盘文件）的通行做法；不引入 LangSmith / LangFuse 这类外部服务与依赖，只保留内存环形队列
 - [x] **启动提速·第二档：模型列表移出启动关键路径** —（2026-09-02 落地，实现与原案不同）原案是"/models 结果落本地缓存带时间戳（TTL 约 24h）"，调研后发现 getModels() 的 9 个调用点里只有 /model 二级选择器真需要远程列表，落盘那套机械（缓存文件/TTL 失效/baseUrl 变更失效/gitignore）换不到额外收益，改为**内存预热**：删掉 getConfigManager() 里的 init()，启动路径 0 网络请求（实测 check() 760ms → 0.7ms）；main.ts 界面渲染前 fire-and-forget 预热有 key 的几家，/model 二级展开前 ensureModels（5 分钟新鲜期内零等待，还在飞则复用在飞 promise）；Provider 加 modelsFetchedAt 且只在真拿到列表时盖戳；verify-startup 32 项
   - 理由：模型列表几乎不变，没必要每次启动现拉；断网时启动照样过（列表有静态兜底、自检 probeStartup 本就在后台）
@@ -182,6 +188,7 @@
   - 理由：扩展可处理的任务类型（查项目结构/查网页/批量读）
   - 对标：Cline 的 fetch_web_content / pi 的 ls
   - 进度（2026-09-03）：**ls 已落地**（`tools/builtin.ts`），本条只剩 fetch 与并行 read 两项未做，故仍留 `- [ ]`。2026-09-04 又落地 `edit`（属上面“精准编辑工具”一条，与本条无关），内置工具现为 6 个：ls / read / write / edit / grep / bash。上一轮文档校准查出的“该划掉一半”即指此处
+  - 补记（2026-09-04 深夜）：同日查出并修好了已有的 grep / bash 两个缺陷（见上面新增的“工具可靠性修复”一条）。它们不在本条的待办里（本条只管“还缺哪些工具”），但记在这里免得后人以为 6 个工具一直都是好的：grep 落地以来在本项目唯一的开发环境（中文 Windows）上一次也没真正搜到过东西（实测：搜一个确实存在的符号返回 `[NO_MATCH]`）
 
 ---
 

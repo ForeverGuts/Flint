@@ -7,7 +7,7 @@
  *     用户输入文本
  *   └──────────────────────────────────┘
  *
- *   ┌── TS AGENT ─────────────────────┐
+ *   ┌── FLINT ────────────────────────┐
  *     AI 回复文本（每行缩进 2 空格）
  *   └──────────────────────────────────┘
  */
@@ -85,7 +85,7 @@ export class TerminalUI {
       : info.baseUrl || 'local';
 
     console.log();
-    console.log(`${' '.repeat(INDENT)}${C.bgGreen}${C.bold}${C.white}   ◆  Ts Agent v0.1.0  ◆   ${C.reset}`);
+    console.log(`${' '.repeat(INDENT)}${C.bgGreen}${C.bold}${C.white}   ◆  Flint v0.1.0  ◆   ${C.reset}`);
     console.log(`${' '.repeat(INDENT)}${C.green}${C.dim}${'━'.repeat(BOX_W)}${C.reset}`);
     console.log(`${' '.repeat(INDENT)}${C.dim}${pad('Backend')}${C.reset}   ${backendLabel}`);
     console.log(`${' '.repeat(INDENT)}${C.dim}${pad('Model')}${C.reset}   ${C.bold}${info.model}${C.reset}`);
@@ -146,7 +146,7 @@ export class TerminalUI {
         case 'stream_text': {
           if (this.isNewResponse) {
             this.spinner.stop();
-            const label = ' TS AGENT ';
+            const label = ' FLINT ';
             console.log(top(C.green, label, `${C.bold}${C.brightGreen}`));
             this.atLineStart = true; // 新回复从行首开始
             this.isNewResponse = false;

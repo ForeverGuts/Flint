@@ -114,7 +114,7 @@ console.log('── ① 框宽自适应（原固定 50 列 → 50~110 夹逼） 
   const ls = chatLines(it);
   const top = ls.find((l) => l.includes('┌')) ?? '';
   ok('80 列终端：框总宽 = 76（占满留白后的可用宽度）', visibleWidth(top) === 76);
-  ok('80 列终端：顶边框含 TS AGENT 标签', top.includes('TS AGENT'));
+  ok('80 列终端：顶边框含 FLINT 标签', top.includes('FLINT'));
   teardown(it);
 }
 {
@@ -206,7 +206,7 @@ console.log('── ③ 流式期"还在输出"底边（用户诉求 3） ──
   const { it } = makeUI();
   it.handleEvent({ type: 'stream_text', text: '第一段' });
   let ls = chatLines(it);
-  ok('首字到达：顶边框立刻出现（不等全部回复）', ls.some((l) => l.includes('┌') && l.includes('TS AGENT')));
+  ok('首字到达：顶边框立刻出现（不等全部回复）', ls.some((l) => l.includes('┌') && l.includes('FLINT')));
   const foot = ls[ls.length - 1] ?? '';
   ok('流式中：框的最后一行是"正在输出"开口底边', foot.includes('正在输出'));
   ok('流式中：底边带已收字数（进度可量化）', /已收 \d+ 字/.test(foot));
@@ -292,7 +292,7 @@ console.log('── ④ 工具轮不黑屏（用户诉求 2 后半） ──');
   it.handleEvent({ type: 'stream_text', text: '工具之后的回答' });
   it.handleEvent({ type: 'agent_end' });
   ls = chatLines(it);
-  ok('工具后另起新框承接新正文', ls.filter((l) => l.includes('┌') && l.includes('TS AGENT')).length === 2);
+  ok('工具后另起新框承接新正文', ls.filter((l) => l.includes('┌') && l.includes('FLINT')).length === 2);
   ok('工具后新框正常封口', ls.filter((l) => l.includes('└')).length >= 3);
   teardown(it);
 }

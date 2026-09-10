@@ -139,7 +139,7 @@ export async function main(checkResult: CheckResult): Promise<void> {
   process.on('SIGTERM', () => { closeTerminal(); runtime.stop().then(() => process.exit(0)); });
 
   // 模式分发：RPC（外部程序调用）或 REPL（交互界面）
-  if (process.env.TS_AGENT_MODE === 'rpc') {
+  if (process.env.FLINT_MODE === 'rpc') {
     await runRpcMode(runtime);
     closeTerminal();
     return;

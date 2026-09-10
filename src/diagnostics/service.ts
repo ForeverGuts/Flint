@@ -35,8 +35,8 @@ export class DiagnosticsServiceImpl implements DiagnosticsService {
     const diag: Diagnostic = { level, item, message };
     this.diagnostics.push(diag);
     this.deps.events.emit({ type: 'error', level, item, message });
-    // 落盘（env TS_AGENT_DEBUG_DIAG=1 时写入 debug-runtime.log，便于回放）
-    if (process.env.TS_AGENT_DEBUG_DIAG === '1') {
+    // 落盘（env FLINT_DEBUG_DIAG=1 时写入 debug-runtime.log，便于回放）
+    if (process.env.FLINT_DEBUG_DIAG === '1') {
       try {
         appendFileSync('debug-runtime.log', `${new Date().toISOString()} [${level}] [${item}] ${message}\n`);
       } catch { /* 落盘失败不阻塞 */ }

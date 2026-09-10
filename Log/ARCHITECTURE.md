@@ -38,7 +38,8 @@
 ┌─ 子系统实现（一目录一个，互不 import）────────────────────
 │ loop/             AgentLoopServiceImpl —— LLM 流式 + 工具执行的循环
 │ session/          JsonlSessionStorage（entry 树 + leaf 指针 + fork）· InMemory · Mock
-│ tools/            ToolRegistry + 6 个内置工具（ls / read / write / edit / grep / bash）
+│ tools/            ToolRegistry + spec.ts（参数规格：一份定义派生 Schema / 运行时校验 / 入参类型）
+│                   + 6 个内置工具（ls / read / write / edit / grep / bash）
 │ permission/       PermissionManager
 │ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
 │ commands/         CommandServiceImpl + 9 个内置命令
@@ -75,7 +76,7 @@
   订阅者并列、互不干扰：
     ├─ TreeUI / TerminalUI                    ← 画面
     ├─ SpanCollector 实例一 → /traces 命令    ← 就地看最近段耗时/成败/正在跑
-    └─ SpanCollector 实例二 → watchers/trace-log.ts → trace.jsonl（TS_AGENT_TRACE=1 开）
+    └─ SpanCollector 实例二 → watchers/trace-log.ts → trace.jsonl（FLINT_TRACE=1 开）
        两个实例共用 span-collector.ts 这一份配对代码：落盘的关掉不影响上屏的
 ```
 
@@ -183,15 +184,15 @@
 | 事件系统 | subscribe/emit 全链路 | **已落地**：EventBus + 统一盖 `at`/`seq`/`turnId` + 骨架 span / 便签 span 双通道（`onToken` 签名保留但无人传） |
 | 会话模型 | 树形分支（可 /fork） | **已落地**：`JsonlSessionStorage` entry 树（`id` + `parentId`）+ leaf 指针 + `/history` fork（复制前缀到新文件，原文件不动） |
 | 扩展机制 | 完整的 Extension 插件体系 | **已落地三类口子**：sections / hooks / watchers，`extension-loader` 自动扫描装载 |
-| 配置 | 分层 SettingsManager（全局/项目/会话） | **部分落地**：密钥分三层（环境变量 > 全局 `~/.ts-agent/config.json` > 项目 `config/provider-keys.json`），其余配置项还没分层（`config/manager.ts` 里标着 TODO） |
+| 配置 | 分层 SettingsManager（全局/项目/会话） | **部分落地**：密钥分三层（环境变量 > 全局 `~/.flint/config.json` > 项目 `config/provider-keys.json`），其余配置项还没分层（`config/manager.ts` 里标着 TODO） |
 | 观测 | docs/observability.md | **已落地**：SpanCollector 公共配对件 + `/traces` 内置命令 + `trace.jsonl` 落盘；不引 LangSmith / LangFuse 这类外部服务 |
-| 测试 | vitest 全套 | **路线不同、且已定调**：14 套零依赖验证脚本、482 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
+| 测试 | vitest 全套 | **路线不同、且已定调**：16 套零依赖验证脚本、605 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
 
 ---
 
 ## 四、已知架构债
 
-> 2026-09-03 校准文档时查出 7 条，**同日下午已处理 4 条**（下面标 ✅，保留原状描述以便回溯“当初为何算债”）；剩 3 条仍成立；另在修第 7 条时又查出 1 条（第 8 条）。2026-09-04 修正一批文档失真时又查出 1 条（第 9 条）；同日实现 `edit` 工具时又查出 1 条（第 10 条），**同日晚些时候单独一轮修掉了第 10 条**。现共 10 条：5 条 ✅、5 条仍成立（第 3 / 4 / 6 / 8 / 9 条）。
+> 2026-09-03 校准文档时查出 7 条，**同日下午已处理 4 条**（下面标 ✅，保留原状描述以便回溯“当初为何算债”）；剩 3 条仍成立；另在修第 7 条时又查出 1 条（第 8 条）。2026-09-04 修正一批文档失真时又查出 1 条（第 9 条）；同日实现 `edit` 工具时又查出 1 条（第 10 条），**同日晚些时候单独一轮修掉了第 10 条**。现共 10 条：5 条 ✅、5 条仍成立（第 3 / 4 / 6 / 8 / 9 条）。同日深夜给 `grep` / `bash` 建功能专套时又查出两个缺陷（`grep` 在 Windows 上完全不可用、且把“命令跑不起来”谎报成“没有匹配”；`bash` 硬编码 GBK 解码使外部程序的中文输出全乱码），两者已修——但它们是**实现 bug 而非架构债**，故不计入本表，详情见 [ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 同日 23:53 那块。
 
 1. ✅ **两个同名 `SessionStorage` 接口，注释还互相矛盾**（已收敛）
    - 原状：`core/storage.ts` 版有三必需方法 + 三可选成员（`getAllStored?` / `forkTo?` / `getDir?`），注释说“这样 Runtime **无需 instanceof** 判断”，三个实现 implements 的是这一版；`types.ts` 版只有三必需方法，注释说“Runtime **通过 instanceof 分支调用**”，而 `RuntimeOptions.session` 声明的是这一版——于是可选成员在接口层面拿不到，`runtime.ts` 里只能写 `if (this.session instanceof JsonlSessionStorage)`。
@@ -203,7 +204,7 @@
 
 4. **压缩用量没回流。** `context/compaction.ts` 走非流式 `llm.chat()`，而 `ChatResult` 没有 usage 字段，全文件也没有 `usage` 字样 → 压缩消耗的 token 从未计入 `/usage` 的合计。**本轮判定不做**：要改就得改 `ChatResult` 的形状，牵连两个 provider 的非流式路径 + `stream-helper` + 多套 verify 脚本，是独立的一件事（已记在 ROADMAP P6 “可观测性增强”的剩余项里）。
 
-5. ✅ **`package.json` 的工程化缺口**（已补）。原状：没有 verify / test 入口（10 套脚本只能手工循环跑）；`clean` 写的是 `rm -rf dist`，Windows 下根本跑不通。现有 `verify`（`run-verify.mjs` 串跑，现 14 套）/ `typecheck` / `clean`（`clean.mjs` 用 `fs.rmSync` 跨平台删 dist）三个入口，三个都实测跑通。
+5. ✅ **`package.json` 的工程化缺口**（已补）。原状：没有 verify / test 入口（10 套脚本只能手工循环跑）；`clean` 写的是 `rm -rf dist`，Windows 下根本跑不通。现有 `verify`（`run-verify.mjs` 串跑，现 16 套）/ `typecheck` / `clean`（`clean.mjs` 用 `fs.rmSync` 跨平台删 dist）三个入口，三个都实测跑通。
 
 6. **`scripts/` 不受 tsc 检查。** `tsconfig.json` 的 `include` 只有 `["src/**/*.ts"]`。这是有意的取舍（脚本要造替身、塞假字段），代价是脚本必须真跑才算验过。
 
@@ -225,11 +226,11 @@
    - **第三处“支持但未接线”**：`PermissionProvider.clear()` 契约声明了、`PermissionManager` 实现了、`runtime.permission` 还是 public 字段，但全 `src/` **零调用方**；`/clear` 只清会话（`runtime.clearSession()`）不清授权。所以“本次全部允许”实际是“**本进程**全部允许”，直到退出为止。旁证：6 处测试替身造 `permission` 时只给了 `isAutoAllowed` / `grantAutoAllow` 两个方法，`clear()` 一个都没实现（靠 `as any` / `as never` 绕过类型检查）。前两处见第 7 条（`runtime.onInput()`）与第 9 条（`appendMessage` 的 `extra`）。
    - **`edit` 那轮只做到哪**：把兼三职的 `detail`（匹配 + 记录 + 显示）拆成 `autoKey`（匹配与记录）+ `detail`（显示，工具可用 `permissionDetail` 自定义），`autoKey` 的格式与拆分前**逐字符相同**，所以那一轮既不失配也不扩权（拆分本身用断言钉住：`verify-edit.ts` G6）。洞留给下一轮，就是下面这段。
    - **怎么修的**（2026-09-04 晚，独立一轮；牵连 `core/permission.ts`、`core/tools.ts`、`tools/registry.ts`、`tools/builtin.ts`、`permission/manager.ts`、`loop/agent-loop.ts`、`runtime.ts`、`commands/builtin/clear.ts`）：
-     - **授权边界交给工具定义**：`core/tools.ts` 再加一个**可选**成员 `permissionKey?`（与 `permissionDetail?` 同一手法——加必需成员会打坏 7 处 ToolProvider 替身），`registry.ts` 转发。三个需确认的工具各给一个键：`write` / `edit` 是归一化后的路径（反斜杠→正斜杠，**刻意不含** `content` / `oldText` / `newText`），`bash` 是**完整命令**（一字不截）
+     - **授权边界交给工具定义**：`core/tools.ts` 再加一个**可选**成员 `permissionKey?`（与 `permissionDetail?` 同一手法——加必需成员会打坏 7 处 ToolProvider 替身 ⚠ 2026-09-06 复核：这半句两个成分都不准——替身现为 **9** 处（多的 2 处是 09-05 为 A4/A5 新加的 `invalidTools` / `noMatchTools`），而“会打坏”在本仓库**无法用 tsc 验证**：实测把 `ToolDefinition.parse` 从可选改成必需，`tsc --noEmit` 仍 0 错误，因为 `scripts/` 根本不进类型检查（第 6 条）。这类数字只能逐处数，见 [TESTING.md](./TESTING.md)），`registry.ts` 转发。三个需确认的工具各给一个键：`write` / `edit` 是归一化后的路径（反斜杠→正斜杠，**刻意不含** `content` / `oldText` / `newText`），`bash` 是**完整命令**（一字不截）
      - **截断没了**：`agent-loop.ts` 的 `autoKey` 兜底从 `argsJson.slice(0, 80)` 改成**完整** `argsJson`；`detail` 仍截 80（弹窗标题只有 1 行）。两个变量的截断策略**刻意相反**，承重注释写在调用点（防后人“为了一致”把它们对齐）
      - **前缀匹配换成精确匹配**：`manager.ts` 的 `autoAllowed` 从 `string[]` + `some((prefix) => key.startsWith(prefix))` 换成 `Set<string>` + `has()`；`core/permission.ts` 的参数名 `detail` → `authKey`（detail 在本项目专指弹窗文案，同名正是当初混淆的根源）
      - **`clear()` 接线**：`runtime.clearSession()` 清历史时连带 `this.permission.clear()`；`/clear` 的说明改成“清空当前会话与本次工具授权”、回执写明授权一并撤销——“本次”终于等于本次会话
      - **为什么不选“把键换成真路径、让前缀匹配生效”**：前缀匹配要求键本身是路径语义才安全，而键由工具自定义——`bash` 的键是完整命令，`cd src/` 就以 `/` 结尾，按“以 / 结尾就前缀放行”等于批准 `cd src/ && rm -rf .`。**目录级授权明确不做**，要做得先有一个“只按路径授权”的独立入口（`verify-permission.ts` C10 / C11 把这条钉死）
      - **一处刻意的放宽**：`write` / `edit` 的键是路径不是内容，所以“本次全部允许” = 本会话内不再问这个文件（改前是“路径 + `oldText` 前 38 字符”，在那个维度上本轮放宽了），换来的是这个选项真的有用。取舍见 [DECISION_LOG.md](./DECISION_LOG.md)，术语见 [GLOSSARY.md](./GLOSSARY.md#permissionkey授权匹配键)
-     - **断言**：新增 `scripts/verify-permission.ts`（62 项、7 段），含“改前的截断键确实把 76 字符命令与 104 字符命令判成同一个键”的**对照组**（C1 / C2）与反例钉死（C4 / C7 / C10 / C11），以及 `clear()` 接线的**行为证明**（⑦ 段造真 `Runtime` 数它被调了几次）。全量 14 套 482 项、`tsc --noEmit` 均 EXIT=0
+     - **断言**：新增 `scripts/verify-permission.ts`（62 项、7 段），含“改前的截断键确实把 76 字符命令与 104 字符命令判成同一个键”的**对照组**（C1 / C2）与反例钉死（C4 / C7 / C10 / C11），以及 `clear()` 接线的**行为证明**（⑦ 段造真 `Runtime` 数它被调了几次）。该轮收尾时全量 14 套 482 项、`tsc --noEmit` 均 EXIT=0（同日深夜又给 grep / bash 建了 `verify-tools.ts`，现为 15 套 556 项，见上面第二节对比表）
      - 上面原状里那句“6 处测试替身……`clear()` 一个都没实现”：现在是 **7 处**，其中 `verify-permission.ts` 那处**刻意实现了** `clear()`（就为了数它被调了几次），其余 6 处仍只给两个方法。但原状里“靠 `as any` / `as never` 绕过类型检查”这半句只说对了一半：cast 确实每处都有（`: any`（phase-ab）/ `as never`（c2 / c3 / usage / events）/ 整个 options 对象 `as any`（session）），但**它不是不报错的真因**——`tsconfig.json` 的 include 只有 `src/**/*.ts`，`scripts/` 根本不进 tsc（tsx 只剥类型不检查），所以契约即使把 `clear()` 改成必需方法，把 cast 去掉也照样不报

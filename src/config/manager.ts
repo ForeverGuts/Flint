@@ -4,19 +4,19 @@
  * 服务于：收敛原 provider-registry 的能力 + 增加全局配置层，让配置/供应商管理有单一入口
  *
  * 配置优先级链（高 → 低）：
- *   环境变量（apiKeyEnv 指定） > 全局 ~/.ts-agent/config.json > 项目 config/provider-keys.json
+ *   环境变量（apiKeyEnv 指定） > 全局 ~/.flint/config.json > 项目 config/provider-keys.json
  *     > 项目 config/active-config.json > 代码默认
  *
  * 文件职责：
  *   - config/providers.json            供应商定义（公开，可提交）
  *   - config/provider-keys.json        项目级密钥（敏感，.gitignore）
  *   - config/active-config.json        当前激活 provider/model/baseUrl（不含 key）
- *   - ~/.ts-agent/config.json          全局密钥 + 常用 baseUrl（用户目录）
+ *   - ~/.flint/config.json          全局密钥 + 常用 baseUrl（用户目录）
  *
  * TODO: 不同存在域的配置设置 —— 目前仅"密钥"分了环境变量/全局/项目三层，
  *       供应商定义（providers.json）与 baseUrl 等仍只存在于本项目单一域。
  *       后续规划：让供应商定义、baseUrl、默认模型等也支持按存在域分层
- *       （全局 ~/.ts-agent 追加供应商、项目追加、环境变量覆盖），统一配置模型。
+ *       （全局 ~/.flint 追加供应商、项目追加、环境变量覆盖），统一配置模型。
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
@@ -28,7 +28,7 @@ import {
 } from '../llm/provider.js';
 import type { Provider, ProviderConfigJson } from '../llm/provider.js';
 
-/** 全局配置结构（~/.ts-agent/config.json） */
+/** 全局配置结构（~/.flint/config.json） */
 interface GlobalConfig {
   /** 各供应商的 API Key */
   apiKeys?: Record<string, string>;
@@ -59,10 +59,10 @@ interface ActiveConfig {
 const PROVIDERS_PATH = 'config/providers.json';
 /** 项目级密钥（敏感，.gitignore） */
 const KEYS_PATH = 'config/provider-keys.json';
-/** 当前激活状态（唯一真相源，不含 key）。测试可用环境变量 TS_AGENT_CONFIG 指向临时文件 */
-const ACTIVE_PATH = process.env.TS_AGENT_CONFIG || 'config/active-config.json';
+/** 当前激活状态（唯一真相源，不含 key）。测试可用环境变量 FLINT_CONFIG 指向临时文件 */
+const ACTIVE_PATH = process.env.FLINT_CONFIG || 'config/active-config.json';
 /** 全局配置目录（用户主目录，跨项目共享） */
-const GLOBAL_DIR = path.join(os.homedir(), '.ts-agent');
+const GLOBAL_DIR = path.join(os.homedir(), '.flint');
 /** 全局配置文件 */
 const GLOBAL_PATH = path.join(GLOBAL_DIR, 'config.json');
 
@@ -91,7 +91,7 @@ export class ConfigManager {
   private registry = new ProviderRegistry();
   /** 项目级密钥（config/provider-keys.json） */
   private projectKeys: ProviderKeys = { apiKeys: {} };
-  /** 全局配置（~/.ts-agent/config.json） */
+  /** 全局配置（~/.flint/config.json） */
   private globalConfig: GlobalConfig = {};
   /** 路径覆盖（测试注入，默认用真实路径） */
   private paths: Required<PathOverrides>;
@@ -294,7 +294,7 @@ export class ConfigManager {
   /**
    * 解析 API Key（优先级：环境变量 > 全局 > 项目）：
    *   ① 环境变量（apiKeyEnv 字段指定）—— 最高优先
-   *   ② ~/.ts-agent/config.json 的 apiKeys —— 全局共享
+   *   ② ~/.flint/config.json 的 apiKeys —— 全局共享
    *   ③ config/provider-keys.json 的 apiKeys —— 项目级兜底
    *   ④ 都没有 → 空字符串（/model 里可交互输入）
    */
@@ -323,7 +323,7 @@ export class ConfigManager {
     } catch { /* 写入失败不阻塞 */ }
   }
 
-  /** 读全局配置（~/.ts-agent/config.json，不存在则空） */
+  /** 读全局配置（~/.flint/config.json，不存在则空） */
   private loadGlobalConfig(): GlobalConfig {
     try {
       return JSON.parse(readFileSync(this.paths.globalPath, 'utf-8'));
