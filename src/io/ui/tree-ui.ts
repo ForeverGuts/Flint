@@ -20,6 +20,8 @@ import { Container, Text, SelectList } from './components.js';
 import { Screen } from './screen.js';
 import { InputHandler } from './input-handler.js';
 import { fitWidth, visibleWidth, wrapText } from './fit-width.js';
+import { renderTaskPanel } from './task-panel.js';
+import { taskStore } from '../../todo/store.js';
 
 const C = {
   reset: '\x1b[0m',
@@ -41,7 +43,7 @@ const pad = (s: string) => s.padEnd(14);
 /** header 命令提示清单（按框内宽折行成多行，见 buildHeader） */
 const CMD_HINTS = [
   '/help', '/exit', '/clear', '/model', '/edit_model',
-  '/usage', '/history', '/sessions', '/diagnostics',
+  '/usage', '/history', '/sessions', '/diagnostics', '/tasks',
 ];
 
 /**
@@ -118,6 +120,13 @@ export class TreeUI {
   private selectBox = new Container();
   /** 输入行文本组件 */
   private inputLine: Text;
+  /**
+   * 常驻任务面板（输入框正上方）。**空清单时不渲染任何行**——容器没子组件就不占地方，
+   * 这是"全部完成后立即收起"的实现方式。内容由 `refreshTaskPanel()` 每帧重建。
+   */
+  private taskBox = new Container();
+  /** 任务面板的退订函数（stop 时调用，防监听器泄漏） */
+  private unsubscribeTask: (() => void) | null = null;
   /** 等待状态行（回答前的阶段提示：分析/压缩/等待响应/推理中；空文本时不占行） */
   private statusHint = new Text('');
   /** banner 诊断区（可回填：后台网络探测完成后追加结果，启动提速第一档） */
@@ -159,7 +168,23 @@ export class TreeUI {
     this.root.addChild(this.chat);
     this.root.addChild(this.selectBox);   // 选择器容器常驻（空时不渲染）
     this.root.addChild(this.statusHint);  // 等待状态行（常驻，空文本不渲染）
+    this.root.addChild(this.taskBox);     // 任务面板（常驻，空清单不渲染）
     this.root.addChild(this.inputLine);
+  }
+
+  /**
+   * 重建任务面板内容（每帧调用，见 requestRender）。
+   *
+   * 为什么每次**清空重建**而不是复用 Text 组件逐行 setText：项数会变（add/clear），
+   * 复用就得自己管"多出来的行删掉、少的补上"，容易残留脏行。整框重建则天然对齐当前状态，
+   * 而屏幕差分由 `Screen.render()` 兜着——只有真的变了的行才会被重写。
+   */
+  private refreshTaskPanel(): void {
+    this.taskBox.clear();
+    const width = process.stdout.columns ?? 80;
+    for (const line of renderTaskPanel(taskStore.list(), width)) {
+      this.taskBox.addChild(new Text(line));
+    }
   }
 
   /**
@@ -338,6 +363,11 @@ export class TreeUI {
       this.handleEvent(event);
     });
 
+    // 订阅任务清单变更 —— 这根线是任务面板存在的理由：
+    // `todo` 工具改的是内存里的 TaskStore，它不经过事件总线（也没有事件可发），
+    // 没有这个订阅，模型勾完一项屏幕上是不会动的。
+    this.unsubscribeTask = taskStore.onChange(() => this.requestRender());
+
     // 后台网络探测（启动提速第一档）：订阅完成后才挂 then——
     // 结果永远不会早于订阅到达（时序上杜绝竞态）；异常静默（占位行由 catch 分支清理）
     if (this.probePromise) {
@@ -372,6 +402,7 @@ export class TreeUI {
     if (this.liveTimer) { clearTimeout(this.liveTimer); this.liveTimer = null; }
     this.screen.clear();
     process.stdout.write('\x1b[?25h');
+    if (this.unsubscribeTask) { this.unsubscribeTask(); this.unsubscribeTask = null; }
     if (this.heartbeat) {
       clearInterval(this.heartbeat);
       this.heartbeat = null;
@@ -442,6 +473,8 @@ export class TreeUI {
   private requestRender(): void {
     // 实时刷新 header（切换供应商/模型后 banner 保持一致）
     this.refreshHeader();
+    // 任务面板每帧从 taskStore 重建（不依赖通知也能自愈；onChange 只负责"变了立刻画一次"）
+    this.refreshTaskPanel();
     // 更新输入行显示
     const inputText = this.input.getText();
     const promptStr = `  > ${inputText}${C.reset}`;

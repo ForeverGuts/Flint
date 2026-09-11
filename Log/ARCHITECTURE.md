@@ -57,6 +57,8 @@
 │ ui/screen.ts      Screen：行数组快照 + 差分渲染
 │ ui/index.ts       TerminalUI：管道模式轻量文本
 │ ui/input-handler.ts  InputHandler：raw mode 逐键解析
+│ ui/task-panel.ts  常驻任务面板渲染（纯函数：完成 ✓ / 进行中 ▶ / 待办 ☐）
+│                   ← 直读 todo/store.ts，不经 EventBus（todo 工具拿不到总线）
 └───────────────────────────────────────────────────────────
 ```
 

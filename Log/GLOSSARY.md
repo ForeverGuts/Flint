@@ -592,6 +592,24 @@ C3 的关键约束：`ThinkingBlock` = 推理文本 + `signature`（Anthropic �
 
 参见：[TaskStore](#taskstore任务清单真相源)、[Runtime](#runtime)
 
+### 常驻任务面板（Task Panel）
+输入框正上方那块实时进度面板：完成 `✓` / 进行中 `▶` / 待办 `☐`，顶端一行 `任务 N/M`。**空清单时返回零行**——容器没子组件就不渲染，一行都不占，这就是"全部完成后立即收起"的实现方式。
+
+它**不经过 EventBus**：`todo` 工具改的是内存里的 `TaskStore`，而工具拿不到总线（也没有事件可发），所以面板由 `TaskStore.onChange()` 这根独立的观察者线驱动。观察者是**零依赖**的（只是个回调集合），store 不必认识"UI"是什么，反过来由 UI 去 import store——`todo/` 因此守住了"零依赖 + 纯数据结构"的立身之本。
+
+渲染实现在 `io/ui/task-panel.ts`，是**纯函数**（收 `TaskItem[]` 与 width、返回 `string[]`），所以不必起终端就能断言输出。
+
+参见：[TaskStore](#taskstore任务清单真相源)、[todo（任务清单工具）](#todo任务清单工具)
+
+### /tasks（任务清单回看命令）
+内置命令（`commands/builtin/tasks.ts`，loader 自动扫描 `builtin/` 目录，无需登记）。有进行中任务时显示当前清单；**已清空时显示"最近一份已完成的清单"**——因为面板收起、TASK.md 又因"全勾选即删"被删掉之后，这是唯一还能看到上一轮干完了什么的入口。
+
+快照由 `TaskStore.lastCompleted()` 提供，**记录时机是"最后一项被 `done` 的那一刻"**，不是清空时——否则半途被 `clear` 掉的清单也会被当成"已完成"存进来。
+
+输出**刻意不带 ANSI**：命令返回值会经 RPC / 非 TTY 通道出去（编辑器插件、脚本），那里颜色转义是噪音。带颜色的版本只给终端面板用，两者共用同一个 `formatTaskList()`，所以记号不会分家。
+
+参见：[TaskStore](#taskstore任务清单真相源)、[常驻任务面板](#常驻任务面板task-panel)
+
 ### ToolInputError（参数不合法错误）
 `tools/spec.ts` 的导出类（`extends Error`，多一个 `code` 字段：`missing` / `unknown_param` / `invalid_type` / `invalid_range` / `empty`）。由 `parseSpec` 抛，`registry.execute()` **就地**转成 `[INVALID] 文案` 回给模型；**不是**它的异常（规格自己写坏了）一律 `throw` 穿透——那不是模型的错，不该报成参数不合法。
 

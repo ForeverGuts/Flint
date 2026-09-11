@@ -15,6 +15,8 @@
 import { TreeUI, type TreeUIInfo } from '../src/io/ui/tree-ui.js';
 import type { Runtime } from '../src/runtime/runtime.js';
 import { visibleWidth, wrapText } from '../src/io/ui/fit-width.js';
+import { renderTaskPanel, formatTaskList } from '../src/io/ui/task-panel.js';
+import { taskStore, type TaskItem } from '../src/todo/store.js';
 
 let passed = 0;
 let failed = 0;
@@ -53,7 +55,7 @@ const info: TreeUIInfo = {
   baseUrl: 'https://example.com/v1',
   sessionMsgs: 0,
   toolCount: 3,
-  cmdCount: 9,
+  cmdCount: 10,   // builtin/ 下 9 个 + 2026-09-11 新增的 /tasks
   skillCount: 1,
 };
 
@@ -155,13 +157,13 @@ console.log('── ① 框宽自适应（原固定 50 列 → 50~110 夹逼） 
   const all = plain(it.root.render(80));
   const rules = all.filter((l) => /^ {2}─+$/.test(l));
   ok('header 分隔线与框同宽（总可见宽 = 76）', rules.length >= 2 && rules.every((l) => visibleWidth(l) === 76));
-  const hints = all.filter((l) => /\/(?:help|exit|clear|model|edit_model|usage|history|sessions|diagnostics)/.test(l));
+  const hints = all.filter((l) => /\/(?:help|exit|clear|model|edit_model|usage|history|sessions|diagnostics|tasks)/.test(l));
   ok('header 命令提示折成多行（旧实现拼成单行共 110 列）', hints.length >= 2);
   ok('header 命令提示每行不超框内宽', hints.every((l) => visibleWidth(l) <= 76));
   ok('header 尾部命令 /sessions /diagnostics 可见（旧实现被 fitWidth 静默截掉）',
     hints.some((l) => l.includes('/sessions')) && hints.some((l) => l.includes('/diagnostics')));
   ok('header 命令提示在分隔符处断行（每行以完整命令名收尾）',
-    hints.every((l) => /\/(?:help|exit|clear|model|edit_model|usage|history|sessions|diagnostics)$/.test(l.trimEnd())));
+    hints.every((l) => /\/(?:help|exit|clear|model|edit_model|usage|history|sessions|diagnostics|tasks)$/.test(l.trimEnd())));
   teardown(it);
 }
 
@@ -416,6 +418,100 @@ console.log('── ⑦ 骨架 span 上屏（耗时/首字延迟由生产端实�
   ok('ok=false 且文本含 [OK]：按失败着红（旧的子串猜测会误判绿）',
     line2.includes('\x1b[31m') && !line2.includes('\x1b[32m'));
   teardown(it);
+}
+
+/* ── ⑧ 常驻任务面板（输入框上方，原地刷新） ─────────────────────
+ * 分两层：先测纯函数（喂任意清单即可断言），再跑真 TreeUI 证明**接线真的通了**。
+ * 只测前者会漏"订阅没接上"——那正是过去任务列表在屏幕上完全不存在的根因。
+ */
+console.log('── ⑧ 常驻任务面板（完成 ✓ / 进行中 ▶ / 待办 ☐） ──');
+
+{
+  const three: TaskItem[] = [
+    { text: '读源码', status: 'done' },
+    { text: '改代码', status: 'active' },
+    { text: '写测试', status: 'pending' },
+  ];
+
+  ok('I1 空清单 → 零行（面板完全收起，一行都不占）', renderTaskPanel([], 80).length === 0);
+
+  const lines = renderTaskPanel(three, 80);
+  ok('I2 三态各一个记号：✓ / ▶ / ☐ 都出现',
+    lines.some((l) => l.includes('✓'))
+    && lines.some((l) => l.includes('▶'))
+    && lines.some((l) => l.includes('☐')));
+  ok('I3 计数行显示 任务 1/3', lines.some((l) => l.includes('任务 1/3')));
+  ok('I4 行数 = 1 计数行 + N 项', lines.length === 4);
+  ok('I5 未完成项是**空框**（用户要的"留有余空"）',
+    plain(lines).some((l) => l.includes('☐ 写测试')));
+
+  ok('I6 超长任务名按终端宽度截断（不把整屏撑歪）',
+    plain(renderTaskPanel([{ text: 'x'.repeat(300), status: 'pending' }], 80))
+      .every((l) => visibleWidth(l) <= 80));
+
+  ok('I7 纯文本版（/tasks 命令用）不含 ANSI —— 命令输出会走 RPC 等非 TTY 通道',
+    formatTaskList(three).every((l) => !/\x1b\[/.test(l)));
+  ok('I8 两种渲染共用同一套记号（终端与命令不会各画一套）',
+    formatTaskList(three).some((l) => l.includes('✓')));
+}
+
+{
+  setCols(80);
+  taskStore.reset();
+  // 行为证明必须真的走一遍 start()——订阅就挂在里面。
+  // 但 start() 会 resume stdin，测试进程就退不出了，所以先把 stdin 换成哑对象。
+  const realStdin = process.stdin;
+  Object.defineProperty(process, 'stdin', {
+    value: {
+      setRawMode: () => {}, resume: () => {}, pause: () => {},
+      on: () => {}, off: () => {}, removeListener: () => {}, removeAllListeners: () => {},
+      isTTY: false,
+    },
+    configurable: true,
+  });
+  try {
+    const { ui, it } = makeUI();
+    // 数重绘次数：onChange 调的是 `this.requestRender()`，运行时才解析 → 能被打桩截获
+    const uiAny = ui as unknown as { requestRender(): void };
+    let renders = 0;
+    const origRender = uiAny.requestRender.bind(ui);
+    uiAny.requestRender = () => { renders++; origRender(); };
+
+    ui.start();
+    ok('I9 启动后空清单：面板不占行', !plain(it.root.render(80)).some((l) => l.includes('☐')));
+
+    const before = renders;
+    taskStore.add('步骤一');
+    ok('I10 清单变更 → UI 自动重绘（没这根线，模型勾完一项屏幕不动）', renders > before);
+
+    taskStore.add('步骤二');
+    taskStore.start(1);
+    const with2 = plain(it.root.render(80));
+    const idxPanel = with2.findIndex((l) => l.includes('任务 0/2'));
+    const idxInput = with2.findIndex((l) => l.trimStart().startsWith('>'));
+    ok('I11 面板画在**输入框上方**', idxPanel >= 0 && idxInput > idxPanel, `panel=${idxPanel} input=${idxInput}`);
+
+    taskStore.done(1);
+    const done1 = plain(it.root.render(80));
+    ok('I12 完成一项：出现 ✓ 且计数变 1/2',
+      done1.some((l) => l.includes('✓')) && done1.some((l) => l.includes('任务 1/2')));
+
+    taskStore.done(2);
+    taskStore.clear();
+    // 显式重绘一次：让本条只测"清空→收起"这个**内容**语义，不去碰巧依赖接线
+    // （否则摘掉订阅时它也会绿——那种绿是"面板压根没画过"，是假绿）
+    uiAny.requestRender();
+    ok('I13 全部完成后清空 → 面板收起（一行不剩）',
+      !plain(it.root.render(80)).some((l) => l.includes('☐') || l.includes('✓')));
+
+    ui.stop();
+    const afterStop = renders;
+    taskStore.add('退订验证');
+    ok('I14 stop() 已退订（不再重绘，防监听器泄漏）', renders === afterStop);
+  } finally {
+    Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true });
+    taskStore.reset();
+  }
 }
 
 setCols(80);

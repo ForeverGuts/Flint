@@ -59,6 +59,62 @@ function sanitize(text: string): string {
 export class TaskStore {
   private items: TaskItem[] = [];
 
+  /**
+   * 变更观察者（**零依赖**：不引入事件总线，只是一个回调集合）。
+   *
+   * 为什么需要它：任务清单的真相源在内存里，而 `todo` 工具拿不到事件总线
+   * （`registerBuiltinTools` 只收 ToolProvider 与 store），改完内存就结束了，
+   * UI 无从知晓 → 项目里因此长期没有任务展示。观察者是补这根线的最小手段：
+   * store 不必知道"UI"是什么，只需在状态变了的时候吆喝一声。
+   *
+   * 为什么不走事件总线：那会把 `todo/` 拖进 runtime 的依赖圈，而本目录的立身之本是
+   * **零依赖 + 纯数据结构**。观察者保持这个性质——订阅方（UI）反过来 import 本模块。
+   */
+  private listeners = new Set<() => void>();
+
+  /**
+   * 订阅变更。返回**退订函数**（调用方负责在生命周期结束时退订，防泄漏）。
+   * 通知是**同步**的：UI 收到后自己决定何时重绘（通常是置一个 dirty 标记）。
+   */
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  /** 通知所有订阅者（每个会改变对外可见状态的出口都要调）。单个订阅者抛错不影响其余。 */
+  private notify(): void {
+    for (const fn of this.listeners) {
+      try { fn(); } catch { /* 订阅者的错不该打断 store */ }
+    }
+  }
+
+  /**
+   * **最近一份"全部完成"的清单**（面板收起后仍能回看，配套 `/tasks` 命令）。
+   *
+   * 记录的时机有讲究：不是"清空时"，而是"**最后一项被标记完成的那一刻**"。
+   * 前者会把"半途而废被 clear 掉的清单"也存进来，那就不叫"已完成"了。
+   * 所以只在 `done()` 之后检查"是否已全完成且非空"才落快照。
+   *
+   * `clear()` **不清它** —— 这正是它的用途：面板收起、TASK.md 也因"全勾选即删"
+   * 被删掉之后，用户还能通过 `/tasks` 看到上一轮干完了什么。
+   */
+  private lastDone: TaskItem[] | null = null;
+
+  /** 最近一份全部完成的清单（防御性拷贝）；从未完成过任何一轮时为 null。 */
+  lastCompleted(): TaskItem[] | null {
+    return this.lastDone ? this.lastDone.map((i) => ({ ...i })) : null;
+  }
+
+  /**
+   * 若当前清单"全部完成且非空"，把它记为最近一份已完成快照。
+   * 只在 `done()` 后调用（别的出口不可能让清单从"未完成"变成"全完成"）。
+   */
+  private snapshotIfCompleted(): void {
+    if (this.items.length > 0 && !this.hasUnchecked()) {
+      this.lastDone = this.items.map((i) => ({ ...i }));
+    }
+  }
+
   /** 只读快照（防御性拷贝：调用方拿不到内部数组的引用） */
   list(): TaskItem[] {
     return this.items.map((i) => ({ ...i }));
@@ -86,8 +142,9 @@ export class TaskStore {
    */
   add(text: string): number {
     const t = sanitize(text);
-    if (!t) return -1;
+    if (!t) return -1;              // 拒绝 → 状态没变 → 不通知（避免 UI 无谓重绘）
     this.items.push({ text: t, status: 'pending' });
+    this.notify();
     return this.items.length;
   }
 
@@ -101,6 +158,7 @@ export class TaskStore {
       i === index - 1 ? { ...it, status: 'active' }
         : it.status === 'active' ? { ...it, status: 'pending' } : it,
     );
+    this.notify();
     return true;
   }
 
@@ -108,12 +166,34 @@ export class TaskStore {
   done(index: number): boolean {
     if (!this.valid(index)) return false;
     this.items[index - 1] = { ...this.items[index - 1], status: 'done' };
+    this.snapshotIfCompleted();   // 全完成的那一刻留下快照（供 /tasks 回看）
+    this.notify();
     return true;
   }
 
-  /** 清空清单。 */
+  /**
+   * 清空清单。**不清 `lastCompleted`** —— 见该字段的注释：
+   * 面板收起 + TASK.md 已删之后，它是唯一还能回看上一轮的地方。
+   */
   clear(): void {
+    const had = this.items.length > 0;
     this.items = [];
+    if (had) this.notify();
+  }
+
+  /**
+   * 彻底复位：清空当前清单**并丢掉快照**。
+   *
+   * 与 `clear()` 的差别只有一件事——**它连 `lastCompleted` 一起清掉**。
+   * `clear()` 是模型说"这轮干完了"，快照必须留着给 `/tasks` 回看；
+   * `reset()` 是"假装这个进程从没跑过"，只服务于**测试隔离**
+   * （尤其 `/tasks` 命令测的是进程级单例，测完必须把它擦干净）。
+   * 生产代码不该用它。
+   */
+  reset(): void {
+    this.items = [];
+    this.lastDone = null;
+    this.notify();
   }
 
   private valid(index: number): boolean {
@@ -124,8 +204,22 @@ export class TaskStore {
    * 渲染成 Markdown 清单 —— 这是写进 TASK.md 的**投影**，也是注入 system 的文本来源。
    * 与 `parse` 严格互逆：`parse(render())` 还原出逐字相同的 items（verify-todo ②段用属性测试钉死）。
    */
+  /**
+   * 渲染任意一份清单 —— **全项目唯一的"清单怎么排版"的实现**。
+   * `render()` / `renderNumbered()` / `/tasks` 的输出全部走这里，
+   * 于是 glyph 只有 `GLYPH` 一处定义，不可能出现"磁盘上是 `[x]`、终端上画成别的"。
+   * （同一手法：Log/ 生成区的 `syncText` 一份模板同时给"写"和"查"用。）
+   */
+  static renderItems(items: TaskItem[], numbered = false): string {
+    return items
+      .map((it, i) => numbered
+        ? `${i + 1}. [${GLYPH[it.status]}] ${it.text}`
+        : `- [${GLYPH[it.status]}] ${it.text}`)
+      .join('\n');
+  }
+
   render(): string {
-    return this.items.map((it) => `- [${GLYPH[it.status]}] ${it.text}`).join('\n');
+    return TaskStore.renderItems(this.items);
   }
 
   /**
@@ -133,9 +227,7 @@ export class TaskStore {
    * 序号即后续 `start` / `done` 要传的 index —— 模型据此指认目标，不必靠猜。
    */
   renderNumbered(): string {
-    return this.items
-      .map((it, i) => `${i + 1}. [${GLYPH[it.status]}] ${it.text}`)
-      .join('\n');
+    return TaskStore.renderItems(this.items, true);
   }
 
   /**
@@ -177,9 +269,11 @@ export class TaskStore {
       if (!store.hasUnchecked()) {
         try { unlinkSync(path); } catch { /* 清理失败不阻塞启动 */ }
         this.items = [];
+        this.notify();
         return;
       }
       this.items = store.items;
+      this.notify();
     } catch {
       /* 读取失败 → 无工作记忆，保持现状 */
     }

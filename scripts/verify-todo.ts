@@ -32,6 +32,7 @@ import { Runtime } from '../src/runtime/runtime.js';
 import { PromptEventEmitter } from '../src/runtime/events.js';
 import { SpanCollectorImpl } from '../src/runtime/span-collector.js';
 import { EventStream } from '../src/runtime/event-stream.js';
+import { activate as activateTasks } from '../src/commands/builtin/tasks.js';
 
 /* ── 断言 ── */
 
@@ -433,6 +434,99 @@ console.log('\n⑦ Runtime 运行期接线（行为）：taskStore → system �
   } finally {
     process.chdir(cwd0);
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ⑧ 展示层的两根支柱：变更通知 + 最近一份快照
+   （面板本身是 UI，渲染测试在 verify-ui.ts；这里钉的是"面板赖以成立的数据与契约"：
+     没通知 → 模型勾完一项屏幕不动；没快照 → 面板收起后上一轮再也查不到）
+   ══════════════════════════════════════════════════════════════════════════ */
+
+console.log('\n⑧ 展示层支撑：onChange 通知 / 最近一份快照 / /tasks 命令');
+
+{
+  const s = new TaskStore();
+  let n = 0;
+  const off = s.onChange(() => { n++; });
+
+  check('H1 订阅本身不触发通知', n === 0);
+  s.add('a');
+  check('H2 add 触发一次', n === 1);
+  s.start(1);
+  check('H3 start 触发', n === 2);
+  s.done(1);
+  check('H4 done 触发', n === 3);
+  s.add('');
+  check('H5 被拒绝的 add（空文本）不触发 —— 状态没变就不该让 UI 重绘', n === 3);
+  s.start(99);
+  check('H6 越界 start 不触发', n === 3);
+  s.done(99);
+  check('H7 越界 done 不触发', n === 3);
+  s.clear();
+  check('H8 clear 触发', n === 4);
+  s.clear();
+  check('H9 空清单再 clear 不触发（无变化）', n === 4);
+  off();
+  s.add('b');
+  check('H10 退订后不再触发（TreeUI.stop 靠它防监听器泄漏）', n === 4);
+}
+
+{
+  const s = new TaskStore();
+  check('H11 从未完成过时 lastCompleted() 为 null', s.lastCompleted() === null);
+  s.add('一');
+  s.add('二');
+  s.done(1);
+  check('H12 只完成一部分时不记录 —— 那还不叫"已完成"', s.lastCompleted() === null);
+  s.done(2);
+  const snap = s.lastCompleted();
+  check('H13 最后一项完成的那一刻记下快照',
+    snap !== null && snap.length === 2 && snap.every((i) => i.status === 'done'));
+  s.clear();
+  check('H14 clear 之后快照仍在 —— 这正是它存在的理由', s.lastCompleted()?.length === 2);
+
+  const copy = s.lastCompleted()!;
+  copy[0].text = '被外部改了';
+  check('H15 lastCompleted() 是防御性拷贝（改返回值不污染 store）',
+    s.lastCompleted()![0].text === '一');
+}
+
+{
+  const s = new TaskStore();
+  s.add('甲');
+  s.start(1);
+  check('H16 renderItems(无序号) 与 render() 逐字相同（排版只有一处实现）',
+    TaskStore.renderItems(s.list()) === s.render());
+  check('H17 renderItems(带序号) 与 renderNumbered() 逐字相同',
+    TaskStore.renderItems(s.list(), true) === s.renderNumbered());
+}
+
+{
+  taskStore.reset();
+  // 假 runtime：只截获注册动作，把 handler 拿出来直接调（不必真起一个 Runtime）
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let reg: { name: string; desc: string; fn: () => string } | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  activateTasks({ registerCommand: (name: string, desc: string, fn: () => string) => { reg = { name, desc, fn }; } } as any);
+
+  check('H18 /tasks 已注册（loader 自动扫描 builtin/ 目录）', reg?.name === 'tasks');
+  check('H19 空清单且无历史：如实说没有', (reg?.fn() ?? '').includes('没有进行中的任务'));
+
+  taskStore.add('步骤一');
+  taskStore.add('步骤二');
+  taskStore.done(1);
+  const cur = reg!.fn();
+  check('H20 有清单时显示当前（含项数、完成记号、待办空框）',
+    cur.includes('2 项') && cur.includes('✓') && cur.includes('☐'), cur);
+
+  taskStore.done(2);
+  taskStore.clear();
+  const after = reg!.fn();
+  check('H21 清空后回看最近一份已完成的清单',
+    after.includes('最近一份已完成') && after.includes('步骤一') && after.includes('步骤二'), after);
+  check('H22 回看的那一份全部是已完成记号（没有残留空框）', !after.includes('☐'), after);
+
+  taskStore.reset();
 }
 
 /* ── 清理与汇总 ── */
