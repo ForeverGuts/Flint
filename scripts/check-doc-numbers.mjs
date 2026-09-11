@@ -1,50 +1,53 @@
 /**
  * 文档数字一致性校验 —— `Log/` 里那些「当前真值」类数字与实测是否相符。
  *
- * 为什么需要它：`套数 / 项数` 在四份文档里各写一遍（TESTING 顶部与正文、ARCHITECTURE 的
- * 测试行与债 5、目录职责表、ROADMAP 已完成表末行），**每一套的项数还在两处各列一遍**
- * （TESTING 的套件表格、目录.md 的 scripts/ 树）。改一次测试要人肉同步七八个数字，而
- * `verify-docs.mjs` 只管锚点、**不管数字** —— 这是整套文档体系里唯一没有机器兜底的地方。
- * 历史也证明它会漂：653 / 633 / 605 三个数字曾同时躺在不同文件里；本轮实测，一次小小的
- * 改动就制造了 18 处漂移。TESTING 第三节那组「几套用哪个写法」同样纳入（它是本轮**查出
- * 真错**的一处：`if (failed > 0) process.exit(1)` 写 1 套，实际 2 套）。
+ * 为什么需要它：`套数 / 项数` 这类"现在是多少"的事实，一旦被**手抄**到多处，改一次测试就得
+ * 人肉同步七八个数字，漏一个就漂。而 `verify-docs.mjs` 只管锚点、**不管数字** —— 这是整套
+ * 文档体系里唯一没有机器兜底的地方。历史证明它会漂：653 / 633 / 605 三个数字曾同时躺在不同
+ * 文件里；2026-09-11 一次小小的改动就制造了 18 处漂移。
  *
- * 为什么必须白名单、不能全库扫：`\d+ 套 / \d+ 项` 在追加日志与 ROADMAP 旧行里随处可见，
- * 那些是**历史事实**（"当时全量 556 项"），改了才是篡改历史快照。盲扫会让本校验永久红，
- * 而永久红的检查等于没有。同一条推理 `verify-docs.mjs` 头部也写过一次（它为什么不去查
- * "文档里提到的文件路径是否存在"）。
+ * ── 2026-09-11 第二轮：白名单从 23 处收缩到 11 处 ──
+ * 上一轮的做法是"把每一处手抄都加进白名单看着"。那治的是症状。真正的病是**同一个事实被抄了
+ * 太多份**，所以这一轮分两路收口：
+ *   - **去重（L1）**：手抄的副本改成**引用**。`ARCHITECTURE.md` 的测试行与债 5、`目录.md` 的
+ *     职责表与 scripts/ 树的逐套项数、`ROADMAP.md` 已完成表末行，都不再重述当前口径，只指向
+ *     TESTING.md。它们的白名单条目随之**整段删掉**（本文件里已无这些 at()）。
+ *   - **生成区（L2）**：剩下的必须出现、且算得出来的数字（套数 / 项数）交给 AUTOGEN 区块，
+ *     由 `npm run docs:sync` 从实测真值写入，人不再碰 —— 见下面 ④ 段与 `scripts/autogen.mjs`。
+ *
+ * 为什么"引用"能替代"看着"：`ROADMAP` 的已完成表此前要**特判取末行**（它是穿着快照外衣的
+ * 追加日志），那个特例本身就是设计味道；现在它整表被声明为**历史记账**，特例连根消失。
+ *
+ * 为什么**剩下的**必须是白名单、不能全库扫：`\d+ 套 / \d+ 项` 在追加日志里随处可见，那些是
+ * **历史事实**（"当时全量 556 项"），改了才是篡改历史快照。盲扫会让本校验永久红，而永久红的
+ * 检查等于没有。同一条推理 `verify-docs.mjs` 头部也写过一次（它为什么不去查"文档里提到的文件
+ * 是否存在"）。
  *
  * 为什么它不算一套 `verify-*` 套件：① 名字用 `check-` 前缀，不匹配 run-verify 的
  * `^verify-.+\.(ts|mjs)$`，不会被当成第 N 套重复跑；② 它的断言**不计入** `totalPass` ——
- * 否则"总项数对不对"会取决于"你有没有把校验自己算进去"，成了自指。它由 run-verify 在
- * 汇总之后调用，独立汇报一行。
+ * 否则"总项数对不对"会取决于"你有没有把校验自己算进去"，成了自指。它由 run-verify 在汇总
+ * 之后调用，独立汇报一行。
  *
  * 单独运行没有意义（它需要 run-verify 手里的实测数字）。要跑就跑 `npm run verify`。
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { AUTOGEN_FILES, syncText } from './autogen.mjs';
 
-/** 只查这四份：写「当前真值」的文档。追加日志、GLOSSARY 里的历史数字刻意不在内。 */
-const WATCHED = ['TESTING.md', 'ARCHITECTURE.md', '目录.md', 'ROADMAP.md'];
+/**
+ * 还需要手抄、因而需要被看着的文档。
+ *
+ * 2026-09-11 第二轮从四份缩到**一份**：`ARCHITECTURE.md` / `目录.md` / `ROADMAP.md` 里的当前
+ * 口径已全部改成引用或（随文档一起）删除，不再有"断言现在是多少"的句子，于是没什么可查的了。
+ */
+const WATCHED = ['TESTING.md'];
 
-/** TESTING.md 的套件表格：`| \`verify-x.ts\` | 17 | ... |` */
+/** TESTING.md 的套件表格：`| \`verify-x.ts\` | 17 | ... |`。逐套项数现在**只有这一处**。 */
 function suitesInTesting(text) {
   const out = new Map();
   for (const line of text.split('\n')) {
     const m = /^\| `(verify-[\w.-]+\.(?:ts|mjs))` \| (\d+) \|/.exec(line);
     if (m) out.set(m[1], m[2]);
-  }
-  return out;
-}
-
-/** 目录.md 的 scripts/ 树：项数写在行尾那对括号里，如 `（探针法，21 项）` */
-function suitesInCatalog(text) {
-  const out = new Map();
-  for (const line of text.split('\n')) {
-    const name = /(verify-[\w.-]+\.(?:ts|mjs))/.exec(line);
-    if (!name) continue;
-    const n = /（[^（）]*?(\d+) 项[^）]*）\s*$/.exec(line);
-    if (n) out.set(name[1], n[1]);
   }
   return out;
 }
@@ -55,7 +58,7 @@ function suitesInCatalog(text) {
  * （不用去改真仓库的文档来制造红）。
  *
  * @param {Record<string, string|null>} texts
- * @param {{suites: number, tsSuites: number, total: number, rows: Array<{name: string, pass: string|number}>}} actual
+ * @param {{suites: number, tsSuites: number, total: number, rows: Array<{name: string, pass: string|number}>, names?: any, exits?: any}} actual
  * @returns {{checked: number, drift: string[]}}
  */
 export function diffDocNumbers(texts, actual) {
@@ -83,53 +86,20 @@ export function diffDocNumbers(texts, actual) {
     });
   };
 
-  /* ── ① 总项数 / 套数 ── */
+  /* ── ① TESTING 里仍然手抄的总额类当前值 ── */
+  // 顶部 blockquote 与第二节的统计数字**已改成生成区**，不在这里查（见 ④ 段）。
+  // 留下的三处是散在正文里、句式各不相同的句子，划生成区会把句子切碎，得不偿失。
 
-  at('TESTING.md', /(\d+) 套零依赖验证脚本、合计 \*\*(\d+) 项\*\*/, '顶部 blockquote',
-    [actual.suites, actual.total]);
-  at('TESTING.md', /项数合计 (\d+)/, '第二节「项数合计」', [actual.total]);
-  at('TESTING.md', /其中 (\d+) 套是 `\.ts` 走 tsx/, '第二节「其中 N 套是 .ts」', [actual.tsSuites]);
-  at('TESTING.md', /不计入 (\d+)/, '第二节 rpc-smoke 的「不计入 N」', [actual.total]);
   at('TESTING.md', /全量 (\d+) 套，一条命令/, '第四节「全量 N 套，一条命令」', [actual.suites]);
   at('TESTING.md', /的 (\d+) 套\*\*必须\*\*直连 node 走 tsx/, '第四节「.ts 的 N 套必须直连 node」',
     [actual.tsSuites]);
   at('TESTING.md', /\*\*无覆盖率统计\*\*：(\d+) 项覆盖了什么/, '第七节「N 项覆盖了什么」', [actual.total]);
-  at('ARCHITECTURE.md', /(\d+) 套零依赖验证脚本、(\d+) 项断言/, '第三节「测试」行',
-    [actual.suites, actual.total]);
-  at('ARCHITECTURE.md', /串跑，现 (\d+) 套/, '债 5 的「现 N 套」', [actual.suites]);
-  at('目录.md', /验证脚本（(\d+) 套断言共 (\d+) 项/, '目录职责表', [actual.suites, actual.total]);
 
-  /* ── ② ROADMAP 的已完成表：取**末次**匹配 ── */
-
-  {
-    const text = textOf('ROADMAP.md');
-    if (text === null) {
-      drift.push('ROADMAP.md：读不到，无法比对「已完成表末行」');
-    } else {
-      // 已完成表按时间**升序**追加，所以末次匹配才代表"现在"；前面那些行的
-      // 556 / 560 / 605 / 633 是历史数字，刻意不查。
-      const all = [...text.matchAll(/全库 (\d+) 套 (\d+) 项/g)];
-      if (all.length === 0) {
-        drift.push('ROADMAP.md：找不到「全库 N 套 M 项」——文案改过了？');
-      } else {
-        checked += 2;
-        const last = all[all.length - 1];
-        const where = `ROADMAP.md 已完成表末行（前 ${all.length - 1} 条为历史数字，刻意不查）`;
-        if (Number(last[1]) !== actual.suites) {
-          drift.push(`${where}的套数写 ${last[1]}，实际 ${actual.suites}`);
-        }
-        if (Number(last[2]) !== actual.total) {
-          drift.push(`${where}的项数写 ${last[2]}，实际 ${actual.total}`);
-        }
-      }
-    }
-  }
-
-  /* ── ④ TESTING 第三节：写法分布（断言函数名 / 退出码变体） ── */
+  /* ── ② TESTING 第三节：写法分布（断言函数名 / 退出码变体） ── */
 
   // 这一节写的也是「当前真值」。它此前没被机器看着，而**本轮实测它已经错了**：
   // 「`if (failed > 0) process.exit(1)`（1 套）」实际是 2 套（phase-ab 与 steering），
-  // 而四个变体之和 5+3+7+1=16 恰好等于当时的 .ts 套件数——错得很安静。所以一并纳入。
+  // 而四个变体之和 5+3+7+1=16 恰好等于当时的 .ts 套件数——错得很安静。所以纳入。
   if (actual.names) {
     const text = textOf('TESTING.md');
     if (text === null) {
@@ -192,35 +162,50 @@ export function diffDocNumbers(texts, actual) {
     }
   }
 
-  /* ── ⑤ 逐套项数：同一套在两份文档里各写一遍 ── */
+  /* ── ③ 逐套项数：只在 TESTING 的套件表格里（`目录.md` 的树已不再重述） ── */
 
-  const perSuite = (file, extract) => {
+  {
+    const file = 'TESTING.md';
     const text = textOf(file);
     if (text === null) {
       drift.push(`${file}：读不到，无法逐套比对项数`);
-      return;
-    }
-    const declared = extract(text);
-    for (const r of actual.rows) {
-      if (!declared.has(r.name)) {
-        drift.push(`${file} 漏了 ${r.name} 这一套（清单里没有它）`);
-        continue;
+    } else {
+      const declared = suitesInTesting(text);
+      for (const r of actual.rows) {
+        if (!declared.has(r.name)) {
+          drift.push(`${file} 漏了 ${r.name} 这一套（清单里没有它）`);
+          continue;
+        }
+        checked++;
+        const n = declared.get(r.name);
+        if (String(n) !== String(r.pass)) {
+          drift.push(`${file} 的 ${r.name} 写 ${n} 项，实际 ${r.pass}`);
+        }
       }
-      checked++;
-      const n = declared.get(r.name);
-      if (String(n) !== String(r.pass)) {
-        drift.push(`${file} 的 ${r.name} 写 ${n} 项，实际 ${r.pass}`);
+      for (const name of declared.keys()) {
+        if (!actual.rows.some((r) => r.name === name)) {
+          drift.push(`${file} 列了 ${name}，但本次没跑到这套脚本`);
+        }
       }
     }
-    for (const name of declared.keys()) {
-      if (!actual.rows.some((r) => r.name === name)) {
-        drift.push(`${file} 列了 ${name}，但本次没跑到这套脚本`);
-      }
-    }
-  };
+  }
 
-  perSuite('TESTING.md', suitesInTesting);
-  perSuite('目录.md', suitesInCatalog);
+  /* ── ④ 生成区（AUTOGEN）：内容必须等于 docs-sync 会写进去的那一份 ── */
+
+  // 用**同一个 syncText** 算期望值（`gofmt` 亦然：写与查共用一份模板），所以两边的定义
+  // 不可能分家。这里只读——修要显式跑 `npm run docs:sync`。
+  const stats = { suites: actual.suites, tsSuites: actual.tsSuites, totalPass: actual.total };
+  for (const file of AUTOGEN_FILES) {
+    const text = textOf(file);
+    if (text === null) {
+      drift.push(`${file}：读不到，无法核对生成区`);
+      continue;
+    }
+    const r = syncText(text, stats);
+    for (const e of r.errors) drift.push(`${file} 生成区结构问题：${e}`);
+    for (const d of r.drift) drift.push(`${file} 的 ${d}`);
+    checked += r.regions;
+  }
 
   return { checked, drift };
 }
@@ -274,12 +259,12 @@ export function scanSuiteStyles(ROOT) {
 }
 
 /**
- * IO 包装：从 `Log/` 读那四份文档、顺手扫一遍 `scripts/` 数出写法分布，再交给 `diffDocNumbers`。
+ * IO 包装：从 `Log/` 读那几份文档、顺手扫一遍 `scripts/` 数出写法分布，再交给 `diffDocNumbers`。
  * 读不到不抛——由 `diffDocNumbers` 记成一条漂移（文件被改名/删掉本身就该红）。
  */
 export function checkDocNumbers(ROOT, actual) {
   const texts = {};
-  for (const f of WATCHED) {
+  for (const f of new Set([...WATCHED, ...AUTOGEN_FILES])) {
     try {
       texts[f] = fs.readFileSync(path.join(ROOT, 'Log', f), 'utf8');
     } catch {
@@ -291,7 +276,7 @@ export function checkDocNumbers(ROOT, actual) {
     const styles = scanSuiteStyles(ROOT);
     full = { ...actual, names: styles.names, exits: styles.exits };
   } catch {
-    // 扫不到 scripts/（例如根目录不存在）：保持 null，第四节的比对会记成漂移
+    // 扫不到 scripts/（例如根目录不存在）：保持 null，第二节的比对会记成漂移
     full = { ...actual, names: null, exits: null };
   }
   return diffDocNumbers(texts, full);

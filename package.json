@@ -14,7 +14,8 @@
     "start": "node dist/index.js",
     "clean": "node scripts/clean.mjs",
     "typecheck": "tsc --noEmit",
-    "verify": "node scripts/run-verify.mjs"
+    "verify": "node scripts/run-verify.mjs",
+    "docs:sync": "node scripts/docs-sync.mjs"
   },
   "keywords": [
     "cli",
