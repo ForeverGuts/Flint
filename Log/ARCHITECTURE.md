@@ -188,7 +188,7 @@
 | 扩展机制 | 完整的 Extension 插件体系 | **已落地三类口子**：sections / hooks / watchers，`extension-loader` 自动扫描装载 |
 | 配置 | 分层 SettingsManager（全局/项目/会话） | **部分落地**：密钥分三层（环境变量 > 全局 `~/.flint/config.json` > 项目 `config/provider-keys.json`），其余配置项还没分层（`config/manager.ts` 里标着 TODO） |
 | 观测 | docs/observability.md | **已落地**：SpanCollector 公共配对件 + `/traces` 内置命令 + `trace.jsonl` 落盘；不引 LangSmith / LangFuse 这类外部服务 |
-| 测试 | vitest 全套 | **路线不同、且已定调**：17 套零依赖验证脚本、653 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
+| 测试 | vitest 全套 | **路线不同、且已定调**：18 套零依赖验证脚本、688 项断言（`npm run verify` 串跑）+ 1 个真实链路冒烟；无框架、无覆盖率、无 CI。`run-verify.mjs` 末尾还会拿汇总的真值核对 `Log/` 里写的「当前值」（`check-doc-numbers.mjs`，白名单式）。“引入 vitest”的待办已于 2026-09-03 关闭，取舍见 [DECISION_LOG.md](./DECISION_LOG.md) 与 [TESTING.md](./TESTING.md) |
 
 ---
 
@@ -206,7 +206,7 @@
 
 4. **压缩用量没回流。** `context/compaction.ts` 走非流式 `llm.chat()`，而 `ChatResult` 没有 usage 字段，全文件也没有 `usage` 字样 → 压缩消耗的 token 从未计入 `/usage` 的合计。**本轮判定不做**：要改就得改 `ChatResult` 的形状，牵连两个 provider 的非流式路径 + `stream-helper` + 多套 verify 脚本，是独立的一件事（已记在 ROADMAP P6 “可观测性增强”的剩余项里）。
 
-5. ✅ **`package.json` 的工程化缺口**（已补）。原状：没有 verify / test 入口（10 套脚本只能手工循环跑）；`clean` 写的是 `rm -rf dist`，Windows 下根本跑不通。现有 `verify`（`run-verify.mjs` 串跑，现 17 套）/ `typecheck` / `clean`（`clean.mjs` 用 `fs.rmSync` 跨平台删 dist）三个入口，三个都实测跑通。
+5. ✅ **`package.json` 的工程化缺口**（已补）。原状：没有 verify / test 入口（10 套脚本只能手工循环跑）；`clean` 写的是 `rm -rf dist`，Windows 下根本跑不通。现有 `verify`（`run-verify.mjs` 串跑，现 18 套；2026-09-11 起末尾还会核对 `Log/` 里写的数字，漂移计入退出码）/ `typecheck` / `clean`（`clean.mjs` 用 `fs.rmSync` 跨平台删 dist）三个入口，三个都实测跑通。
 
 6. **`scripts/` 不受 tsc 检查。** `tsconfig.json` 的 `include` 只有 `["src/**/*.ts"]`。这是有意的取舍（脚本要造替身、塞假字段），代价是脚本必须真跑才算验过。
 

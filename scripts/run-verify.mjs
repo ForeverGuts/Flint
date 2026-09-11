@@ -9,12 +9,17 @@
  * 变体（分隔符 / 与 ，、有无"（共 N 项）"后缀），正则一并兼容；解析不到就按退出码
  * 判定成败、项数记为 ?，不会静默当成通过。
  *
+ * 末尾还会拿汇总出来的数字去核对 `Log/` 里写的"当前值"（`check-doc-numbers.mjs`）。
+ * 它**不算一套套件、也不计入合计**——否则"总项数对不对"会取决于"有没有把校验自己
+ * 算进去"，成了自指。漂移只影响退出码，单独汇报一行。
+ *
  * 运行：node scripts/run-verify.mjs   （或 npm run verify）
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkDocNumbers } from './check-doc-numbers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPTS = path.join(ROOT, 'scripts');
@@ -70,4 +75,19 @@ console.log(`合计 ${rows.length} 套：${totalPass} 通过 / ${totalFail} 失�
   + (unparsed ? `（${unparsed} 套的结果行没解析出来，项数未计入合计）` : ''));
 console.log(bad === 0 ? '全绿。' : `${bad} 套失败。`);
 
-process.exit(bad > 0 || totalFail > 0 ? 1 : 0);
+// 文档数字核对：拿上面汇总出来的真值，去比 Log/ 里写的「当前值」（白名单，见模块头注释）。
+// 独立汇报、**不计入合计** —— 它自己的断言不能算进 totalPass，否则总项数就成了自指。
+const docs = checkDocNumbers(ROOT, {
+  suites: rows.length,
+  tsSuites: files.filter((n) => n.endsWith('.ts')).length,
+  total: totalPass,
+  rows,
+});
+if (docs.drift.length === 0) {
+  console.log(`\n文档数字：${docs.checked} 处一致。`);
+} else {
+  console.log(`\n文档数字：${docs.drift.length} 处漂移 ——`);
+  for (const d of docs.drift) console.log(`  ❌ ${d}`);
+}
+
+process.exit(bad > 0 || totalFail > 0 || docs.drift.length > 0 ? 1 : 0);

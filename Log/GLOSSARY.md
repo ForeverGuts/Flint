@@ -134,6 +134,21 @@ Agent 内部持有 `while(true)` 循环、自驱动运行的交互方式。**本
 
 另有五份规则书 `Log/*_RULES.md` 约定各日志怎么写。（旧文档里写的 `CHANGELOG.md` 是错的文件名，实际是 `CHANGE_LOG.md`。）
 
+**快照里的数字**（套数 / 项数这类"当前真值"）自 2026-09-11 起有机器兜底：[文档数字校验](#document-number-check文档数字校验)。锚点也从"标题文字算出"改成"新条目带[稳定锚点](#stable-anchor稳定锚点)"。
+
+### Document Number Check（文档数字校验）
+`scripts/check-doc-numbers.mjs`：拿 `run-verify` 汇总出的**真值**去比对 `Log/` 里写的「当前值」。**白名单式**，只查明确写着"现在是多少"的那些位置——TESTING 的顶部 blockquote / 项数合计 / `.ts` 套数 / rpc-smoke 的"不计入 N" / 第四节"全量 N 套" / "`.ts` 的 N 套" / 第七节"N 项覆盖了什么"、ARCHITECTURE 的测试行与债 5、目录职责表、ROADMAP 已完成表**末行**，外加 TESTING 第三节的**写法分布**（几套用 `assert` / `check` / `ok`、几套用哪种退出码）与两处**逐套表格**（TESTING 的套件表格、`目录.md` 的 `scripts/` 树）。
+
+**为什么必须白名单**：`\d+ 套 / \d+ 项` 在追加日志与 ROADMAP 旧行里成片出现，那些是**历史事实**（"当时全量 556 项"），改了才是篡改历史快照。盲扫会让校验永久红，而永久红的检查等于没有。
+
+**为什么不算一套套件、也不计入项数**：名字用 `check-` 前缀，不匹配串跑入口的 `^verify-.+\.(ts|mjs)$`；并且由 `run-verify.mjs` 在汇总之后调用、独立汇报一行（`文档数字：N 处一致。`）。若把它算进去，"总项数对不对"就取决于"有没有把校验自己算进去"——成了自指。
+
+**ROADMAP 只认末次匹配**：已完成表按时间升序追加，末行才是"现在"，前面那些 556 / 560 / 605 / 633 是历史数字。变异测试实测：改成取首次匹配，会红 6 条。
+
+**上线首跑即见效**：点名 18 处漂移；并顺带查出 TESTING 第三节两处**既有**错数（`check` 写 8 实际 10——2026-09-10 加 `verify-steering.ts` 时漏了那一行；`if (failed > 0) process.exit(1)` 写 1 实际 2），而四个变体之和 5+3+7+1=16 恰好等于当时的 `.ts` 套件数，于是两处错得很安静。
+
+参见：[ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md#log-2026-09-11-doc-number-check) · `scripts/verify-doc-numbers.ts`（31 项，含四组变异测试）
+
 ## E
 
 ### edit（精准编辑工具）
@@ -495,6 +510,19 @@ NOOP **不是跳过这段代码，是跳过打卡**：回调照常执行，只�
 **刻意不做一件事**：不 abort 在飞的流——半截 `tool_call` 的 JSON 不可执行、已跑过的 `bash` 副作用无法撤销、部分输出的 assistant 消息留下就没有配对的 tool 结果（协议不合法），仍属【预留】。
 
 参见：`scripts/verify-steering.ts`（48 项，含真 `Runtime` 端到端、抓真实请求体验线上序列，以及四组**变异测试**）· [ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第 11 条 · [ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 2026-09-10 那块 · [DECISION_LOG.md](./DECISION_LOG.md) 同日那条
+
+### Stable Anchor（稳定锚点）
+**值不随标题文字变动**的锚点：把 `<a id="log-<日期>-<短名>"></a>` 单独一行写在标题**上方**，引用时写 `[说明](./ARCHITECTURE_LOG.md#log-…)`。
+
+对比着看才清楚它解决什么：默认锚点是**标题 slug**，也就是 `f(标题文字)`——于是"链接不断"只能靠"标题文字不许改"，`verify-docs.mjs` 第 ④ 段那 6 条契约就是这么来的。代价有两条：**为了让机器能链接，人类散文被冻结**；而且引用粒度粗到只能写"同日 19:01 那块"这种模糊指代。显式 id 把这个依赖**倒过来**——id 由作者给定、与文字无关，标题日后怎么重述都不会断，引用也短、纯 ASCII。
+
+**它与 append-only 是同一种不变性**：条目只追加不改写，所以 id 写一次就永不改。这层不变性此前**隐含在标题文字里、靠人守**，显式 id 只是把它变成写下来的。
+
+**只从新条目开始带**：给 900+ 行旧日志补 id 性质上是"改写历史条目"，与 append-only 纪律冲突，所以 ④ 段那 6 条标题文字契约保留、不迁移——那个名单只会变短不会变长。
+
+卫生由 `verify-docs.mjs` 第 ③ 段钉三条：同一份文件内**不重复**（重复会让跳转静默落到第一处）、命名守 `log-<日期>-<短名>` 形状、且**非空**（前两条在"一个都没扫到"时会空转全绿）。
+
+参见：`ARCHITECTURE_LOG_RULES.md`（"新条目必须带 id"的约定）· [ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md#log-2026-09-11-doc-number-check) · `scripts/verify-docs.mjs` 第 ③ 段
 
 ## T
 
