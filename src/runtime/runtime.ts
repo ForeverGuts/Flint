@@ -699,7 +699,7 @@ export class Runtime {
     if (!process.stdin.isTTY) return false;
 
     const msg = error instanceof Error ? error.message.split('\n')[0] : String(error);
-    console.log(`\n  ❌ LLM 调用失败: ${msg}`);
+    console.error(`\n  ❌ LLM 调用失败: ${msg}`);
 
     const { getConfigManager } = await import('../config/manager.js');
     const mgr = await getConfigManager();
@@ -723,7 +723,7 @@ export class Runtime {
       this.currentProvider = p.type;
       this.currentBaseUrl = p.baseUrl;
       this.currentModel = fallback.modelId;
-      console.log(`  ✅ 已切换到 ${fallbackLabel}，请重试。`);
+      console.error(`  ✅ 已切换到 ${fallbackLabel}，请重试。`);
       return true;
     }
 

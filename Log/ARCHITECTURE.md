@@ -18,7 +18,8 @@
 │ check()           读配置 → createProvider()；全程本地，0 网络请求
 │ main()            闭包工厂：组装 11 个必注入依赖 → 模式分发
 │   ├─ repl.ts      REPL：TTY → TreeUI ／ 管道 → TerminalUI
-│   └─ rpc.ts       RPC：JSON-RPC over stdin/stdout
+│   ├─ rpc.ts       RPC：JSON-RPC over stdin/stdout（**唯一**写 stdout 的地方）
+│   └─ rpc-events.ts  事件 → ACP `session/update` 的映射表（纯函数 + 配对状态）
 └───────────────────────────────────────────────────────────
 
 ┌─ 运行时 · runtime/runtime.ts ─────────────────────────────

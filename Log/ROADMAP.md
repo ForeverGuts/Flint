@@ -219,7 +219,7 @@
 > 是对的，缺的只是把事件流转发出去**。这一层的目标不是"做个更好看的终端"，而是让 UI 不再
 > 是 core 的天花板。
 
-- [ ] **流式 RPC notification + 对齐 ACP**
+- [x] **流式 RPC notification + 对齐 ACP**
   - 现状：`src/harness/rpc.ts` **已经是 JSON-RPC 2.0 over stdio**（9 个方法），但非流式——
     chat 一次性返回，请求期间进度完全不可见；`text_delta` 通知的 TODO 从第 12 行挂到现在
   - 为什么现在做：**ACP（Agent Client Protocol）用的传输层与 flint 现有 RPC 完全相同**
@@ -238,6 +238,19 @@
     文件读写、终端）工作量远大于只做流式，建议**先只做流式、接口留 ACP 形状**
   - 风险：协议一旦对外发布就有兼容负担；建议先以"未文档化的实验开关"跑通再定稿
   - 对标：ACP / LSP 的"协议与实现分离"
+  - **补记（2026-09-11 晚，已做）—— 上文的「现状」一句已过时，以本条为准**：
+    chat 期间现在会推 `session/update` 通知（无 id），**内核 / UI / 事件总线一行未改**，
+    只是在 `rpc.ts` 补上了**第三个订阅者**（前两个是 TreeUI 与 TerminalUI）。
+    映射表收在新增的 `src/harness/rpc-events.ts`（纯函数 + 极少量配对状态，不碰 stdout），
+    字段名用**逐个核对过规范**的 ACP 真名：`agent_message_chunk` / `agent_thought_chunk` /
+    `tool_call` / `tool_call_update` / `notice`。两个当时没料到的发现：
+    ① **span 层的 `tool_call_start/end` 全 `src/` 从没被发射过**（只有类型定义），
+       而 UI 层的 `tool_execution_start/end` 又没有 id —— ACP 的 `toolCallId` 只能自己发号；
+    ② `usage` 该进最终响应（ACP 里用量属"一轮的结果"），但本版 `chat` 的 result 仍是字符串
+       （保持与既有客户端兼容），无处安放，故**暂不外发**，留到全量对齐时随
+       `result: { stopReason, usage }` 一起改。
+    另：本条原列的「背压策略」**未做**（本地管道很少触发，代码里已注明是已知缺口）；
+    「未文档化的实验开关」也未做——通知是无条件推的，因目前无真实外部消费者
 
 - [ ] **任务清单变更接入可观测性**
   - 现状：`TaskStore.onChange()` 是**零依赖观察者**（刻意不走事件总线，以免把 `todo/` 拖进
@@ -269,7 +282,7 @@
                                   ↓
                           RPC 模式（JSON-RPC over stdio，9 方法）
                                   │
-                                  ↓ ┈┈ 流式 notification（TODO，见 P8）
+                                  ↓ ┈┈ 流式 notification（2026-09-11 已接，见 P8）
                           ACP：编辑器 / Web 前端
 ```
 
@@ -285,9 +298,12 @@
 
 **当前建议顺序**（2026-09-11）：
 
-1. **协议层与前端解耦（P8）** —— 兑现 `rpc.ts` 的流式 TODO 并对齐 ACP。它是目前**唯一真正卡住
-   后续**的一项：做完之后"任务面板 / Web UI / 编辑器接入"三件事从"都要动 core"退化成三个互不
-   阻塞的纯前端工作；不做则每加一个前端都要往 core 里焊一次。
+1. **协议层与前端解耦（P8）** —— ✅ **流式部分已于 2026-09-11 落地**（细节见上面 P8 第一条的补记）。
+   剩下两块都**独立可切**：① 全量对齐 ACP（`session/new` / `session/prompt` / 权限请求 / 文件读写 /
+   终端，以及把 `chat` 的 result 从字符串改成 `{ stopReason, usage }`——后者是**破坏性**的，
+   等确认无外部消费者再做）；② 背压策略（目前是已知缺口，本地管道很少触发）。
+   做完 flint 就能被任意 ACP 客户端（Zed / JetBrains / Toad 等）直接驱动；
+   但即便现在不做，映射表那套字段名已经是对的，将来不必推倒重来。
 2. **历史结构化数据接通（P6）** —— 价值高但**卡在一个未定的设计决策**上：thinking 块的历史策略
    没定就不能接线（直接透传会让任何有过工具调用的会话把 extended thinking 静默全程关掉）。
    想做先做决策，不要先写代码。

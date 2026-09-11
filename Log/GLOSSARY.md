@@ -610,6 +610,31 @@ C3 的关键约束：`ThinkingBlock` = 推理文本 + `signature`（Anthropic �
 
 参见：[TaskStore](#taskstore任务清单真相源)、[常驻任务面板](#常驻任务面板task-panel)
 
+### session/update（ACP 流式通知）
+
+RPC 模式下 flint **主动推给外部前端**的消息（不是回答某个请求，所以**没有 id**——这正是
+notification 与 response 的分界）。形状对齐 ACP：`{ jsonrpc, method: 'session/update',
+params: { sessionId, update } }`，`update.sessionUpdate` 是判别式，决定对端怎么处理。
+
+映射表在 `src/harness/rpc-events.ts`。它分**两种形状**，混成一种对端就无从判断：
+
+| 形状 | 取值 | 对端该怎么做 | 来源事件 |
+|---|---|---|---|
+| **片（chunk）** | `agent_message_chunk` / `agent_thought_chunk` | **累加**到上一条后面 | `stream_text` / `stream_reasoning` |
+| **离散（discrete）** | `tool_call` / `tool_call_update` / `notice` | 新建或**替换**状态 | 工具执行、thinking、error |
+
+内部记账类事件（span / note / 自检，共 15 种）**一律不外发**——外发等于把内部实现钉成对外契约。
+
+### stdout 纯净（RPC 模式的生命线）
+
+`rpc.ts` 用"**一行一个 JSON**"分帧通信。混进任何非 JSON 行，对端 `JSON.parse` 就抛异常、
+整条流废掉；而**犯病的进程自己毫无察觉**（写的一方一切正常，崩的是读的一方），极难排查。
+
+规矩：`src/io/`（UI 层）随便 `console.log`——RPC 模式根本不加载它；**rpc 路径**
+（`harness/` `runtime/` `loop/` `context/`）禁用 `console.log`，调试走 `console.error`
+（stderr 是另一根管子，编辑器不读）或 `FLINT_DEBUG_*` 写文件。
+这条由 `verify-rpc-stream.ts` ⑦ 段的**源码扫描**机器守护，不靠人记。
+
 ### ToolInputError（参数不合法错误）
 `tools/spec.ts` 的导出类（`extends Error`，多一个 `code` 字段：`missing` / `unknown_param` / `invalid_type` / `invalid_range` / `empty`）。由 `parseSpec` 抛，`registry.execute()` **就地**转成 `[INVALID] 文案` 回给模型；**不是**它的异常（规格自己写坏了）一律 `throw` 穿透——那不是模型的错，不该报成参数不合法。
 
