@@ -16,31 +16,17 @@ import { estimateTokenUsage } from './utils.js';
 import { promptPermission } from '../io/ui/permission-prompt.js';
 import { selectFromList } from '../io/ui/selector.js';
 import { readLine } from '../io/terminal.js';
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
-import { hasUncheckedTask } from '../context/system-prompt.js';
+import { taskStore } from '../todo/store.js';
 
-/**
- * 读工作记忆 TASK.md 并善后（阶段 C2 工程侧清理）。
- * 调用方：Runtime.runSingleTurn（每次请求注入 task 层）
- * 服务于：compaction 只压缩对话历史 jsonl，TASK.md 在文件系统不受影响，每次请求重新读取注入。
- *   清理语义：清单全勾选（任务已完成）→ 删除文件并返回 undefined——
- *   遗留的已完成计划不再放大轮数预算、不再触发 auto thinking/续传提示（不依赖模型自觉）。
- */
-export function loadTaskMemory(taskPath = 'TASK.md'): string | undefined {
-  try {
-    if (!existsSync(taskPath)) return undefined;
-    const content = readFileSync(taskPath, 'utf-8').trim();
-    if (!content) return undefined;
-    if (!hasUncheckedTask(content)) {
-      try { unlinkSync(taskPath); } catch { /* 清理失败不阻塞请求（下次请求会重试） */ }
-      return undefined;
-    }
-    // 截断防膨胀（TASK.md 由模型用 write 维护，应保持精简）
-    return content.length > 2000 ? content.slice(0, 2000) + '\n...（截断）' : content;
-  } catch {
-    return undefined; // 读取失败不影响请求（无工作记忆）
-  }
-}
+/* ── 工作记忆：真相源是 `taskStore`（src/todo/store.ts） ──
+   改造前这里有个模块级函数：每次请求读 TASK.md、数复选框、全勾选即删。那套是"文件即状态"。
+   C 方案落地后，**运行期只认内存里的 TaskStore**：
+     · 注入 system 的 task 层 → 读 `taskStore.render()`（不再是文件）
+     · 轮数预算 / thinking auto → 读 `taskStore.hasUnchecked()`
+   TASK.md 降级为**投影 + 启动种子**：写盘由 `todo` 工具在每次变更后做（store.projectToFile），
+   读盘只在进程启动时做一次（main.ts 的 `taskStore.loadFromFile('TASK.md')`）。
+   为什么删除而不是保留双读：两处判定（store 与文件）迟早漂移，正是本文件旧注释担心的
+   "避免两处正则漂移"的同构病——单一真相源才治得掉。 */
 
 /* ── 类型定义 ── */
 
@@ -602,8 +588,14 @@ export class Runtime {
 
     // 系统提示词：分层构建（稳定前缀缓存友好：core → tools → skills → task → summary）
     // 每层独立 system 消息，越稳定越靠前；摘要来自 compaction 独立返回（不混入 history）
-    // 工作记忆（TASK.md）独立于对话历史持久化，压缩不触碰，每次请求重新注入
-    const taskMemory = loadTaskMemory();
+    // 工作记忆：读**内存真相源**（taskStore）——它独立于对话历史，压缩碰不到，每次请求重新渲染注入。
+    // 只在"还有未完成项"时注入：空清单 / 全完成 = 无进行中计划，不注入、不放大预算、不开 auto thinking
+    const rawTask = taskStore.hasUnchecked() ? taskStore.render() : undefined;
+    // 截断防膨胀：注入是**展示**，可以截；而投影落盘（store.projectToFile）不截——
+    // render 必须与 parse 严格互逆，截一刀就漂一次
+    const taskMemory = rawTask && rawTask.length > 2000
+      ? `${rawTask.slice(0, 2000)}\n...（截断）`
+      : rawTask;
     const { messages: systemMessages } = await this.systemPromptService.build({
       tools: toolDescriptions,
       skills: this.skills.getAll().map((s) => s.name),
@@ -627,9 +619,9 @@ export class Runtime {
     // ═══════════════════════════════════════════════════════════════════════════
     // ⑧: Agent Loop —— 委托给 AgentLoop 子系统（LLM 生成 + 工具执行循环）
     // ═══════════════════════════════════════════════════════════════════════════
-    // 轮数预算：TASK.md 存在（带计划的复杂任务）时放大轮数，否则用默认预算（防死循环）
-    // thinking 自动判定（阶段 C2）：'on' 常开；'auto' 仅当有进行中任务（TASK.md 有未勾选项）时开；'off' 常关。
-    // 与清理共享同一信号：loadTaskMemory 对全勾选文件已删除并返回 undefined，僵尸计划不会污染 auto
+    // 轮数预算：有进行中任务（taskStore 有未完成项）时放大轮数，否则用默认预算（防死循环）
+    // thinking 自动判定（阶段 C2）：'on' 常开；'auto' 仅当有进行中任务（清单有未完成项）时开；'off' 常关。
+    // 与注入共享同一信号：taskMemory 仅在 hasUnchecked 时非空，空清单/全完成不会污染 auto
     const thinkingOn = this.thinkingMode === 'on' || (this.thinkingMode === 'auto' && taskMemory !== undefined);
     const { finalText, usage } = await this.agentLoop.run(toolMessages, onToken, {
       maxTurns: taskMemory ? WITH_PLAN_MAX_TURNS : DEFAULT_MAX_TURNS,

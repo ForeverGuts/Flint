@@ -4,22 +4,17 @@
  * 覆盖：
  *   C2-1 Agent Loop 把 opts.thinking 按次传给 llm.stream（判定结果能下发）
  *   C2-2 stream-helper 覆盖优先级：opts.thinking > config.thinking（auto+覆盖开 / on+覆盖关）
- *   C2-3 hasUncheckedTask 检测：未勾选/全勾选/星号/缩进变体
- *   C2-4 loadTaskMemory 清理：文件缺失→undefined；全勾选→删除文件+undefined；
- *        有未勾选→返回内容+文件保留；空文件→undefined
+ *   C2-3 hasUncheckedTask 检测：未勾选/全勾选/星号/缩进/[>]进行中变体
+ *   （原 C2-4「loadTaskMemory 全勾选即删」已随 C 方案迁进 TaskStore —— 见 verify-todo.ts ④段）
  *
  * 运行：node node_modules/tsx/dist/cli.mjs scripts/verify-c2.ts
  */
-import { writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import os from 'node:os';
-import path from 'node:path';
 import { createSSEStream } from '../src/llm/stream-helper.js';
 import type { LLMConfig, LLMMessage, LLMProvider, LLMRequestOptions, LLMStreamEvent, LLMTool, ChatResult } from '../src/llm/types.js';
 import { EventStream } from '../src/runtime/event-stream.js';
 import { AgentLoopServiceImpl } from '../src/loop/agent-loop.js';
-import { loadTaskMemory } from '../src/runtime/runtime.js';
 import { hasUncheckedTask } from '../src/context/system-prompt.js';
 
 /* ── 断言 ── */
@@ -125,26 +120,16 @@ assert('星号变体 * [ ] → true', hasUncheckedTask('* [ ] 步骤') === true)
 assert('缩进变体 → true', hasUncheckedTask('  - [ ] 步骤') === true);
 assert('无复选框内容 → false', hasUncheckedTask('纯文本没有清单') === false);
 
-/* ══ C2-4：loadTaskMemory 全勾选即删 ══ */
+/* ══ C2-4：[>] 进行中也算未完成 ══
+   （C 方案后 TaskStore 渲染的清单用 [>] 表示进行中；hasUncheckedTask 必须认它，
+    否则 system-prompt 的续传提示会在"只剩进行中项"时静默不出现） */
 
-console.log('── C2-4 loadTaskMemory 工程侧清理 ──');
+console.log('── C2-4 hasUncheckedTask 认 [>]（进行中） ──');
 
-const tmp = path.join(os.tmpdir(), `flint-c2-${Date.now()}.md`);
-
-assert('文件缺失 → undefined', loadTaskMemory(tmp) === undefined);
-
-writeFileSync(tmp, '- [x] 步骤一（已完成）\n- [x] 步骤二（已完成）');
-assert('全勾选 → 返回 undefined', loadTaskMemory(tmp) === undefined);
-assert('全勾选 → 文件已删除', existsSync(tmp) === false);
-
-writeFileSync(tmp, '## 目标\n- [x] 已完成项\n- [ ] 未完成项');
-const kept = loadTaskMemory(tmp);
-assert('有未勾选 → 返回内容', typeof kept === 'string' && kept.includes('未完成项'));
-assert('有未勾选 → 文件保留', existsSync(tmp) === true);
-
-writeFileSync(tmp, '   ');
-assert('空内容 → undefined', loadTaskMemory(tmp) === undefined);
-if (existsSync(tmp)) { try { unlinkSync(tmp); } catch { /* 清理 */ } }
+assert('[>] 进行中 → true', hasUncheckedTask('- [>] 步骤') === true);
+assert('混合：有 [>] 且有 [x] → true', hasUncheckedTask('- [x] done\n- [>] doing') === true);
+assert('全 [x] → false', hasUncheckedTask('- [x] a\n- [x] b') === false);
+assert('空文本 → false', hasUncheckedTask('') === false);
 
 server.close();
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);

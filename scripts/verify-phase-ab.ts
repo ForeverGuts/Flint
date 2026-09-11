@@ -9,7 +9,7 @@
  *   A3 空流区分：流被异常中断（空流）→ 不误报为轮数耗尽，而是空内容提示 + warn 诊断
  *   A4 参数无效计入失败：[INVALID] 连续 2/3 次同样触发系统提示（改前不计失败 → 这层保护对参数错误完全失效）
  *   A5 对照组：有效否定（[NO_MATCH]）反复出现**不**触发保护，钉住 A4 改的是分类而不是把闸门全打开
- *   B1 续传检测：TASK.md 清单有未勾选项 → task 层含 [续传提示]；全勾选则无
+ *   B1 续传检测：清单文本有未完成项（[ ] / [>]）→ task 层含 [续传提示]；全勾选则无
  */
 import { AgentLoopServiceImpl } from '../src/loop/agent-loop.js';
 import { SystemPromptServiceImpl } from '../src/context/system-prompt.js';
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
   }
 
   /* ── B1 续传检测（task 层） ── */
-  console.log('[B1] 续传检测（TASK.md 复选框 → task 层 [续传提示]）');
+  console.log('[B1] 续传检测（清单文本复选框 → task 层 [续传提示]）');
   {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sps = new SystemPromptServiceImpl({ core: [], tools: [], skills: [], fallback: '兜底' }, events as any);
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
     });
     const taskMsg = withUnchecked.messages.find((m) => m.layer === 'task');
     check('有未勾选项 → 含 [续传提示]', taskMsg?.content.includes('[续传提示]') === true);
-    check('续传提示指明"从第一个未勾选项继续"', taskMsg?.content.includes('从第一个未勾选项继续') === true);
+    check('续传提示指明"从第一个未完成项继续"', taskMsg?.content.includes('从第一个未完成项继续') === true);
 
     const allDone = await sps.build({
       tools: '', skills: [], model: 'm', historyCount: 0,

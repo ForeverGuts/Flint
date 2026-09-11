@@ -565,6 +565,13 @@ NOOP **不是跳过这段代码，是跳过打卡**：回调照常执行，只�
 
 ## T
 
+### TaskStore（任务清单真相源）
+任务清单的**唯一真相源**：`src/todo/store.ts` 里的内存结构化状态（`TaskItem[]` + 状态机）。运行期只让它说了算——[Runtime](#runtime) 注入 system 的 `task` 层时读它，轮数预算与 `thinking auto` 也读它。`TASK.md` 降级为它的**投影 + 启动种子**：写盘由 [todo](#todo任务清单工具) 工具在每次变更后做，读盘只在进程启动时做一次（`main.ts`）。
+
+它取代了改造前的"文件即状态"（模型用 `write` 维护 TASK.md、[Runtime](#runtime) 用一个正则数复选框）。两条硬不变量：① 同一时刻至多一项 `active`；② `render()` 与 `static fromMarkdown()` **严格互逆**（写盘 / 读盘是一对逆运算，否则"重启一次漂一次"，同一手法见 [Autogen Block](#autogen-block生成区) 的 `syncText`）。
+
+参见：[todo](#todo任务清单工具)、[Runtime](#runtime)、[Agent Loop](#agent-loop)
+
 ### thinking（思维链）
 让模型先推理再作答。三态开关，配在 `config/active-config.json` 的 `thinking` 键：
 
@@ -577,6 +584,13 @@ NOOP **不是跳过这段代码，是跳过打卡**：回调照常执行，只�
 C3 的关键约束：`ThinkingBlock` = 推理文本 + `signature`（Anthropic 对块内容的加密签名），下一轮必须**一字不改原样回放**，否则签名验证失败 400——它是**协议数据而非展示内容**。安全阀：assistant 历史里带 `tool_calls` 却没有对应 thinking 块时强制不开。
 
 参见：[LLMConfig](#llmconfig)、[EventStream](#eventstream推拉通道)
+
+### todo（任务清单工具）
+第 7 个内置工具，C 方案里的"**工具做接口**"：模型不再用 `write` 重抄整份清单，而是按按钮——`todo(op, index?, text?)`，`op` ∈ add / start / done / clear，参数**全是标量**（`spec.ts` 只给 5 种标量形状，也刻意不为清单开数组形状）。返回值是**渲染后带序号的整份清单**，序号即下次 `start` / `done` 要传的 `index`。
+
+每次变更后把状态投影到 `TASK.md`（**系统行为**，不走权限弹窗）。谎报完成会留痕：`done` 走的是工具调用，进 `/traces` 与 `/history`。真相源与投影的边界见 [TaskStore](#taskstore任务清单真相源)。
+
+参见：[TaskStore](#taskstore任务清单真相源)、[Runtime](#runtime)
 
 ### ToolInputError（参数不合法错误）
 `tools/spec.ts` 的导出类（`extends Error`，多一个 `code` 字段：`missing` / `unknown_param` / `invalid_type` / `invalid_range` / `empty`）。由 `parseSpec` 抛，`registry.execute()` **就地**转成 `[INVALID] 文案` 回给模型；**不是**它的异常（规格自己写坏了）一律 `throw` 穿透——那不是模型的错，不该报成参数不合法。

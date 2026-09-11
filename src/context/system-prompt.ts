@@ -21,12 +21,14 @@ import type {
 } from '../core/system-prompt.js';
 
 /**
- * 检测任务清单是否含未勾选项（复选框约定 "- [ ]"，兼容 "* [ ]"）。
- * 调用方：本文件（续传提示判定）· runtime（阶段 C2：全勾选即清理 + auto thinking 判定）
- * 服务于：提示词层与工程侧共享同一检测标准，避免两处正则漂移（单一真相源）
+ * 检测任务清单文本是否含**未完成项**（"- [ ]" 未开始 / "* [ ]"，或 "- [>]" 进行中）。
+ * 调用方：本文件（续传提示判定，作用于 TaskStore 渲染出的投影文本）
+ * 服务于：给"渲染后的清单"一个纯文本判定，语义须与 `TaskStore.hasUnchecked()` 完全一致 ——
+ *   两者的一致性由 `verify-todo.ts` ③段（对若干代表性状态断言二者恒等）钉死，防两处判定漂移。
+ * 注：`[x]` 视为完成、不计入；`[>]`（进行中）算未完成。
  */
 export function hasUncheckedTask(content: string): boolean {
-  return /(?:^|\n)\s*[-*]\s*\[ \]/.test(content);
+  return /(?:^|\n)\s*[-*]\s*\[[ >]\]/.test(content);
 }
 
 /** 系统提示词子系统实现 */
@@ -63,13 +65,13 @@ export class SystemPromptServiceImpl implements SystemPromptService {
       messages.push({ layer: 'core', content: this.config.fallback });
     }
 
-    // ③ 工作记忆层：TASK.md 内容（独立持久通道，放摘要前——比摘要稳定，任务期少变）
-    // 阶段B 计划驱动：清单有未勾选项时追加续传提示——系统发信号，
-    // core-section【工作记忆】教模型复选框约定与响应方式，两边对暗号（断点续传的最小闭环）
+    // ③ 工作记忆层：任务清单（渲染自内存真相源 TaskStore；独立于对话历史，压缩碰不到）。
+    //   runtime 只在 hasUnchecked 时才把它传进来，所以这一层出现 = 必有未完成项。
+    // 计划驱动：追加续传提示——系统发信号，core-section【工作记忆】教模型用 todo 响应，两边对暗号
     if (ctx.task) {
       const hasUnchecked = hasUncheckedTask(ctx.task);
       const resumeHint = hasUnchecked
-        ? '\n\n[续传提示] 上方任务清单存在未勾选项：从第一个未勾选项继续执行，不要从头重做；完成一步后把 TASK.md 对应项更新为已勾选。'
+        ? '\n\n[续传提示] 上方任务清单存在未完成项：从第一个未完成项继续执行，不要从头重做；完成一步后用 todo op:"done" 标记它。'
         : '';
       messages.push({ layer: 'task', content: `## 当前任务（工作记忆）\n${ctx.task}${resumeHint}` });
     }

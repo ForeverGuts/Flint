@@ -71,7 +71,7 @@ console.log('\n① 契约与注册（加的是**可选**成员，9 处 ToolProvi
 {
   const llmTools = registry.getLLMTools();
   const names = llmTools.map((t) => t.function.name);
-  check('A1 内置工具从 5 个变 6 个，含 edit', llmTools.length === 6 && names.includes('edit'), names.join(','));
+  check('A1 内置工具从 5 个变 7 个，含 edit 与 todo', llmTools.length === 7 && names.includes('edit') && names.includes('todo'), names.join(','));
   check('A2 edit 需要用户确认（改类工具不可静默执行）', registry.requiresPermission('edit') === true);
   const params = llmTools.find((t) => t.function.name === 'edit')?.function.parameters as
     | { required?: string[]; properties?: Record<string, unknown> }

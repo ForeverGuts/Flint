@@ -11,6 +11,33 @@
 
 ---
 
+<a id="log-2026-09-11-todo-store"></a>
+## 2026-09-11 14:56 | 任务清单从"文件即状态"升级成"工具即状态"：TaskStore 做真相源、TASK.md 降为投影 + 种子
+
+**牵连系统 / 层次**：状态层（新增 `src/todo/store.ts`：`TaskStore`）· 工具层（`tools/builtin.ts` 新增第 7 个内置工具 `todo`）· 运行时层（`runtime/runtime.ts` 删 `loadTaskMemory`、改读 store；`harness/main.ts` 启动时 `loadFromFile` 种子）· 提示词层（`context/sections/core-section.ts` 的【工作记忆】、`context/system-prompt.ts` 的 `hasUncheckedTask` 与续传提示）· 循环层（`loop/agent-loop.ts` 收尾提示）· 验证层（新增 `scripts/verify-todo.ts`；改 `verify-c2` / `verify-spec` / `verify-edit` / `verify-phase-ab` 与基线 fixture）· 文档层（TESTING / 目录 / ARCHITECTURE / GLOSSARY / ROADMAP / 三份追加日志）
+
+**面向的问题**：
+- 改造前是"文件即状态"：模型用 `write` 维护 `TASK.md`，harness 用一个正则（`hasUncheckedTask`）数复选框。三个真实弱点：① `write` 是**全量覆盖**，改一个勾要重抄整份清单——正是本项目点名警告过的那类动作（`edit` 的存在理由就是"重抄会误伤"）；②"结构"只是一个正则，没有 id、没有顺序保证、没有"同一时刻只有一个进行中"这类不变量，护栏能读到的只有一个布尔；③模型可以**谎报完成**且无人核对——那次"更新"根本不经过工具，不留调用记录、进不了 `/traces` 与 `/history`。
+- 深一层的动机：思维链（CoT）发生在模型的一次生成里，harness 看不见、也拿不到。任务列表的价值就是**把这条易失的链外化成一个物件**，让运行时能读它并据此决策（flint 早就在做：用 TASK.md 是否存在决定轮数预算与 thinking 开关）。所以问题不是"要不要外化"，而是"外化成**文件**还是**工具**"。
+
+**做出的改动**：
+- **`src/todo/store.ts`（新，零依赖）**：`TaskStore` = 清单的**内存真相源**。`add/start/done/clear` 做增量变更；`start` 会把其它进行中项降回 pending（**唯一 active 不变量**）；`render()` 与 `static fromMarkdown()` **严格互逆**（写盘 / 读盘是一对逆运算）；`loadFromFile` 做启动种子、`projectToFile` 做投影。进程级单例 `taskStore`：tool 与 runtime 自动共享同一份状态。
+- **`tools/builtin.ts`**：注册第 7 个内置工具 `todo`。参数只传**增量**（`op` / `index` / `text`），**返回值就是渲染后带序号的整份清单**——模型下一轮自然看到最新进度，不必自己重抄。参数保持标量是刻意的：`spec.ts` 只给 5 种标量形状，且"清单本体住在工具的状态里"正是本设计的关键（状态与校验都收在 `TaskStore` 一处）。
+- **`runtime/runtime.ts`**：删掉模块级 `loadTaskMemory()`（逐请求读文件 + 正则判定 + 全勾选即删）。注入 system 的 `task` 层改读 `taskStore.render()`；轮数预算与 `thinking auto` 改读 `taskStore.hasUnchecked()`；"全勾选即删"迁进 `projectToFile` / `loadFromFile`。
+- **`harness/main.ts`**：启动时 `taskStore.loadFromFile('TASK.md')`，**一次性**把上一进程的投影吸收成种子。运行期一律以 store 为准、**不再回读文件**——否则就出现"两处判定"（store 与文件），迟早漂移，正是旧代码注释担心的"两处正则漂移"的同构病。
+- **提示词/文案**：`core-section.ts` 的【工作记忆】教 `todo` 的三步用法；`agent-loop.ts` 收尾提示改口；`system-prompt.ts` 的 `hasUncheckedTask` 正则扩为 `\[[ >]\]`（认 `[>]` 进行中）。
+- **验证**：新增 `verify-todo.ts` 50 项（store 语义 / **render-parse 互逆**（40 组随机状态属性测试）/ 两处"有没有未完成"的判定恒等 / 投影与种子 / 工具端到端 / 接线与源码防回退）；同步 `verify-c2`（16 → 14：清理用例迁走、改测 `[>]`）、`verify-spec`（45 → 46、工具数 6 → 7、基线 fixture 加 `todo`）、`verify-edit` / `verify-phase-ab` 各一处期望值。
+
+**解决的问题**：
+- 增量更新取代全量重抄：改一个勾只传 `op:done, index:N`，与 `edit` 的设计哲学对齐。
+- 结构化取代正则：清单有顺序、有状态机、有"唯一进行中"不变量，护栏读到的不再只是一个布尔。
+- 可校验取代可撒谎：`done` 走工具调用、进 `/traces` 与 `/history`，谎报完成会留痕；非法的 `op` / 越界的 `index` 由 `parse` 与工具直接拒成 `[INVALID]`。
+- 单一真相源：`Log/` 的生成区早已用"写与查共用同一份模板（`syncText`）"解决过分家问题，`TASK.md` 的 `render`/`parse` 照抄这个手法——投影与种子是一对逆运算，重启不漂移。
+
+**未来可优化**：投影文件路径目前硬编码为 `'TASK.md'`（cwd 相对），若要按会话分文件或多任务并行，得提成配置；清单只承载**步骤**（结构化），不含旧 `TASK.md` 的"目标 / 经验"散文——这是刻意的简化（见同日 DECISION_LOG），若日后确需，得为 store 设计一个可往返的字段而非回退到"模型写一段 blob"；`start/done` 的 `index` 缺省为 1（`optPosInt` 的默认值），"省略"与"显式传 1"不可区分，当前靠返回值回显"改了第几项"兜底，若要严格拒绝"省略"得新增标量形状。
+
+---
+
 <a id="log-2026-09-11-autogen"></a>
 ## 2026-09-11 14:14 | 文档数字从"手抄"改为"生成"：去重 + AUTOGEN 区块 + 只读校验
 

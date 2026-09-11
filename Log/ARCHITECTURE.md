@@ -39,7 +39,8 @@
 │ loop/             AgentLoopServiceImpl —— LLM 流式 + 工具执行的循环
 │ session/          JsonlSessionStorage（entry 树 + leaf 指针 + fork）· InMemory · Mock
 │ tools/            ToolRegistry + spec.ts（参数规格：一份定义派生 Schema / 运行时校验 / 入参类型）
-│                   + 6 个内置工具（ls / read / write / edit / grep / bash）
+│                   + 7 个内置工具（ls / read / write / edit / grep / bash / todo）
+│ todo/             TaskStore —— 任务清单的内存真相源（render/parse 互逆 + TASK.md 投影/种子）
 │ permission/       PermissionManager
 │ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
 │ commands/         CommandServiceImpl + 9 个内置命令

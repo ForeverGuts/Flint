@@ -14,6 +14,7 @@
  */
 import type { ToolProvider } from '../core/tools.js';
 import { defineTool, str, strAllowEmpty, optStr, optPosInt, optBool, ToolInputError } from './spec.js';
+import { TaskStore, taskStore } from '../todo/store.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    参数规则在每个工具的 spec 里，Schema 与校验都由它派生（实现见 spec.ts）
@@ -116,7 +117,12 @@ function globToRegExp(glob: string): RegExp | null {
    工具注册
    ═══════════════════════════════════════════════════════════════════════════════ */
 
-export function registerBuiltinTools(tools: ToolProvider): void {
+/**
+ * 注册 7 个内置工具（Ls / Read / Write / Edit / Grep / Bash / Todo）。
+ * @param tools 工具子系统
+ * @param store 任务清单真相源；缺省用进程级单例（runtime 也读同一个），测试可注入自己的实例。
+ */
+export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = taskStore): void {
   /* ── Ls：列目录（了解结构，工具增强推理的起点） ── */
   tools.register(defineTool({
     name: 'ls',
@@ -552,6 +558,67 @@ export function registerBuiltinTools(tools: ToolProvider): void {
         if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
         const msg = e instanceof Error ? e.message.slice(0, 500) : String(e);
         return `[ERROR] 命令执行失败: ${msg}`;
+      }
+    },
+  }));
+
+  /* ── Todo：维护任务清单（C 方案的"工具做接口"） ──
+     真相源是注入的 TaskStore（内存结构化状态）；本工具只做**增量**变更（传 op + index + text），
+     返回值就是渲染后的整份清单 —— 模型下一轮自然看到最新进度，不必自己重抄。
+     每次变更后把状态**投影**到 TASK.md（系统行为，不走权限弹窗）：进程重启后由 main 读它当种子。
+     刻意不做的事：不做嵌套参数（items 数组）。spec.ts 只给 5 种标量形状，且"清单本体住在工具的
+     状态里"正是本设计的关键 —— 参数保持标量，状态与校验都收在 TaskStore 一处。 */
+  tools.register(defineTool({
+    name: 'todo',
+    description: '维护任务步骤清单（长任务用，保证多步任务不断链）。op: add 追加一项（需 text）/ start 标记某项进行中 / done 标记某项完成 / clear 清空。同一时刻至多一项"进行中"。返回值是带序号的整份清单，序号即下次 start/done 要传的 index。清单会投影到 TASK.md，进程重启后仍可续。简单问答、闲聊不要用本工具。',
+    spec: {
+      op: str('操作', '要做的操作：add（追加一项，需 text）/ start（标记进行中，需 index）/ done（标记完成，需 index）/ clear（清空）'),
+      index: optPosInt('项序号', '目标项的序号（1 基，与返回值里的编号一致），start / done 使用。缺省 1。示例: 2', 1),
+      text: optStr('任务文本', 'add 时的步骤描述（单行）。示例: "改 tools/builtin.ts 并跑验证"', ''),
+    },
+    handler: async (args) => {
+      try {
+        const { op, index, text } = args;
+        switch (op) {
+          case 'add': {
+            if (store.add(text) < 0) {
+              return `[INVALID] add 需要非空的 text（要追加的步骤描述）`;
+            }
+            break;
+          }
+          case 'start': {
+            if (!store.start(index)) {
+              const t = store.counts().total;
+              return `[INVALID] start 的 index=${index} 越界（当前 ${t} 项，序号 1..${t}）`;
+            }
+            break;
+          }
+          case 'done': {
+            if (!store.done(index)) {
+              const t = store.counts().total;
+              return `[INVALID] done 的 index=${index} 越界（当前 ${t} 项，序号 1..${t}）`;
+            }
+            break;
+          }
+          case 'clear':
+            store.clear();
+            break;
+          default:
+            return `[INVALID] 未知操作 op=${op}，可用的是 add / start / done / clear`;
+        }
+
+        // 投影到 TASK.md（失败不致命：内存仍是真相源，只是丢跨重启存档）
+        const warn = store.projectToFile('TASK.md');
+        const c = store.counts();
+        if (c.total === 0) return `[OK] 任务清单已清空（TASK.md 已移除）`;
+        const head = `[OK] 任务清单（${c.total} 项：${c.done} 完成 / ${c.active} 进行中 / ${c.pending} 待办）`;
+        const tail = warn
+          ? `\n（注：TASK.md 写入失败：${warn} —— 内存状态仍有效，但重启后会丢失）`
+          : '';
+        return `${head}\n${store.renderNumbered()}${tail}`;
+      } catch (e) {
+        if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
+        return `[ERROR] todo 执行失败: ${e instanceof Error ? e.message : String(e)}`;
       }
     },
   }));

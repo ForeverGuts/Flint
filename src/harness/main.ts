@@ -25,6 +25,7 @@ import { coreSection } from '../context/sections/core-section.js';
 import { toolsSection } from '../context/sections/tools-section.js';
 import { skillsSection } from '../context/sections/skills-section.js';
 import { loadExtensions } from '../context/extension-loader.js';
+import { taskStore } from '../todo/store.js';
 import { SpanCollectorImpl } from '../runtime/span-collector.js';
 import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
@@ -47,6 +48,11 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const { llm } = checkResult;
   const modelName = checkResult.config?.model ?? 'unknown';
   const baseUrl = checkResult.config?.baseUrl ?? '';
+
+  // 工作记忆种子：把 TASK.md（上一进程留下的投影）吸收进内存真相源，**只此一次**。
+  // 之后运行期一律以 taskStore 为准、不再回读文件 —— 否则就出现"两处判定"（store 与文件），
+  // 迟早漂移。清单若无未完成项（空文件 / 全勾选），loadFromFile 会删掉文件并保持空清单。
+  taskStore.loadFromFile('TASK.md');
 
   // 初始化持久化会话（v2 会话树格式）
   const sessionDir = './sessions';

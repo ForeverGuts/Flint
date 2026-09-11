@@ -7,9 +7,9 @@
  * 可靠性防护（思维链强化·阶段A）：
  *   - 重复失败保护：同一工具+同参数连续重复失败 → 提示追加进该工具结果（不新增消息，
  *     避免 Anthropic user/assistant 交替约束 400）
- *   - 轮数耗尽收尾：最后一轮前注入收尾提示（写进度入 TASK.md + 总结回复），
+ *   - 轮数耗尽收尾：最后一轮前注入收尾提示（更新任务清单 + 总结回复），
  *     耗尽时优雅兜底（回溯最后 assistant 进展说明，不向用户抛工具原始输出）
- *   - maxTurns 可按次传入（Runtime 层：TASK.md 存在时放大轮数预算）
+ *   - maxTurns 可按次传入（Runtime 层：清单有未完成项时放大轮数预算）
  *   - 内层引导（steering）：工具跑完、下一次 LLM 调用**之前**取件（opts.takeSteer），
  *     追加进最后一条 tool 结果 —— 用户执行中途插入的指示进的是**本轮**上下文，
  *     而不是等整轮结束才另起一回合（那样就叫 followUp 了）。见 ④ 段。
@@ -319,7 +319,7 @@ export class AgentLoopServiceImpl implements AgentLoopService {
       if (turn === maxTurns - 2) {
         const lastMsg = toolMessages[toolMessages.length - 1];
         if (lastMsg && lastMsg.role === 'tool') {
-          lastMsg.content += `\n\n[系统提示] 轮次即将耗尽，下一轮是最后一轮。停止开启新步骤：用 write 把当前进度与未完成项记入 TASK.md，下一轮直接向用户返回总结（完成了什么、没完成什么、剩余什么），不要再调工具。`;
+          lastMsg.content += `\n\n[系统提示] 轮次即将耗尽，下一轮是最后一轮。停止开启新步骤：用 todo 如实更新清单（未完成项保持未完成、已完成项标 done），下一轮直接向用户返回总结（完成了什么、没完成什么、剩余什么），不要再调工具。`;
         }
       }
     }
@@ -336,7 +336,7 @@ export class AgentLoopServiceImpl implements AgentLoopService {
         (m) => m.role === 'assistant' && m.content && m.content.trim(),
       );
       const progress = lastAssistant?.content?.trim() || '（模型未留下进展说明）';
-        finalText = `⚠️ 达到最大轮数（${maxTurns}），任务未完成。\n\n【目前进展】\n${progress}\n\n可以说"继续"，如有 TASK.md 会从断点续传。`;
+        finalText = `⚠️ 达到最大轮数（${maxTurns}），任务未完成。\n\n【目前进展】\n${progress}\n\n可以说"继续"，未完成的任务会从断点续传。`;
         this.deps.onDiagnostic?.('warn', 'loop', `Agent Loop 达到最大轮数 (${maxTurns}) 结束，任务未完成`);
       }
     }

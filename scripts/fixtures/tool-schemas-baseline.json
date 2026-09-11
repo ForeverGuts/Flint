@@ -110,5 +110,25 @@
     "required": [
       "command"
     ]
+  },
+  "todo": {
+    "type": "object",
+    "properties": {
+      "op": {
+        "type": "string",
+        "description": "要做的操作：add（追加一项，需 text）/ start（标记进行中，需 index）/ done（标记完成，需 index）/ clear（清空）"
+      },
+      "index": {
+        "type": "number",
+        "description": "目标项的序号（1 基，与返回值里的编号一致），start / done 使用。缺省 1。示例: 2"
+      },
+      "text": {
+        "type": "string",
+        "description": "add 时的步骤描述（单行）。示例: \"改 tools/builtin.ts 并跑验证\""
+      }
+    },
+    "required": [
+      "op"
+    ]
   }
 }
