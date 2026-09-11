@@ -285,7 +285,13 @@ watcher 的 ctx 里刻意不给 `on`——“旁观者改流程”在类型层�
 1. **装载口子意义的 hook**：住在 `src/extensions/hooks/`、export `registerHooks` 的扩展文件。目录名是按“怎么装进来”命名的。
 2. **总线 API 意义的 hook**：`events.on(type, handler)`——精确监听，返回值经 `emitHook` 收回，因此**能改写流程**。
 
-全项目只有两个发射点，都在 `context/system-prompt.ts`：`before_build` 与 `before_request`。
+全项目有四个发射点：`context/system-prompt.ts` 里的 `before_build` 与 `before_request`（提示词层），
+`loop/agent-loop.ts` 里的 `before_tool_call` 与 `after_tool_call`（工具生命周期，2026-09-12 起）。
+工具钩子的语义：**可拦截、不可改参**——`before_tool_call` 返回 `{action:'deny', reason}` 即拦截
+（工具不跑，模型收到理由），返回 undefined 放行；没有静默换参的能力（语义决策见
+DECISION_LOG 锚点 log-2026-09-12-tool-hooks）。容错是 **fail-open**：钩子异常 / 返回形状不对
+一律放行（钩子是基础设施不是策略），只记 stderr。`after_tool_call` 只读观察，收到
+`{name, args, result, ok, durationMs}`，返回值不消费。发射点唯一性由 `verify-hooks.ts` S1/S2 守护。
 
 **住在 `hooks/` 目录 ≠ 用了 `on`**。`trace-log` 就曾住在这个目录却只用 `subscribe`，因此被误读为“trace 与钩子机制有关”，现已搬到 `watchers/`。
 

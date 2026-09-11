@@ -31,6 +31,7 @@ import type { ToolProvider } from '../core/tools.js';
 import type { PermissionProvider } from '../core/permission.js';
 import type { EventBus, SpanRecorder } from '../core/events.js';
 import { spanRecorderOf } from '../core/events.js';
+import { decodeDeny } from './tool-hooks.js';
 import type { SpanAttrs, SpanResult } from '../runtime/events.js';
 import type { AgentLoopOptions, AgentLoopResult, AgentLoopService } from '../core/loop.js';
 
@@ -202,6 +203,31 @@ export class AgentLoopServiceImpl implements AgentLoopService {
         } catch { args = {}; }
         events.emit({ type: 'tool_execution_start', name: tc.function.name, args });
 
+        // ── 钩子闸（before_tool_call）：程序闸刻意放在权限弹窗（人闸）之前 ——
+        // 钩子先拦掉明显违规的调用，人不该看到的弹窗就根本不弹。
+        // 钩子异常 / 返回值形状不对都按放行处理（fail-open）：钩子是基础设施不是策略，
+        // 它坏了不能让所有工具调用集体瘫痪，只记 stderr（stderr 不在 stdout 协议通道上）。
+        // 刻意没有改参能力：能拒绝执行（模型与日志都明确知道没跑），
+        // 不能静默换参数（模型以为在跑原命令，实际执行的是另一条，两头对不上）。
+        let hookDeny = { deny: false, reason: '' };
+        try {
+          hookDeny = decodeDeny(
+            await events.emitHook?.('before_tool_call', { name: tc.function.name, args }),
+          );
+        } catch (err) {
+          console.error(
+            `[AgentLoop] before_tool_call 钩子异常（按放行处理）: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (hookDeny.deny) {
+          toolMessages.push({
+            role: 'tool', tool_call_id: tc.id, name: tc.function.name,
+            content: `[工具 ${tc.function.name} 被钩子拦截]：${hookDeny.reason}`,
+          });
+          events.emit({ type: 'tool_execution_end', name: tc.function.name, result: '❌ 已被钩子拦截', ok: false });
+          continue;
+        }
+
         // ── 权限确认（刻意放在打卡之外：等人点按钮的时间不应算成工具耗时） ──
         // 弹窗自身异常按"拒绝"处理，不让它掀翻整个循环（与原 try 包裹行为一致）
         let denied = false;
@@ -248,6 +274,7 @@ export class AgentLoopServiceImpl implements AgentLoopService {
         // 把③当②会让模型每查一个不存在的符号都被念一次；把②当③就是改前那个洞。verify-phase-ab 的 A4/A5 两头钉住
         let resultContent = '';
         let failed = false;
+        const toolStartAt = Date.now(); // after_tool_call 钩子的耗时从执行段起算（不含等人点弹窗的时间）
         try {
           const callAttrs: SpanAttrs<'tool_call'> = { name: tc.function.name, args };
           await spans.trace('tool_call', callAttrs, async (span) => {
@@ -268,6 +295,19 @@ export class AgentLoopServiceImpl implements AgentLoopService {
         // 成与败两条路径都必须发 tool_execution_end：过去 catch 分支漏发，
         // 任何按 start/end 配对计数的消费者会永远认为该工具还在执行（UI 卡在下边框不画）
         events.emit({ type: 'tool_execution_end', name: tc.function.name, result: resultContent, ok: !failed });
+
+        // ── 钩子（after_tool_call）：只在真正执行后发 —— 被钩子/权限拒绝的两条路径
+        // 根本没有执行结果可看。只读观察：返回值刻意不消费（语义决策，见 DECISION_LOG）。
+        try {
+          await events.emitHook?.('after_tool_call', {
+            name: tc.function.name, args, result: resultContent, ok: !failed,
+            durationMs: Date.now() - toolStartAt,
+          });
+        } catch (err) {
+          console.error(
+            `[AgentLoop] after_tool_call 钩子异常: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
 
         // ── 重复失败保护：同一调用连续重复失败 → 提示追加进该结果（仅建议不阻断） ──
         // 追加进 tool 结果而非新增消息：新增 user 消息在 Anthropic 转换后会与前一条（也是 user）连续，

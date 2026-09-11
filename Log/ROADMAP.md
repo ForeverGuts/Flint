@@ -117,10 +117,16 @@
 - [ ] **分支摘要** — fork 后把旧分支摘要塞回新分支上下文
   - 理由：当前 fork 只复制前缀，新分支 LLM 不知道旧线聊过什么
   - 对标：Pi 的 branch-summarization.ts
-- [ ] **Hook 系统** — 工具调用/消息生命周期钩子（beforeToolCall/afterToolCall 等）
+- [x] **Hook 系统** — 工具调用/消息生命周期钩子（beforeToolCall/afterToolCall 等）
   - 理由：扩展 Agent 行为（拦截/转换/记录），当前仅 inputHandlers 简单预处理
   - 对标：Pi 的 hooks.md / Cline 任务生命周期钩子
   - 进度（2026-09-04 核实）：**提示词层与旁观层的钩子已落地**——`EventBus.on(type, handler)` 的返回值经 `emitHook` 收回、能改写流程（现有 `before_build` / `before_request` 两个挂点，`extensions/hooks/` 自动装载），`extensions/watchers/` 只订阅不改流程（ctx 里刻意不给 `on`）；**工具调用生命周期钩子仍无**：全 src/ 搜 `beforeToolCall` / `afterToolCall` / `before_tool` / `after_tool` 零命中，故本条仍留待办。`runtime.onInput()`（输入预处理）也仍空着，见 ARCHITECTURE.md 第四节第 7 条
+  - 补记（2026-09-12 完成）：工具生命周期两个发射点落地——`before_tool_call` / `after_tool_call`
+    （`agent-loop.ts`，命名跟随既有 kebab 风格而非 Pi 的 camelCase）。语义**可拦截、不可改参**（用户拍板）；
+    fail-open（钩子异常 / 形状不对 → 放行）。上句"全 src/ 零命中"就此失效，发射点唯一性由
+    `verify-hooks.ts` S1/S2 机器守护。**本条仍剩**：`runtime.onInput()`（输入预处理）依旧空着；
+    消息生命周期钩子（LLM 请求前后的用户级挂点）未做——`before_request` 是 system-prompt 内部的，
+    对 extensions 开放的只有工具这两个
 - [ ] **会话仓库层** — 从 jsonl-storage 抽出 repo 层（会话列表/管理/删除）
   - 理由：区分"单会话存储"与"会话管理"，支持多会话完整操作
   - 对标：Pi 的 jsonl-repo.ts
@@ -307,7 +313,7 @@
 2. **历史结构化数据接通（P6）** —— 价值高但**卡在一个未定的设计决策**上：thinking 块的历史策略
    没定就不能接线（直接透传会让任何有过工具调用的会话把 extended thinking 静默全程关掉）。
    想做先做决策，不要先写代码。
-3. **工具生命周期 Hook（P6）** —— `beforeToolCall` / `afterToolCall` 全 src/ 仍零命中，补齐后
-   "改完自动跑测试""工具级审计"这类需求才有落点。
+3. **工具生命周期 Hook（P6）** —— ✅ **已于 2026-09-12 落地**（`before_tool_call` / `after_tool_call`，
+   可拦截、不可改参，细节见上面 P6 Hook 条的补记）。"改完自动跑测试""工具级审计"从今天起有落点。
 4. **会话仓库层 / 分支摘要 / 技能热重载（P6）** —— 三项都是对标补齐，互不依赖，可按手感挑。
 5. **预编译发行（P6 第三档）** —— 收益递减（第一/二档后启动已 0.7ms 级），优先级最低。

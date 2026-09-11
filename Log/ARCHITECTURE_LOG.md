@@ -11,6 +11,40 @@
 
 ---
 
+<a id="log-2026-09-12-tool-hooks"></a>
+
+## 2026-09-12 00:00 | 工具生命周期钩子：程序闸先于人闸，可拦截不可改参
+
+**牵连系统**：`loop/agent-loop.ts`（两个发射点）、`loop/tool-hooks.ts`（新增，deny 契约解码）、
+`extensions/hooks/example-hook.ts`（示范扩充）、`scripts/verify-hooks.ts`（新增 35 项）、
+`scripts/verify-extensions.ts`（一条断言的前提修正）。
+
+**面向的问题**：钩子机制此前只有半个——`emitHook` 管道与 `before_build`/`before_request` 两个提示词层
+挂点都在，但工具执行这条最该有闸的路径上没有任何挂点，"改完自动跑测试""危险命令拦截""工具级审计"
+都没有落点。且工具执行点全项目唯一（`agent-loop.ts` 一处 `tools.execute`），不加闸则任何扩展都只能
+在工具**外面**包一层（那就得改装配，违背"扩展不改 core"）。
+
+**做出的改动**：
+- 两个发射点：`before_tool_call`（`tools.execute` 之前、权限弹窗**之前**——程序闸先于人闸，钩子拦下的
+  调用人根本看不到弹窗）与 `after_tool_call`（`tool_execution_end` 之后，载荷含
+  `{name, args, result, ok, durationMs}`，**只读**，返回值不消费）。命名跟随项目既有的 kebab 风格
+  （`before_build`），不用 Pi 的 camelCase。
+- deny 契约解码收在**纯函数** `decodeDeny`（`loop/tool-hooks.ts`）：`{action:'deny', reason?}` → 拦截；
+  undefined / 非对象 / 未知形状 → 放行。**fail-open** 是刻意取向：钩子是基础设施不是策略，
+  它写错了不能让所有工具调用集体瘫痪；异常与形状不对都只记 stderr（不占 stdout 协议通道）。
+- 被拦截的调用与权限拒绝同构：给模型一条 `[工具 X 被钩子拦截]：理由` 的 tool 结果 +
+  `tool_execution_end(ok:false)` 事件，循环继续——**不掀翻轮次**。
+
+**解决的问题**：工具级扩展有了正式挂点（示例钩子现已示范审计 + 拦截两个用法）；"程序闸先于人闸"
+还省掉了"弹窗问了半天、钩子反正要拦"的浪费。
+
+**未来可优化**：消息生命周期钩子（LLM 请求前后的用户级挂点）未做——`before_request` 是
+system-prompt 内部的，对 extensions 开放的只有工具这两个；`runtime.onInput()` 依旧空着；
+deny 目前不进 `repeatTracker`（与权限拒绝一致），若将来发现模型在同一个被拦调用上反复重试，
+再考虑把拦截也计入重复失败保护。
+
+---
+
 <a id="log-2026-09-11-rpc-stream"></a>
 
 ## 2026-09-11 20:43 | 把内核的自言自语递出进程：RPC 流式通知与 stdout 纯净

@@ -123,8 +123,11 @@ async function main(): Promise<void> {
     const t1 = tablesOf(bus1);
     check('不开 FLINT_TRACE 时通配订阅表为空 —— "不订阅、零开销"是实证而非注释',
       t1.subs.size === 0, `实际 ${t1.subs.size} 个订阅者`);
-    check('精确监听表里只有 example-hook 的 before_request（watcher 一条都没加）',
-      t1.hooks.size === 1 && t1.hooks.has('before_request'),
+    check('精确监听表恰好是 example-hook 的三个工具/提示钩子（watcher 一条都没加）',
+      t1.hooks.size === 3
+      && t1.hooks.has('before_request')
+      && t1.hooks.has('before_tool_call')
+      && t1.hooks.has('after_tool_call'),
       `实际 [${[...t1.hooks.keys()].join(',') || '空'}]`);
 
     console.log('');
