@@ -84,6 +84,8 @@ export async function createChat(
   if (!res.ok) throw new Error(`API error: ${res.status} ${await res.text()}`);
   const data = await res.json() as {
     choices: Array<{ message: { content: string | null; tool_calls?: LLMToolCall[] } }>;
+    /** 非流式响应自带用量（与流式不同，无需 stream_options 索取；缺省则不报） */
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   };
   const message = data.choices[0]?.message;
   return {
@@ -91,6 +93,7 @@ export async function createChat(
     ...(message?.tool_calls && message.tool_calls.length > 0
       ? { tool_calls: message.tool_calls }
       : {}),
+    ...(data.usage ? { usage: toLLMUsage(data.usage) } : {}),
   };
 }
 

@@ -12,7 +12,7 @@
  * 可观测：压缩是一次完整的 LLM 摘要调用（可能十几秒），过去对外只发一个
  * thinking{'compressing'} —— 一个没有边界、没有耗时的黑箱。现在包在 compaction span 里。
  */
-import type { LLMProvider } from '../llm/types.js';
+import type { LLMProvider, LLMUsage } from '../llm/types.js';
 import type { CompactionStore } from '../core/compaction-store.js';
 import type { EventBus } from '../core/events.js';
 import { spanRecorderOf } from '../core/events.js';
@@ -56,14 +56,21 @@ export class CompactionServiceImpl implements CompactionService {
       compressedSummary = compactions[compactions.length - 1].summary;
     }
 
+    // 本轮触发压缩时的用量（compactTo 带回；不压缩则缺省）
+    let compactionUsage: LLMUsage | undefined;
     if (history.length > COMPACT_THRESHOLD) {
       const r = await this.compactTo(storage, history, KEEP_RECENT);
       history = r.history;
       if (r.summary) compressedSummary = r.summary;
+      if (r.usage) compactionUsage = r.usage;
     }
 
-    // 摘要独立返回（不 unshift 进 history，避免污染缓存前缀）
-    return { history, summary: compressedSummary || undefined };
+    // 摘要独立返回（不 unshift 进 history，避免污染缓存前缀）；用量随行（runtime 入账 /usage）
+    return {
+      history,
+      summary: compressedSummary || undefined,
+      ...(compactionUsage ? { usage: compactionUsage } : {}),
+    };
   }
 
   /**
@@ -114,18 +121,18 @@ export class CompactionServiceImpl implements CompactionService {
       // 摘要调用包在 compaction span 里：失败时 trace() 会先打 error 卡再重抛，
       // 下面的 catch 仍照原样兜底（只裁历史、不升压）——行为与改造前一致
       const compactAttrs: SpanAttrs<'compaction'> = { msgCount: uncompressedIds.length };
-      const summary = await spanRecorderOf(events).trace('compaction', compactAttrs, async (span) => {
+      const { summary, usage } = await spanRecorderOf(events).trace('compaction', compactAttrs, async (span) => {
         const result = await llm.chat([
           { role: 'system', content: '将以下对话压缩为一段摘要（50 字内），保留关键信息。只输出摘要。' },
           { role: 'user', content: toSummarize },
         ]);
         const done: SpanResult<'compaction'> = { summaryLength: result.content.length };
         span.set(done);
-        return result.content;
+        return { summary: result.content, usage: result.usage };
       });
       const firstKeptId = allIds[allIds.length - keep] ?? allIds[allIds.length - 1] ?? '';
       await storage.appendCompaction(summary, firstKeptId);
-      return { history: history.slice(-keep), summary };
+      return { history: history.slice(-keep), summary, ...(usage ? { usage } : {}) };
     } catch {
       return { history: history.slice(-keep) };
     }

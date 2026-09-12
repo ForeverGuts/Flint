@@ -172,7 +172,7 @@
 - [x] **可观测性增强** — 结构化 trace/span 观测层（2026-09-02 落地：总线 emit() 盖 at/seq/turnId 公共头 + SpanRecorder 打卡机（trace 自动配对 / beginSpan 手动）+ 四组骨架 span 覆盖三重循环（prompt/llm_request/tool_call/compaction）+ note_start/note_end 便签通道 + trace-log hook 落 trace.jsonl，verify-events 55 项）
   - L3 真实 usage 同日补齐：两条流式协议各自取用量（OpenAI 兼容靠 stream_options.include_usage 显式索取 + 撞 400 自动降级，Anthropic 靠 message_start 输入三项相加 + message_delta 输出累计值），AgentLoopResult 逐轮合计、任一轮缺失即整体 null，verify-usage 22 项；实测同一条冒烟的 promptTokens 从估算 26 变真值 2834（估算没算 system prompt 与 5 个工具描述）
   - 对标：Pi 的 docs/observability.md
-  - 剩余（未立项，按需再做）：非流式 chat() 的用量回流（ChatResult 无 usage 字段，compaction 摘要调用消耗的 token 从未计入 totalUsage）· 缓存命中率明细（现被合并进 promptTokens，LLMUsage 只有三个槽）· 显式 parentId 树形（现靠 turnId + 时间区间包含关系重建）· 51 处裸 console 收编进总线
+  - 剩余（未立项，按需再做）：缓存命中率明细（现被合并进 promptTokens，LLMUsage 只有三个槽）· 显式 parentId 树形（现靠 turnId + 时间区间包含关系重建）· 51 处裸 console 收编进总线。~~非流式 chat() 的用量回流~~**已于 2026-09-12 落地**：`ChatResult.usage`（非流式真值，API 没报缺省）→ `CompactionResult.usage` 透传 → runtime `bumpUsage` 唯一累加点（主轮 maybeCompact + fork compactNow 两处入账并广播 usage 事件），压缩摘要的消耗自此计入 /usage；verify-compaction-usage 30 项、变异两轮精准变红（途中还揪出 maybeCompact 丢透传的真 bug，已入 CHANGE_LOG）
 - [x] **/traces 内置命令 + SpanCollector 公共配对件** —（2026-09-03 落地）把 trace-log watcher 里的 span 配对逻辑抽成 runtime/span-collector.ts（契约 SpanCollector / CollectedSpan 进 core/events.ts，与生产端的 SpanRecorder 对称：一个帮打卡、一个帮收段），watcher 从 134 行瘦到 78 行、只剩"开关判定 + 落盘格式 + 退出补记"；新增 /traces 命令就地看最近段的耗时/成败/此刻在跑的是哪段，支持条数与段名过滤；两个消费者各持独立实例（核心命令不反过来依赖可选扩展）；verify-events ⑨ 段 21 项，全量 299 项
   - 理由：看一段耗时不该先开 FLINT_TRACE 落盘、再翻 jsonl 文件；而配对逻辑虽然只有一份，却住在可选扩展里，核心命令拿不到
   - 对标：把观测结果做成内置命令随手可查（而不是只能翻落盘文件）的通行做法；不引入 LangSmith / LangFuse 这类外部服务与依赖，只保留内存环形队列
@@ -194,7 +194,7 @@
   - ✅ **`package.json` 已补 `verify` / `typecheck` / `clean` 三个入口**；`clean` 从 `rm -rf dist`（Windows 跑不通）改为 `node scripts/clean.mjs`（`fs.rmSync` 的 recursive + force）；新增 `run-verify.mjs` 串跑 12 套（全量 359 项、EXIT=0，三个 npm 入口均实测跑通）
   - ✅ **`input-handler-demo.ts` 已删**（连同 `main.ts` 里的 import 与注册）。删前查出它会静默吞掉 `@@` 开头的输入、把 `/ask ` 转成加问号，属**未文档化的魔法行为却挂在生产路径上**；`runtime.onInput()` 能力本身保留给下面的 Hook 系统
   - ✅ **GLOSSARY 5 处同文件锚点死链修好**（`#项目元数据` ×4、`#event-subscription` ×1，按该文件其余 30+ 处已用的“全 slug 含中文后缀”约定对齐），并把检查固化为 `verify-docs.mjs`；其中“入站锚点契约”6 条把被 DECISION_LOG / GLOSSARY 引用的标题文字钉死（DECISION_LOG 是 append-only，断链没法在源头修，只能不让标题变）
-  - ⏸ **压缩用量没回流（`/usage` 少算）本轮不做**：要改就得改 `ChatResult` 的形状，牵连两个 provider 的非流式路径 + `stream-helper` + 多套 verify 脚本，是独立的一件事，已在上面“可观测性增强”的剩余项里
+  - ⏸ **压缩用量没回流（`/usage` 少算）本轮不做**：要改就得改 `ChatResult` 的形状，牵连两个 provider 的非流式路径 + `stream-helper` + 多套 verify 脚本，是独立的一件事，已在上面"可观测性增强"的剩余项里（补记 2026-09-12：**已落地**，以"可观测性增强"剩余项处的补记为准）
   - 遗留两项：`src/runtime/commands/` 空目录仍在（git 不跟踪空目录，仓库里本就没它，只是本地残留）；另查出 **`InputHandler` 同名冲突**（`runtime.ts` 的函数类型 vs `io/ui/input-handler.ts` 的类），未改、只在两处各加注释互指，详见 ARCHITECTURE.md 第四节第 8 条
 - [x] **历史结构化数据接通** —（2026-09-04 立项；**2026-09-12 按方案 B 落地**）
   - 补记：**方案 B（thinking 开关分叉）**——agent-loop 以 `turnLog` 上交本轮生成的中间消息，runtime 逐条带 extra 落盘；请求侧 thinking 关（或 auto 未激活）→ 历史全量结构化回传（跨轮工具可见），thinking 开 → 降级纯文本（tool 结果转 user 文本、空 assistant 轮剔除），`thinkingBlocks` 仍不落盘，安全阀原样保留当兜底。全保真"方案 A"已于 2026-09-12 晚**关闭**：官方文档证实跨轮思考块**无回传义务**且不计上下文（"the API automatically ignores thinking blocks from previous turns"），协议只硬性要求当前工具循环内的块——而那些块活在单次 `run()` 的内存消息链上从未丢失；落盘是在给 API 不要的东西付工程成本。API 对"历史带 tool_calls 而无块 + thinking 开"的真实处理是**静默关 thinking**（非 400），降级转写让历史兼容、thinking 真开得起来——价值被文档坐实。详见 ARCHITECTURE.md 第二节决策 7 及其补记

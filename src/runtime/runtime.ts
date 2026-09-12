@@ -3,8 +3,7 @@
  * 调用方：main.ts（初始化并启动）
  * 服务于：串联 LLM 调用、session 对话、命令注册、input 事件、skill 展开
  */
-import type { LLMMessage } from '../llm/types.js';
-import type { LLMProvider } from '../llm/types.js';
+import type { LLMMessage, LLMProvider, LLMUsage } from '../llm/types.js';
 import type { Diagnostic, RuntimeOptions } from '../types.js';
 import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
@@ -351,6 +350,8 @@ export class Runtime {
     const history = await forked.storage.getMessages();
     // storage 传当前（=新分支的）会话：摘要入树进新文件，原文件不动
     const result = await this.compaction.compactNow(history, this.compactionStore());
+    // fork 摘要的 LLM 消耗同样回流 /usage（口径与主轮压缩一致）
+    if (result.usage) this.bumpUsage(result.usage);
     return {
       fileName: forked.fileName,
       summarized: !!result.summary,
@@ -670,6 +671,8 @@ export class Runtime {
     let history = this.session ? await this.session.getMessages() : [];
     const compacted = await this.compaction.maybeCompact(history, this.compactionStore());
     history = compacted.history;
+    // 压缩摘要的 LLM 消耗回流 /usage 合计（没压缩 / 失败 / API 没报时 usage 缺省）
+    if (compacted.usage) this.bumpUsage(compacted.usage);
     this.events.emit({ type: 'thinking', phase: 'streaming' });
 
     // ⑧: Agent Loop —— LLM 调用 → Tool 执行 → 循环
@@ -794,12 +797,20 @@ export class Runtime {
     // 用量：优先 API 真值（Agent Loop 已合计各轮），缺失才回退估算——
     // 估算只算 user 输入 + 最终回复，多轮工具循环的中间 assistant/tool 消息、
     // system prompt、工具描述全没算，多轮任务下严重少报
-    const u = usage ?? estimateTokenUsage(currentText, finalText);
+    this.bumpUsage(usage ?? estimateTokenUsage(currentText, finalText));
+    return finalText;
+  }
+
+  /**
+   * 用量入账（唯一累加点）：并入 /usage 合计并广播 usage 事件。
+   * 主轮（agent loop）、压缩摘要（maybeCompact / compactNow 的 LLM 调用）都走这里——
+   * 压缩也是真金白银的 API 调用，过去不回流等于 /usage 少报（2026-09-12 回流）。
+   */
+  private bumpUsage(u: LLMUsage): void {
     this.totalUsage.promptTokens += u.promptTokens;
     this.totalUsage.completionTokens += u.completionTokens;
     this.totalUsage.totalTokens += u.totalTokens;
     this.events.emit({ type: 'usage', current: u, total: { ...this.totalUsage } });
-    return finalText;
   }
 
   /* ── 内部方法 ── */

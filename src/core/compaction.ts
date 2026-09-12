@@ -4,6 +4,7 @@
  * 服务于：抽象会话压缩，隔离具体实现（context/compaction.ts）
  */
 import type { CompactionStore } from './compaction-store.js';
+import type { LLMUsage } from '../llm/types.js';
 
 /** 压缩结果：历史与摘要分离，摘要独立返回（不再混入 history 前缀） */
 export interface CompactionResult {
@@ -11,6 +12,12 @@ export interface CompactionResult {
   history: Array<{ role: string; content: string }>;
   /** 会话摘要（历史超限被压缩过才存在；代表被压缩掉的旧上下文） */
   summary?: string | undefined;
+  /**
+   * 生成摘要那次 LLM 调用的真实用量（2026-09-12 用量回流）。
+   * 只在"摘要调用成功且 API 报了用量"时存在——没压缩 / 调用失败 / API 没报都缺省，不伪报 0。
+   * 调用方（runtime）负责并入 /usage 合计。
+   */
+  usage?: LLMUsage;
 }
 
 /** 上下文管理子系统接口（执行类 → Service 后缀） */

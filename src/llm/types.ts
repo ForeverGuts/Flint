@@ -98,6 +98,11 @@ export interface ChatResult {
   content: string;
   /** 结构化工具调用（纯文本回复时为空） */
   tool_calls?: LLMToolCall[];
+  /**
+   * 本次调用的真实用量（API 响应自带；没报就缺省——不伪报 0）。
+   * 压缩摘要（compaction）走非流式 chat，靠它把消耗回流进 /usage 合计（2026-09-12）。
+   */
+  usage?: LLMUsage;
 }
 
 /** LLM 事件流中的事件类型 */

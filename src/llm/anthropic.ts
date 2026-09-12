@@ -103,9 +103,15 @@ interface AnthropicResponse {
   content: AnthropicContentBlock[];
   stop_reason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use' | null;
   stop_sequence: string | null;
-  usage: {
-    input_tokens: number;
-    output_tokens: number;
+  /**
+   * 非流式响应的用量（字段缺省按没有处理——不伪报）。缓存明细的口径与流式
+   * AnthropicStreamUsage 相同：真实计费输入 = input + cache_creation + cache_read。
+   */
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
   };
 }
 
@@ -251,6 +257,18 @@ function toAnthropicTools(tools: LLMTool[]): AnthropicTool[] {
 }
 
 /**
+ * Anthropic 非流式用量 → 内部 LLMUsage。
+ * 缓存写入与命中都要加回输入（同流式口径，缺了就严重少报）；total 缺则自加。
+ */
+function anthropicUsageToLLM(u: NonNullable<AnthropicResponse['usage']>): LLMUsage {
+  const promptTokens = (u.input_tokens ?? 0)
+    + (u.cache_creation_input_tokens ?? 0)
+    + (u.cache_read_input_tokens ?? 0);
+  const completionTokens = u.output_tokens ?? 0;
+  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+}
+
+/**
  * 从 Anthropic 响应 content 块解析出 ChatResult（文本 + tool_use 块转 LLMToolCall[]）。
  * Anthropic 的工具调用是 content 里的 tool_use 块（OpenAI 是顶级 tool_calls 字段）。
  */
@@ -274,6 +292,7 @@ function extractChatResult(response: AnthropicResponse): ChatResult {
   return {
     content,
     ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    ...(response.usage ? { usage: anthropicUsageToLLM(response.usage) } : {}),
   };
 }
 
