@@ -78,7 +78,11 @@ Agent 内部持有 `while(true)` 循环、自驱动运行的交互方式。**本
 对比：[Span](#span行为段)（生产端手里那个还在跑的句柄）
 
 ### Compaction（上下文压缩）
-历史太长时把早期对话摘要成一段，腾出上下文窗口。契约在 `core/compaction.ts`（`CompactionService`，Runtime 必注入子系统之一），实现在 `context/compaction.ts`；摘要的存放另有 `core/compaction-store.ts`（`CompactionStore`）——落在会话文件旁而不塞进消息流。
+历史太长时把早期对话摘要成一段，腾出上下文窗口。契约在 `core/compaction.ts`（`CompactionService`，Runtime 必注入子系统之一），实现在 `context/compaction.ts`；摘要的存放另有 `core/compaction-store.ts`（`CompactionStore`）——落在会话文件里（entry 树的 compaction entry），不塞进消息流。
+
+两个入口共用一个压缩主体：`maybeCompact`（**阈值闸**，每轮请求前跑，超 20 条才压）与 `compactNow`（**强制**，fork 摘要用，见[带摘要从此继续](#带摘要从此继续)）。storage **每次调用显式传入**（2026-09-12 起）——runtime 会切换会话，构造期绑死会把摘要写进旧文件。
+
+LLM 视图与文件内容的分界（2026-09-12 修复后成立）：文件 = append-only 完整历史；`getMessages()` 视图 = 最后一个 compaction 的摘要 + 保留窗口（最近 10 条），**只认最后一个**摘要（与 SystemPromptService 摘要层同一口径）。审计层（`getAllStored` / `getAllMsgIds`）不裁。
 
 压缩本身也要调 LLM，走的是**非流式** `chat()`，并用 `trace('compaction', …)` 打卡成段。**已知缺口**：这条路径烧的 token 没有回流到 `totalUsage`（全文件无 `usage` 字样），所以 `/usage` 报的数偏少。
 
@@ -630,6 +634,13 @@ C3 的关键约束：`ThinkingBlock` = 推理文本 + `signature`（Anthropic �
 输出**刻意不带 ANSI**：命令返回值会经 RPC / 非 TTY 通道出去（编辑器插件、脚本），那里颜色转义是噪音。带颜色的版本只给终端面板用，两者共用同一个 `formatTaskList()`，所以记号不会分家。
 
 参见：[TaskStore](#taskstore任务清单真相源)、[常驻任务面板](#常驻任务面板task-panel)
+
+### 带摘要从此继续
+`/history` 选一条消息后的新子操作（`commands/builtin/history.ts` → `Runtime.forkSessionWithSummary`）：分叉出新分支后，**立刻**把旧前缀强制压缩成"摘要 + 最近 10 条"——长对话分叉不用等下一轮阈值触发、也不必每轮背着整个前缀跑。
+
+三段守则是它的边界：① `forkTo` 先原样复制整条前缀，**文件里永远是完整历史**（审计立场不破，压缩只改 LLM 视图）；② 前缀 ≤ 10 条时退化为普通分叉，不硬压（回执明说）；③ 摘要是否牺牲细节由用户自选——所以是菜单选项而不是自动行为。实现走 `CompactionService.compactNow`，与每轮的 `maybeCompact` 共用同一压缩主体。
+
+参见：[Compaction](#compaction上下文压缩)、[JsonlSessionStorage](#jsonlsessionstorage)
 
 ### session/update（ACP 流式通知）
 

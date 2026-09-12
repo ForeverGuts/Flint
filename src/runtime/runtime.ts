@@ -9,6 +9,7 @@ import type { Diagnostic, RuntimeOptions } from '../types.js';
 import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
+import type { SessionStorage } from '../core/storage.js';
 import { JsonlSessionRepo } from '../session/jsonl-repo.js';
 import type { SessionRepo } from '../core/session-repo.js';
 import * as path from 'node:path';
@@ -327,10 +328,54 @@ export class Runtime {
    * @returns 新会话文件名
    */
   async forkSessionAt(msgId: string): Promise<string> {
-    if (!this.session?.forkTo) return '';
-    const { fileName, storage } = await this.session.forkTo(msgId);
-    this.session = storage;
-    return fileName;
+    const forked = await this.forkToStorage(msgId);
+    if (!forked) return '';
+    this.session = forked.storage;
+    return forked.fileName;
+  }
+
+  /**
+   * fork 并把长前缀压缩成摘要（/history"带摘要从此继续"）。
+   * 调用方：/history 命令
+   * 服务于：长对话分叉后 LLM 不再每轮背着整个前缀跑——forkTo 先原样复制整条前缀
+   * （文件仍是完整历史，append-only 不破，审计性同普通 fork），再对新会话强制压缩
+   * （CompactionService.compactNow）：compaction 入树后，getMessages() 视图 =
+   * [对话摘要] + 最近 KEEP_RECENT 条。前缀不足时不压缩（summarized=false，等同普通分叉）。
+   */
+  async forkSessionWithSummary(
+    msgId: string,
+  ): Promise<{ fileName: string; summarized: boolean; summary?: string }> {
+    const forked = await this.forkToStorage(msgId);
+    if (!forked) return { fileName: '', summarized: false };
+    this.session = forked.storage;
+    const history = await forked.storage.getMessages();
+    // storage 传当前（=新分支的）会话：摘要入树进新文件，原文件不动
+    const result = await this.compaction.compactNow(history, this.compactionStore());
+    return {
+      fileName: forked.fileName,
+      summarized: !!result.summary,
+      ...(result.summary ? { summary: result.summary } : {}),
+    };
+  }
+
+  /** fork 共用：复制前缀到新会话存储（**不**切换 this.session）；无 forkTo 能力（InMemory/Mock）返回 null */
+  private async forkToStorage(msgId: string): Promise<{ fileName: string; storage: SessionStorage } | null> {
+    if (!this.session?.forkTo) return null;
+    return this.session.forkTo(msgId);
+  }
+
+  /**
+   * 当前会话作为压缩存储（与 main.ts 装配同判据：支持 CompactionStore 四方法才算）。
+   * 每次取**当下**的 this.session——压缩服务因此无状态，切会话/fork 后自动跟随。
+   * 用**可选成员探测**而不是 instanceof（探测 ≡ instanceof 的架构决策见 verify-session.ts，
+   * runtime 不对具体存储类做缩窄）。
+   */
+  private compactionStore(): import('../core/compaction-store.js').CompactionStore | undefined {
+    const s = this.session as Partial<import('../core/compaction-store.js').CompactionStore> | undefined;
+    if (!s) return undefined;
+    const ok = typeof s.getCompactions === 'function' && typeof s.appendCompaction === 'function'
+      && typeof s.getAllMsgIds === 'function' && typeof s.getMsgById === 'function';
+    return ok ? (s as import('../core/compaction-store.js').CompactionStore) : undefined;
   }
 
   /**
@@ -621,8 +666,9 @@ export class Runtime {
     const absorbedSteers: string[] = [];
 
     // ⑦: 上下文压缩 —— 委托给 CompactionService（历史超限时 LLM 摘要 + 入树）
+    // storage 每次显式传入：压缩服务无状态，跟着当前会话走（构造期绑死会写进旧文件）
     let history = this.session ? await this.session.getMessages() : [];
-    const compacted = await this.compaction.maybeCompact(history);
+    const compacted = await this.compaction.maybeCompact(history, this.compactionStore());
     history = compacted.history;
     this.events.emit({ type: 'thinking', phase: 'streaming' });
 

@@ -3,6 +3,7 @@
  * 调用方：Runtime（runSingleTurn 委托压缩）
  * 服务于：抽象会话压缩，隔离具体实现（context/compaction.ts）
  */
+import type { CompactionStore } from './compaction-store.js';
 
 /** 压缩结果：历史与摘要分离，摘要独立返回（不再混入 history 前缀） */
 export interface CompactionResult {
@@ -17,7 +18,26 @@ export interface CompactionService {
   /**
    * 上下文压缩：读当前 history，超限时生成摘要并压缩。
    * @param history 当前对话历史
+   * @param storage 压缩存储（**每次调用显式传入**，2026-09-12 起不再是构造期绑死——
+   *                runtime 会切换会话，绑死会把摘要写进旧文件）
    * @returns 压缩结果（history 独立于摘要，供调用方分层组装消息）
    */
-  maybeCompact(history: Array<{ role: string; content: string }>): Promise<CompactionResult>;
+  maybeCompact(
+    history: Array<{ role: string; content: string }>,
+    storage?: CompactionStore,
+  ): Promise<CompactionResult>;
+
+  /**
+   * 强制压缩（fork 摘要用）：不判阈值，直接把除最近 keepRecent 条外的未压缩消息摘要入树。
+   * 调用方：Runtime.forkSessionWithSummary（/history"带摘要从此继续"）
+   * @param history 当前对话历史（fork 后新会话的完整前缀）
+   * @param storage 压缩存储（每次调用显式传入，同 maybeCompact）
+   * @param opts.keepRecent 压缩后保留的最近条数（缺省与 maybeCompact 同一口径，不新造参数）
+   * @returns 压缩结果；前缀不足 keepRecent 条时不压缩，summary 为 undefined
+   */
+  compactNow(
+    history: Array<{ role: string; content: string }>,
+    storage?: CompactionStore,
+    opts?: { keepRecent?: number },
+  ): Promise<CompactionResult>;
 }

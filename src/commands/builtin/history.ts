@@ -9,6 +9,8 @@
  *   ③ 子操作：
  *      - 查看：展示该条完整内容
  *      - 从此继续：fork 出新分支（复制到该消息为止），原历史保留，切到新分支
+ *      - 带摘要从此继续：同上，再把旧前缀强制压缩为"摘要 + 最近 10 条"——
+ *        LLM 不再每轮背着整个前缀跑（长对话分叉省 token）；文件里仍是完整历史
  *      - 取消
  *
  * 设计：树不可变，无"编辑/删除"。要改历史 = fork 到该点重新提问，原历史可审计。
@@ -63,6 +65,7 @@ export function activate(runtime: Runtime): void {
       [
         { value: 'view', label: '查看完整内容', description: '' },
         { value: 'fork', label: '从此继续（分叉新分支，保留原历史）', description: '' },
+        { value: 'fork-summary', label: '带摘要从此继续（旧前缀换成摘要+最近10条，省 token）', description: '' },
         { value: 'cancel', label: '取消', description: '' },
       ],
       `选择操作 — ${labelOf(chosen)}  ${summarize(chosen.content)}`,
@@ -75,6 +78,14 @@ export function activate(runtime: Runtime): void {
       case 'fork': {
         const newName = await runtime.forkSessionAt(chosen.msgId);
         return `🔀 已分叉到新分支「${newName}」（复制到「${summarize(chosen.content)}」为止），原历史保留。可以直接继续对话。`;
+      }
+
+      case 'fork-summary': {
+        const r = await runtime.forkSessionWithSummary(chosen.msgId);
+        if (!r.fileName) return '❌ 当前会话存储不支持分叉';
+        return r.summarized
+          ? `🔀 已分叉到新分支「${r.fileName}」，旧前缀已压缩为摘要 + 最近 10 条（文件里仍是完整历史，可随时回看），原分支保留。`
+          : `🔀 已分叉到新分支「${r.fileName}」（前缀不足 10 条，未生成摘要，等同普通分叉），原历史保留。`;
       }
 
       default:

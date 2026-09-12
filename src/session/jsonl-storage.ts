@@ -158,7 +158,9 @@ export class JsonlSessionStorage implements SessionStorage, CompactionStore {
       targetId: leafId as string,
       timestamp: Date.now(),
     };
-    await this.appendLine(entry);
+    // 直写落盘（不走 appendLine：appendLine 现在会为实体 entry 自动补 leaf，
+    // 而 leaf entry 本身就是分支标记，不能再被补一层）
+    await fs.appendFile(this.filePath, JSON.stringify(entry) + '\n', 'utf-8');
     this.entries.push(entry);
     this.byId.set(entry.id, entry);
     this.currentLeafId = leafId;
@@ -206,22 +208,47 @@ export class JsonlSessionStorage implements SessionStorage, CompactionStore {
    * 读取当前分支的对话消息（遇 compaction 转成摘要 system 消息）。
    * 调用方：runtime.ts（LLM 上下文）
    * 服务于：让 LLM 看到"当前路径上的历史"，含压缩摘要、结构化工具调用（function calling）
+   *
+   * **视图裁剪（2026-09-12 修复）**：最后一个 compaction 的 firstKeptId 之前的消息已被摘要
+   * 顶替，不再进入 LLM 视图——此前缺这刀，压缩省下的 token 只活一轮（当轮 maybeCompact
+   * 裁剪返回，下一轮起这里把全量历史原样端出，旧消息与摘要双份都在）。只认最后一个
+   * compaction（与 SystemPromptService 摘要层"取最后一个"同一口径），更早的 compaction
+   * entry 被最后一个覆盖、一并出视图；摘要 system 消息提到裁剪窗口开头。
    * ⚠ 其中 tool_calls / tool_call_id / name 的还原在 LLM 路径上**无人消费**：runtime.ts 组装请求时
    * 只取 role + content（那道丢弃是承重的，理由见 Log/ARCHITECTURE.md 第四节第 9 条）。
    */
   async getMessages(): Promise<LLMMessage[]> {
-    return this.getPathToRoot(this.currentLeafId)
-      .filter((e): e is MessageEntry | CompactionEntry => e.type !== 'leaf')
-      .map((e): LLMMessage => {
-        if (e.type === 'compaction') {
-          return { role: 'system', content: `[对话摘要] ${e.summary}` };
-        }
-        const base: LLMMessage = { role: e.role as LLMMessage['role'], content: e.content };
-        if (e.tool_calls) base.tool_calls = e.tool_calls;
-        if (e.tool_call_id) base.tool_call_id = e.tool_call_id;
-        if (e.name) base.name = e.name;
-        return base;
-      });
+    const pathEntries = this.getPathToRoot(this.currentLeafId).filter((e) => e.type !== 'leaf');
+
+    // 视图裁剪：找最后一个 compaction，从它的 firstKeptId 起保留
+    let lastCompIdx = -1;
+    for (let i = pathEntries.length - 1; i >= 0; i--) {
+      if (pathEntries[i].type === 'compaction') {
+        lastCompIdx = i;
+        break;
+      }
+    }
+    let render = pathEntries;
+    if (lastCompIdx !== -1) {
+      const comp = pathEntries[lastCompIdx] as CompactionEntry;
+      const keptIdx = pathEntries.findIndex((e) => e.type === 'message' && e.id === comp.firstKeptId);
+      if (keptIdx !== -1) {
+        // 摘要在前 + 保留窗口（窗口内只留真实消息，更早的 compaction 一并出视图）
+        render = [pathEntries[lastCompIdx], ...pathEntries.slice(keptIdx).filter((e) => e.type === 'message')];
+      }
+      // firstKeptId 指向的消息不在路径上（损坏文件）→ 不裁剪，全量渲染兜底
+    }
+
+    return render.map((e): LLMMessage => {
+      if (e.type === 'compaction') {
+        return { role: 'system', content: `[对话摘要] ${e.summary}` };
+      }
+      const base: LLMMessage = { role: e.role as LLMMessage['role'], content: e.content };
+      if (e.tool_calls) base.tool_calls = e.tool_calls;
+      if (e.tool_call_id) base.tool_call_id = e.tool_call_id;
+      if (e.name) base.name = e.name;
+      return base;
+    });
   }
 
   /** 获取当前分支上的全部真实消息（不含 compaction / leaf）—— 供 /history 展示 */
@@ -366,5 +393,18 @@ export class JsonlSessionStorage implements SessionStorage, CompactionStore {
 
   private async appendLine(entry: SessionTreeEntry): Promise<void> {
     await fs.appendFile(this.filePath, JSON.stringify(entry) + '\n', 'utf-8');
+    // 当前分支指针随追加落盘（2026-09-12 修复）：此前只有 forkTo 写过一次 leaf，
+    // appendMessage/appendCompaction 只追加实体行——fork 文件里那条 leaf 从此永远是旧的，
+    // 重开后 currentLeafId 回退到 fork 点，fork 之后聊的消息与压缩摘要**全部从视图里消失**
+    //（create 出来的文件无 leaf、走"最后一条消息"兜底，所以既有测试没抓到）。
+    // 现在文件最后一行永远是 leaf 标记，重开重放即恢复到最新位置。
+    const leaf: LeafEntry = {
+      type: 'leaf',
+      id: nextEntryId(),
+      parentId: entry.id,
+      targetId: entry.id,
+      timestamp: Date.now(),
+    };
+    await fs.appendFile(this.filePath, JSON.stringify(leaf) + '\n', 'utf-8');
   }
 }

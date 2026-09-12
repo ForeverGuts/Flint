@@ -102,9 +102,9 @@ export async function main(checkResult: CheckResult): Promise<void> {
 
   const createRuntime = async (options: CreateRuntimeOptions): Promise<CreateRuntimeResult> => {
     const actualSession = options.session ?? session;
-    // 压缩子系统：仅当 session 支持压缩（Jsonl 实现 CompactionStore）时启用
-    const compactionStore = actualSession instanceof JsonlSessionStorage ? actualSession : undefined;
-    const compaction = new CompactionServiceImpl({ llm, storage: compactionStore, events });
+    // 压缩子系统（无状态）：storage 由 Runtime 在每次调用时传当前会话——
+    // 此前绑死启动时的 session，切会话/fork 后摘要会写进旧文件（2026-09-12 修复）
+    const compaction = new CompactionServiceImpl({ llm, events });
 
     const runtime = new Runtime({
       mode: Mode.Repl,

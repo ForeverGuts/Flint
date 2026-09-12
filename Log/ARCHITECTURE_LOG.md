@@ -11,6 +11,35 @@
 
 ---
 
+<a id="log-2026-09-12-fork-summary"></a>
+
+## 2026-09-12 | 分支摘要落地 + 压缩三连修
+
+**结构变化**
+
+- `core/compaction.ts`：`CompactionService` 契约新增 `compactNow(history, storage?, opts?)`（强制压缩，fork 摘要用），`maybeCompact` / `compactNow` 的 **storage 均改为每次调用传入**——服务无状态化，runtime 切会话后自动跟随（构造期绑死会把摘要写进旧会话文件，这是随本任务暴露的既有接线 bug）
+- `context/compaction.ts`：抽出私有主体 `compactTo(storage, history, keep)`，`maybeCompact`（阈值闸 20）与 `compactNow`（强制，缺省保留 KEEP_RECENT=10）共用，行为与抽取前逐字一致；`CompactionDeps` 移除 storage
+- `session/jsonl-storage.ts`：
+  - `getMessages()` 增加**视图裁剪**——只端出"最后一个 compaction 的摘要 + firstKeptId 起的保留窗口"（此前注释声称裁剪、实现全量，压缩收益只活一轮）；审计层 `getAllStored` / `getAllMsgIds` 刻意不裁
+  - `appendLine()` 统一在实体行后**落 leaf 标记**——文件最后一行永远是当前分支指针，重开重放即恢复（此前 leaf 只有 forkTo 写一次，fork 文件后续追加的内容重开即从视图消失）
+  - `setLeafId()` 改直写落盘（不走 appendLine，leaf 不再被补一层；该方法目前零调用者）
+- `runtime/runtime.ts`：新增 `forkSessionWithSummary(msgId)`（fork 后对新分支强制压缩）与私有 `compactionStore()` / `forkToStorage()`；`runSingleTurn` 的压缩调用改为传当前会话
+- `commands/builtin/history.ts`：子操作菜单新增"带摘要从此继续"（`fork-summary`），长/短前缀两种回执文案
+- `harness/main.ts`：压缩服务装配去掉绑死的 storage
+
+**设计口径**
+
+- 摘要触发 = **菜单选项**而非自动：fork 的既有立场是"复制的前缀 = 原线的忠实前缀"（审计性），摘要作为用户显式选择才不破它；文件里永远是完整历史，压缩只改"LLM 每轮看到的视图"
+- 只认**最后一个** compaction（与 SystemPromptService 摘要层同一口径），更早的摘要被覆盖
+- 前缀 ≤ KEEP_RECENT 条时不压缩（摘要短前缀没有收益），回执明说"等同普通分叉"
+
+**守护**
+
+- 新套件 `verify-fork-summary.ts` 52 项：F 视图裁剪回归（真存储）/ G compactNow 契约（真服务 + 探针 llm，含失败路径与 span 可观测）/ H Runtime 接线 + **leaf 持久化回归**（真 Runtime）/ I /history 源码断言 / J 源码守护（裁剪逻辑切片段断言防误伤注释、摘要 prompt 全库单一来源）
+- 变异测试两轮：摘掉视图裁剪 → 12 条红；摘掉 leaf 落盘 → 4 条红（H4/H5/H14/H15）
+
+---
+
 <a id="log-2026-09-12-session-repo"></a>
 
 ## 2026-09-12 10:51 | 会话仓库层：单会话存储与会话管理分家，删除能力从无到有

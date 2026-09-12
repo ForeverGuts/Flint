@@ -284,11 +284,10 @@ async function main(): Promise<void> {
         chat: async () => ({ content: '这是摘要' }),
         stream: () => { throw new Error('压缩不该走流式'); },
       } as never,
-      storage: store as never,
       events: cBus,
     });
     const history = Array.from({ length: 25 }, (_, i) => ({ role: 'user', content: `c${i}` }));
-    const result = await svc.maybeCompact(history);
+    const result = await svc.maybeCompact(history, store as never);
     check('compaction 段成对发出', byType(cGot, 'compaction_start').length === 1 && byType(cGot, 'compaction_end').length === 1);
     check('进门带待压缩条数（25 条留最近 10 条 → 压 15 条）', byType(cGot, 'compaction_start')[0].msgCount === 15);
     check('出门带摘要长度与耗时', byType(cGot, 'compaction_end')[0].summaryLength === 4
