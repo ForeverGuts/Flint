@@ -706,7 +706,7 @@ params: { sessionId, update } }`，`update.sessionUpdate` 是判别式，决定�
 参见：[Agent Loop](#agent-loop)、[Steering](#steering内层引导)
 
 ### 降级视图（thinking-on 的历史形态）
-thinking 开启时跨轮历史不能回传结构化数据（`thinkingBlocks` 永不落盘，带 `tool_calls` 的历史轮没有配对块，`resolveAnthropicThinking` 安全阀会强制关 thinking）。降级是**转写不是过滤**：tool 结果转成 `[工具 X 结果] …` 的 user 文本（孤儿 tool 消息丢了 `tool_call_id` 两条协议都不认）、纯工具调用的空 assistant 轮剔除（空内容消息同样不合法）。信息保住、只丢结构。
+thinking 开启时跨轮历史不能回传结构化数据（`thinkingBlocks` 永不落盘，带 `tool_calls` 的历史轮没有配对块，`resolveAnthropicThinking` 安全阀会强制关 thinking）。降级是**转写不是过滤**：tool 结果转成 `[工具 X 结果] …` 的 user 文本（孤儿 tool 消息丢了 `tool_call_id` 两条协议都不认）、纯工具调用的空 assistant 轮剔除（空内容消息同样不合法）。信息保住、只丢结构。完整的取舍与骨架见 [ARCHITECTURE.md](./ARCHITECTURE.md) 第二节决策 7。
 
 参见：[ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第 9 条 · [DECISION_LOG.md](./DECISION_LOG.md) 2026-09-12 那条
 
