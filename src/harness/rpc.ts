@@ -43,6 +43,8 @@ const ERR = {
   INTERNAL_ERROR: -32603,
   /** 自定义（服务端错误保留区间 -32000~-32099）：已有 chat 在跑 */
   CHAT_BUSY: -32000,
+  /** 自定义：当前会话存储不支持分叉（InMemory/Mock 无 forkTo 能力） */
+  FORK_UNSUPPORTED: -32001,
 };
 
 /** 解析请求：返回请求对象或错误响应（解析失败时） */
@@ -61,7 +63,7 @@ function parseRequest(line: string): { request?: JsonRpcRequest; error?: JsonRpc
 }
 
 /** chat 期间与外界的三个交互点（由 runRpcMode 提供，本函数不碰 stdout） */
-interface ChatSink {
+export interface ChatSink {
   /** 抢占 chat；false = 已有 chat 在跑（本版不支持并发） */
   beginChat(): boolean;
   endChat(): void;
@@ -71,8 +73,11 @@ interface ChatSink {
   setSessionName(name: string): void;
 }
 
-/** 分发请求到 Runtime 方法处理器 */
-async function handleRequest(
+/**
+ * 分发请求到 Runtime 方法处理器。
+ * 导出供 verify-fork-rpc 直接驱动（行为证明不开子进程；runtime/sink 用结构化替身传入）。
+ */
+export async function handleRequest(
   runtime: Runtime,
   req: JsonRpcRequest,
   sink: ChatSink,
@@ -136,6 +141,35 @@ async function handleRequest(
           msgCount: await runtime.getSessionMsgCount(),
         },
       };
+    case 'get_history':
+      // 当前分支全部历史（含 msgId）—— 对端先拿它定位分叉点，再调 fork_session。
+      // 不截断 content：编辑器要自己渲染"查看完整内容"，截断就得二次实现取全文的通道
+      return { result: await runtime.getHistoryMessages() };
+    case 'fork_session': {
+      const msgId = params.msgId as string | undefined;
+      if (typeof msgId !== 'string') {
+        return { error: { code: ERR.INVALID_PARAMS, message: "params.msgId 必须是字符串" } };
+      }
+      // 分叉点先验存在性：不存在的 msgId 是对端的参数错（-32602），不该落成 -32603 让人去猜
+      const history = await runtime.getHistoryMessages();
+      if (!history.some((m) => m.msgId === msgId)) {
+        return { error: { code: ERR.INVALID_PARAMS, message: `分叉点不存在: ${msgId}` } };
+      }
+      // summarize 是同一个动作的正交开关，不是两个方法：分叉语义只有一种，
+      // 摘要只是"复制完之后要不要顺手压缩前缀"（内核 forkSessionWithSummary 的既有口径）
+      const summarize = params.summarize === true;
+      const r = summarize
+        ? await runtime.forkSessionWithSummary(msgId)
+        : { fileName: await runtime.forkSessionAt(msgId), summarized: false };
+      if (!r.fileName) {
+        return {
+          error: { code: ERR.FORK_UNSUPPORTED, message: '当前会话存储不支持分叉（无 forkTo 能力）' },
+        };
+      }
+      // 分叉即切会话：通知信封里的 sessionId 必须跟着走，否则后续通知挂错会话名
+      sink.setSessionName(r.fileName);
+      return { result: r };
+    }
     default:
       return { error: { code: ERR.METHOD_NOT_FOUND, message: `未知方法: ${req.method}` } };
   }

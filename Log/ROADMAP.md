@@ -291,6 +291,18 @@
     另：本条原列的「背压策略」**未做**（本地管道很少触发，代码里已注明是已知缺口）；
     「未文档化的实验开关」也未做——通知是无条件推的，因目前无真实外部消费者
 
+- [x] **会话分叉 RPC 化**（2026-09-12 落地）
+  - 现状：`rpc.ts` 分发表 9 个方法，会话操作只有 list / switch / create / clear——
+    TUI `/history` 的"从此继续（fork）"与"带摘要从此继续"在编辑器侧没有对应物
+  - 做法：新增 `get_history`（带 `msgId` 的全量历史，定位分叉点）与 `fork_session`
+    （`summarize` 开关承载带摘要分叉）两个方法，**复用 Runtime 既有三方法，内核零改动**；
+    错误码三分离——坏参/分叉点不存在 → -32602、无 forkTo 能力 → -32001 FORK_UNSUPPORTED；
+    分叉即切会话，`sink.setSessionName` 同步（后续通知归属正确）。
+    决策细节见 DECISION_LOG 锚点 `log-2026-09-12-fork-rpc-design`，验证 `verify-fork-rpc.ts` 30 项
+  - 以本条为准：上文"流式 RPC notification"条目里写的"9 个方法"与"补记（2026-09-11 核实）"
+    里的 9 方法清单均为**当时**口径，现为 11 个方法
+  - 顺带：`handleRequest` 导出为验证面（分发逻辑是纯函数，行为证明不开子进程）
+
 - [ ] **任务清单变更接入可观测性**
   - 现状：`TaskStore.onChange()` 是**零依赖观察者**（刻意不走事件总线，以免把 `todo/` 拖进
     runtime 依赖圈），因此清单变更**不进 `/traces`**，也拿不到 `at` / `seq` / `turnId` 公共头
@@ -319,7 +331,7 @@
       模型切换                 事件订阅
                                   │
                                   ↓
-                          RPC 模式（JSON-RPC over stdio，9 方法）
+                          RPC 模式（JSON-RPC over stdio，11 方法）
                                   │
                                   ↓ ┈┈ 流式 notification（2026-09-11 已接，见 P8）
                           ACP：编辑器 / Web 前端

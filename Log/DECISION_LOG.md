@@ -4,6 +4,25 @@
 
 ---
 
+<a id="log-2026-09-12-fork-rpc-design"></a>
+
+## 2026-09-12 | 会话分叉 RPC 化的四个小决策：单方法带开关、错误码三分离、不截断、导出验证面
+
+**决策**：给 RPC 面加会话分叉能力（`get_history` + `fork_session`）时，四个形状问题的取舍如下。
+
+**决策过程**
+
+1. **单方法带 `summarize` 开关 vs 拆成 `fork_session` / `fork_session_summary` 两个方法** —— 选单方法。"带摘要"不是另一种分叉，是同一次复制动作之后的可选后处理（内核里 `forkSessionWithSummary` 本就调同一个 `forkTo` 再压一刀）；拆两个方法会让对端面对两个只有尾参不同的名字。开关缺省 false，与"从此继续"的缺省语义一致。
+2. **分叉点不存在 → -32602，而不是让它穿透成 -32603** —— `forkTo` 对未知 entry 抛 `Entry xxx not found`，若不处理会被 `runRpcMode` 的统一 catch 兜成 INTERNAL_ERROR。但对端传错 msgId 是**参数错**，JSON-RPC 里 -32602 才是它的家。做法：分发前用 `getHistoryMessages` 先验存在性（内存操作，零成本）。变异测试证实预校验承重：摘掉后异常直接穿透 `handleRequest`，套件死在 D3。
+3. **存储不支持分叉 → -32001 错误码，而不是 `result.fileName: ''`** —— Runtime 对无 `forkTo` 能力的存储返回空串（既有契约），TUI 拿空串显示错误文案。但 RPC 对端判断"失败"不该靠解析 result 的字段值——JSON-RPC 服务端保留区间（-32000~-32099）就是干这个的，`-32001 FORK_UNSUPPORTED` 让客户端按码分支。与 -32000 CHAT_BUSY 并列，各占一个语义位。
+4. **`get_history` 不截断 content** —— TUI 的 `/history` 只显示摘要行，RPC 对端（编辑器）却要自己渲染"查看完整内容"；截断了就得再开一条取全文的方法，等于把复杂度推给对端。全量返回，分页留给真需求（已记未来可优化）。
+
+**代价：** RPC 面从 9 方法变 11 方法，协议表面积 +2（但都映射到既有 Runtime 方法，无新内核语义）；`handleRequest` 导出多了一个模块出口（换取不开子进程的行为证明）。
+
+**参考：** `src/harness/rpc.ts` 分发段、`scripts/verify-fork-rpc.ts`、ARCHITECTURE_LOG 锚点 `log-2026-09-12-fork-rpc`
+
+---
+
 <a id="log-2026-09-12-tool-result"></a>
 
 ## 2026-09-12 | 结构化返回值：content 保留前缀、status 走机器通道，而不是让模型协议改版

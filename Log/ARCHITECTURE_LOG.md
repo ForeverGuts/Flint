@@ -11,6 +11,28 @@
 
 ---
 
+<a id="log-2026-09-12-fork-rpc"></a>
+
+## 2026-09-12 | 会话分叉 RPC 化：编辑器拿得到 /history 的"从此继续"，内核零改动
+
+**牵连系统**：`harness/rpc.ts`（分发表新增 `get_history` / `fork_session`、自定义错误码 -32001、`handleRequest` 导出）· `scripts/verify-fork-rpc.ts`（新套件）。**runtime / loop / context / session 一行未改**——分叉的全部内核面（`getHistoryMessages` / `forkSessionAt` / `forkSessionWithSummary`）本就是 Runtime 公开方法，缺的只是 RPC 这条分发线。
+
+**面向的问题**：RPC 面原有 9 个方法，会话操作只有 list / switch / create / clear——TUI 里 `/history` 的"从此继续（fork）"与"带摘要从此继续"在编辑器侧没有对应物。P8 立项的目标是"让编辑器替我们做 UI"，而分叉恰恰是树形历史的招牌能力：不能分叉，编辑器侧的会话树就只剩一条直线。
+
+**做出的改动**：
+
+1. **`get_history`**：返回当前分支全量历史（含 `msgId` 与 `steer` 标记）——对端先靠它定位分叉点。**刻意不截断 content**（决策注释已钉）：编辑器要自己渲染"查看完整内容"，截断就得再开一条取全文的通道。
+2. **`fork_session`**：单方法 + `summarize` 布尔开关，不拆成两个方法——分叉语义只有一种，摘要只是"复制完之后要不要顺手压缩前缀"（`forkSessionWithSummary` 的既有口径）。返回 `{ fileName, summarized, summary? }`。
+3. **错误码语义**：缺 `msgId` / 非字符串 / **分叉点不存在**（先验 `getHistoryMessages` 里有没有这个 id）→ -32602 INVALID_PARAMS——不存在的分叉点是对端的参数错，不该穿透成 -32603 让人去猜；存储无 `forkTo` 能力 → **-32001 FORK_UNSUPPORTED**（JSON-RPC 服务端保留区间，对端按码分支，不必解析文案——TUI 对应物是那行 `❌ 当前会话存储不支持分叉`）。
+4. **sessionId 同步**：分叉即切会话，`sink.setSessionName(fileName)` 让后续 `session/update` 通知挂对会话名——与 `switch_session` / `create_session` 同一纪律。
+5. **`handleRequest` 导出**：分发逻辑是纯函数（runtime + sink 结构化注入），导出后行为证明不开子进程即可做（`verify-rpc-stream` 测映射层、本套件测分发表，`rpc-smoke` 继续负责真进程冒烟）。
+
+**解决的问题**：编辑器 / 任意 JSON-RPC 客户端第一次具备完整的历史回溯能力（看历史 → 选点 → 分叉 → 带摘要分叉）；错误路径有了机器可判的语义（三个错误码各有其义）。
+
+**未来可优化**：fork 出新分支后推一条 `session/update` 通知（当前只有响应，对端要自己记住"已切分支"）；`get_history` 分页（当前全量返回，超长会话可加 limit/offset）。
+
+---
+
 <a id="log-2026-09-12-tool-result"></a>
 
 ## 2026-09-12 | 工具结构化返回值：机器读 status、模型读 content，前缀退居展示层
