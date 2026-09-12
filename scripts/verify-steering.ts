@@ -102,7 +102,7 @@ function makeScriptedLlm(
 const okTools: any = {
   getLLMTools: () => [],
   requiresPermission: () => false,
-  execute: async () => '[OK] 已写入',
+  execute: async () => ({ status: 'ok', content: '[OK] 已写入' }),
   register: () => {},
 };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -134,7 +134,7 @@ function makeRuntime(llm: LLMProvider, session?: InMemorySession): Runtime {
     tools: {
       getLLMTools: () => [],
       requiresPermission: () => false,
-      execute: async () => '[OK] 已写入',
+      execute: async () => ({ status: 'ok', content: '[OK] 已写入' }),
       register: () => {},
     },
     permission: { isAutoAllowed: () => true, grantAutoAllow: () => {} },

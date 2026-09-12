@@ -89,7 +89,7 @@ class FakeLLM implements LLMProvider {
 }
 const noTool = {
   getLLMTools: () => [] as LLMTool[],
-  execute: async () => '[OK]',
+  execute: async () => ({ status: 'ok', content: '[OK]' }),
   requiresPermission: () => false,
 };
 const noopEvents = { subscribe: () => () => {}, on: () => () => {}, emit: () => {} };

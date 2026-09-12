@@ -74,7 +74,7 @@ function makeTurnFakes(): TurnFakes {
     register: () => {},
     getLLMTools: () => [],
     requiresPermission: () => false,
-    execute: () => Promise.resolve('ok-result'),
+    execute: () => Promise.resolve({ status: 'ok', content: 'ok-result' }),
   };
   const permission = { isAutoAllowed: () => true, grantAutoAllow: () => {}, clear: () => {} };
   const deps = {
@@ -127,7 +127,7 @@ console.log('── ① 行为段 A：agent-loop 上交 turnLog ──');
   const bus: Record<string, unknown> = { subscribe: () => () => {}, on: () => () => {}, emit: () => {} };
   const deps = {
     llm,
-    tools: { register: () => {}, getLLMTools: () => [], requiresPermission: () => false, execute: () => Promise.resolve('') },
+    tools: { register: () => {}, getLLMTools: () => [], requiresPermission: () => false, execute: () => Promise.resolve({ status: 'ok', content: '' }) },
     permission: { isAutoAllowed: () => true, grantAutoAllow: () => {}, clear: () => {} },
     events: bus,
     onPermission: async () => 'allow' as const,
@@ -148,7 +148,7 @@ console.log('── ① 行为段 A：agent-loop 上交 turnLog ──');
   const bus: Record<string, unknown> = { subscribe: () => () => {}, on: () => () => {}, emit: () => {} };
   const deps = {
     llm,
-    tools: { register: () => {}, getLLMTools: () => [], requiresPermission: () => false, execute: () => Promise.resolve('') },
+    tools: { register: () => {}, getLLMTools: () => [], requiresPermission: () => false, execute: () => Promise.resolve({ status: 'ok', content: '' }) },
     permission: { isAutoAllowed: () => true, grantAutoAllow: () => {}, clear: () => {} },
     events: bus,
     onPermission: async () => 'allow' as const,
@@ -193,7 +193,7 @@ async function makeRuntimeFakes(opts: { thinking?: 'on' | 'off' | 'auto'; file?:
   const rt = new Runtime({
     llm,
     session,
-    tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => 'ok-result', register: () => {} },
+    tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => ({ status: 'ok', content: 'ok-result' }), register: () => {} },
     permission: { isAutoAllowed: () => true, grantAutoAllow: () => {}, clear: () => {} },
     skills: { load: () => {}, getAll: () => [], get: () => undefined },
     events: new PromptEventEmitter(),

@@ -199,7 +199,7 @@ function makeRuntime(session: any, compaction: any): any {
   return new Runtime({
     llm: { chat: async () => ({ content: '' }), stream: () => { throw new Error('本脚本不触发 LLM'); } },
     session,
-    tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => '', register: () => {} },
+    tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => ({ status: 'ok', content: '' }), register: () => {} },
     permission: { isAutoAllowed: () => true, grantAutoAllow: () => {} },
     skills: { load: () => {} },
     events: emitter,
@@ -259,7 +259,7 @@ async function makeRuntimeFakes(file: string, chatUsage?: typeof U): Promise<{ r
   const rt = new Runtime({
     llm,
     session,
-    tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => 'ok', register: () => {} },
+    tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => ({ status: 'ok', content: 'ok' }), register: () => {} },
     permission: { isAutoAllowed: () => true, grantAutoAllow: () => {}, clear: () => {} },
     skills: { load: () => {}, getAll: () => [], get: () => undefined },
     events: new PromptEventEmitter(),

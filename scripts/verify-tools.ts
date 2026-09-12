@@ -66,12 +66,16 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tsagent-verify-tools-'));
 const registry = new ToolRegistry();
 registerBuiltinTools(registry);
 
-const grep = (args: Record<string, unknown>): Promise<string> => registry.execute('grep', args);
-const bash = (args: Record<string, unknown>): Promise<string> => registry.execute('bash', args);
+// execute 现在返回结构化 ToolResult；本地 helper 统一解包出模型可见文本，断言不动
+const grep = async (args: Record<string, unknown>): Promise<string> =>
+  (await registry.execute('grep', args)).content;
+const bash = async (args: Record<string, unknown>): Promise<string> =>
+  (await registry.execute('bash', args)).content;
 const IS_WIN = process.platform === 'win32';
 
 const builtinSrc = fs.readFileSync(path.join(ROOT, 'src/tools/builtin.ts'), 'utf-8');
 const loopSrc = fs.readFileSync(path.join(ROOT, 'src/loop/agent-loop.ts'), 'utf-8');
+const coreSrc = fs.readFileSync(path.join(ROOT, 'src/core/tools.ts'), 'utf-8');
 
 /* ── 测试用的真目录树 ── */
 
@@ -275,16 +279,16 @@ console.log('\n⑤ bash 返回前缀与成败判定（前缀是契约不是文�
   const big = await run('big');
   check('E10 输出超 maxBuffer(4MB) 报 [ERROR] 而不是崩掉', big.startsWith('[ERROR]'), big.slice(0, 100));
 
-  // 双向源码断言：前缀改了必须两边一起改，否则重复失败保护静默失效。
-  // 判定式从"子串存在"改成"名单精确相等"：原写法只验前两个前缀连续出现，
-  // 第三个前缀加在同一行时它照样绿 —— 名字说"只认两个"，判定式却拦不住第三个，是假绿。
-  // （这次就是它自己被抓出来的：改成多行写法才红，写成单行就静默放过去了）
-  const failedStmt = loopSrc.match(/failed = resultContent[\s\S]*?;/)?.[0] ?? '';
-  const failPrefixes = [...failedStmt.matchAll(/startsWith\('\[([A-Z_]+)\]'\)/g)].map((m) => m[1]);
-  check('E11 agent-loop 认作失败的前缀恰好是 ERROR / VERIFY_FAILED / INVALID 三个',
-    failPrefixes.join(',') === 'ERROR,VERIFY_FAILED,INVALID', `实际=${JSON.stringify(failPrefixes)}`);
-  check('E12 bash 的失败路径用的正是同一个 [ERROR] 前缀',
-    /return `\[ERROR\] 命令执行失败:/.test(builtinSrc));
+  // 双向源码断言（结构化返回值后重钉，2026-09-12）：分类不再解析前缀文本，
+  // 钉"判定式唯一 + 名单精确"——core 的 toolStatusFails 名单恰好三个，agent-loop 只调它。
+  const failsDef = coreSrc.match(/export function toolStatusFails[\s\S]*?\n}/)?.[0] ?? '';
+  const failsList = [...failsDef.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+  check('E11 计失败的状态恰好是 invalid / error / verify_failed 三个，agent-loop 只调唯一判定式',
+    failsList.join(',') === 'invalid,error,verify_failed'
+    && /failed = toolStatusFails\(result\.status\)/.test(loopSrc),
+    `实际=${JSON.stringify(failsList)}`);
+  check('E12 bash 的失败路径用的正是同一个 error 状态（toolError）',
+    /return toolError\(`命令执行失败:/.test(builtinSrc));
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -333,8 +337,8 @@ console.log('\n⑦ 源码文本断言（防回退）');
     /改前拼的是/.test(grepBlock));
   check('G4 grep 的 description 不再声称"基于 ripgrep (rg) 或系统 grep"（改前代码里两者都没有）',
     !builtinSrc.includes('基于 ripgrep'));
-  check('G5 grep 的失败路径报 [ERROR]，不再有"搜索失败或无匹配"这种混合前缀',
-    !builtinSrc.includes('搜索失败或无匹配') && /return `\[ERROR\] 搜索失败:/.test(builtinSrc));
+  check('G5 grep 的失败路径报 error（toolError），不再有"搜索失败或无匹配"这种混合前缀',
+    !builtinSrc.includes('搜索失败或无匹配') && /return toolError\(`搜索失败:/.test(builtinSrc));
   check('G6 bash 不再内联硬编码单一编码', !/const encoding = process\.platform === 'win32' \? 'gbk' : 'utf-8';\n\s*const output = new TextDecoder\(encoding/.test(builtinSrc));
   check('G7 bash 改走 decodeChildOutput', /decodeChildOutput\(raw\)/.test(builtinSrc));
   check('G8 windowsHide: true 仍在（删了会在 Windows 上弹黑框）', /windowsHide: true/.test(builtinSrc));

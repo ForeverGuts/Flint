@@ -676,13 +676,20 @@ params: { sessionId, update } }`，`update.sessionUpdate` 是判别式，决定�
 这条由 `verify-rpc-stream.ts` ⑦ 段的**源码扫描**机器守护，不靠人记。
 
 ### ToolInputError（参数不合法错误）
-`tools/spec.ts` 的导出类（`extends Error`，多一个 `code` 字段：`missing` / `unknown_param` / `invalid_type` / `invalid_range` / `empty`）。由 `parseSpec` 抛，`registry.execute()` **就地**转成 `[INVALID] 文案` 回给模型；**不是**它的异常（规格自己写坏了）一律 `throw` 穿透——那不是模型的错，不该报成参数不合法。
+`tools/spec.ts` 的导出类（`extends Error`，多一个 `code` 字段：`missing` / `unknown_param` / `invalid_type` / `invalid_range` / `empty`）。由 `parseSpec` 抛，`registry.execute()` **就地**转成 `status='invalid'` 的 [ToolResult](#toolresult结构化返回值)（构造器 `toolInvalid(e.message)`）回给模型；**不是**它的异常（规格自己写坏了）一律 `throw` 穿透——那不是模型的错，不该报成参数不合法。
 
-它存在的理由不是“抛个错”，而是**一个会被分类、会触发保护的信号**：`agent-loop.ts` 把 `[INVALID]` 计入失败（2026-09-05 起），所以同一个错参数连传两次就会注入 `[系统提示]` 叫模型别原样重试。在那之前参数错误完全落在这层保护之外（判定式是白名单，落不进任何一类就等于默认不计）。
+它存在的理由不是“抛个错”，而是**一个会被分类、会触发保护的信号**：`agent-loop.ts` 把 invalid 计入失败（2026-09-05 起），所以同一个错参数连传两次就会注入 `[系统提示]` 叫模型别原样重试。在那之前参数错误完全落在这层保护之外（判定式是白名单，落不进任何一类就等于默认不计）。
 
 错误文案逐字沿用改前 4 个校验件的措辞（`verify-spec.ts` ③ 段按字面钉住），所以模型侧看到的提示没变。
 
-参见：[spec（工具参数规格）](#spec工具参数规格)、[grep（递归搜索工具）](#grep递归搜索工具)、[ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 2026-09-05 21:42 那块
+参见：[spec（工具参数规格）](#spec工具参数规格)、[ToolResult（结构化返回值）](#toolresult结构化返回值)、[grep（递归搜索工具）](#grep递归搜索工具)、[ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 2026-09-05 21:42 那块
+
+### ToolResult（结构化返回值）
+工具的返回值契约（2026-09-12 起，`core/tools.ts`）：`{ status, content }`——**机器读 status，模型读 content**。五个状态：`ok` / `negative`（有效否定，不计失败）/ `invalid` / `error` / `verify_failed`（计失败）；判定式只有 `toolStatusFails` 一份，`agent-loop` 读字段分类、不再解析前缀文本（改前 handler 返回裸字符串，前缀是工具层与消费层之间唯一的协议，拼错一个字母分类就静默漂移）。
+
+生产端唯一入口是 `spec.ts` 的五个构造器（`toolOk` / `toolInvalid` / `toolError` / `toolVerifyFailed` / `toolNegative`）：前缀由构造器统一拼进 content，handler 只写正文——**模型可见文本与改前逐字节一致，变的只是机器通道**。有效否定的五个前缀（NOT_FOUND/NOT_DIR/NOT_FILE/NO_MATCH/EMPTY）由 `ToolNegativePrefix` 类型限定。
+
+参见：[ToolInputError（参数不合法错误）](#toolinputerror参数不合法错误)、[Agent Loop](#agent-loop)、[ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md) 锚点 `log-2026-09-12-tool-result`
 
 ### trace.jsonl
 `trace-log` watcher 的落盘产物，**一行一段完整行为**。含对话正文片段，**属隐私**，所以默认不写——必须显式设 `FLINT_TRACE=1`（`FLINT_TRACE_FILE` 可改路径，缺省项目根）。

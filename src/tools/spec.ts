@@ -34,7 +34,7 @@
  *（这也是不引 Zod / TypeBox 的原因：它们的表达力本项目用不到十分之一，而 Zod 还需要
  *  zodToJsonSchema 这座**有损**的桥——.refine() 之类的跨字段约束会被静默丢掉。）
  */
-import type { ToolDefinition, ToolParameterSchema } from '../core/tools.js';
+import type { ToolDefinition, ToolParameterSchema, ToolResult, ToolStatus } from '../core/tools.js';
 
 /**
  * 参数不合法。由 registry.execute 就地转成 `[INVALID] ...` 回给模型，
@@ -208,6 +208,48 @@ function coerce(f: Field, key: string, val: unknown): string | number | boolean 
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
+   返回值构造器：结构化返回值的**唯一**入口（2026-09-12 起）
+
+   改前 handler 手写 `[前缀] 文本` 字符串，前缀是工具层与消费层之间唯一的协议——
+   拼错一个字母（[ERORR]）分类就静默漂移成"成功"。现在 handler 返回 ToolResult：
+   status 是机器读的字段（分类不再解析文本），content 是模型读的文本。
+   前缀由构造器统一生成，handler 只写正文——**正文措辞与改前逐字一致**，
+   模型看到的协议文本一字未变，变的只是机器通道。
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+/** 有效否定可用的五个前缀（与 agent-loop 分类注释里的名单一一对应，类型挡住乱造新前缀） */
+export type ToolNegativePrefix = 'NOT_FOUND' | 'NOT_DIR' | 'NOT_FILE' | 'NO_MATCH' | 'EMPTY';
+
+function make(status: ToolStatus, prefix: string, content: string): ToolResult {
+  return { status, content: `[${prefix}] ${content}` };
+}
+
+/** 成功（不计失败） */
+export function toolOk(content: string): ToolResult {
+  return make('ok', 'OK', content);
+}
+
+/** 无效输入（计失败）：模型给的参数不合法，原样重试必然再错 */
+export function toolInvalid(content: string): ToolResult {
+  return make('invalid', 'INVALID', content);
+}
+
+/** 执行失败（计失败）：参数合法但工具没能完成工作 */
+export function toolError(content: string): ToolResult {
+  return make('error', 'ERROR', content);
+}
+
+/** 写回验证失败（计失败）：改类工具验证落盘结果与预期不符 */
+export function toolVerifyFailed(content: string): ToolResult {
+  return make('verify_failed', 'VERIFY_FAILED', content);
+}
+
+/** 有效否定（不计失败）：工具正常工作，答案是"没有"。prefix 限五个既有标识 */
+export function toolNegative(prefix: ToolNegativePrefix, content: string): ToolResult {
+  return make('negative', prefix, content);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
    组装：把规格接进 core 的 ToolDefinition
    ═══════════════════════════════════════════════════════════════════════════════ */
 
@@ -223,7 +265,7 @@ export function defineTool<S extends Spec>(def: {
   name: string;
   description: string;
   spec: S;
-  handler: (args: Infer<S>) => Promise<string>;
+  handler: (args: Infer<S>) => Promise<ToolResult>;
   requirePermission?: boolean;
   permissionDetail?: (args: Record<string, unknown>) => string;
   permissionKey?: (args: Record<string, unknown>) => string;
@@ -238,6 +280,6 @@ export function defineTool<S extends Spec>(def: {
     // ToolProvider.register 入参、tools/registry.ts 那个 Map 的值类型、本文件的返回类型），
     // 改一处就得跟改三处，而换来的只是省掉这一行 as。
     // 收窄的正确性由"execute 一定先跑 parse 再跑 handler"保证——verify-spec ⑥ 段钉的就是这条接线。
-    handler: handler as (args: Record<string, unknown>) => Promise<string>,
+    handler: handler as (args: Record<string, unknown>) => Promise<ToolResult>,
   };
 }

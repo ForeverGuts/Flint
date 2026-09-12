@@ -293,7 +293,7 @@ console.log('\n⑦ clear() 接线（改前全 src/ 零调用方 → "本次全�
     return new Runtime({
       llm: { chat: async () => ({ content: '' }), stream: () => { throw new Error('本脚本不触发 LLM'); } },
       session,
-      tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => '', register: () => {} },
+      tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => ({ status: 'ok', content: '' }), register: () => {} },
       permission,
       skills: { load: () => {} },
       events: new PromptEventEmitter(),

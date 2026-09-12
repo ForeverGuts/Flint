@@ -67,8 +67,8 @@ function makeFakes(opts: {
   oldBus?: boolean;
   /** 工具是否需要权限弹窗 */
   requirePerm?: boolean;
-  /** execute 的返回值 */
-  executeResult?: string;
+  /** execute 的返回值（结构化 ToolResult：status 给循环分类，content 给模型） */
+  executeResult?: { status: string; content: string };
 }) {
   const llmCalls: LLMMessage[][] = [];
   const hookCalls: Array<{ type: string; event: unknown }> = [];
@@ -119,7 +119,7 @@ function makeFakes(opts: {
     execute: (name: string, args: Record<string, unknown>) => {
       timeline.push('exec');
       execCalls.push({ name, args });
-      return Promise.resolve(opts.executeResult ?? 'ok-result');
+      return Promise.resolve(opts.executeResult ?? { status: 'ok', content: 'ok-result' });
     },
   };
 
@@ -236,9 +236,9 @@ console.log('── ② 行为段（真 AgentLoopServiceImpl + 假依赖探针�
   check('H7 emitHook 未实现 → 放行且正常完成', f.execCalls.length === 1 && result.finalText === 'done');
 }
 
-// H8 失败工具：after 钩子的 ok 如实反映失败（[ERROR] 前缀 → ok:false）
+// H8 失败工具：after 钩子的 ok 如实反映失败（status=error → ok:false）
 {
-  const f = makeFakes({ executeResult: '[ERROR] 磁盘满了' });
+  const f = makeFakes({ executeResult: { status: 'error', content: '[ERROR] 磁盘满了' } });
   await f.run();
   const after = f.hookCalls.find((h) => h.type === 'after_tool_call');
   const payload = after?.event as Record<string, unknown> | undefined;

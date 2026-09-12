@@ -271,7 +271,9 @@ console.log('\n⑤ todo 工具端到端（增量接口 + 返回值即清单 + �
     const store = new TaskStore();
     const reg = new ToolRegistry();
     registerBuiltinTools(reg, store);
-    const todo = (args: Record<string, unknown>): Promise<string> => reg.execute('todo', args);
+    // execute 现在返回结构化 ToolResult；helper 解包出模型可见文本，断言不动
+    const todo = async (args: Record<string, unknown>): Promise<string> =>
+      (await reg.execute('todo', args)).content;
 
     check('E1 todo 已注册进 LLMTools（模型看得见）',
       reg.getLLMTools().some((t) => t.function.name === 'todo'));
@@ -395,7 +397,7 @@ console.log('\n⑦ Runtime 运行期接线（行为）：taskStore → system �
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       session: session as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => '', register: () => {} } as any,
+      tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => ({ status: 'ok', content: '' }), register: () => {} } as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       permission: { isAutoAllowed: () => true, grantAutoAllow: () => {}, clear: () => {} } as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

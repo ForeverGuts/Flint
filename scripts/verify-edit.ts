@@ -55,7 +55,10 @@ function makeFile(name: string, content: string | Buffer): string {
   fs.writeFileSync(p, content);
   return p;
 }
-const edit = (args: Record<string, unknown>): Promise<string> => registry.execute('edit', args);
+// execute 现在返回结构化 ToolResult（status 给机器、content 给模型）；
+// 本地 helper 统一解包出模型可见文本，下面的断言一字不动
+const edit = async (args: Record<string, unknown>): Promise<string> =>
+  (await registry.execute('edit', args)).content;
 const text = (p: string): string => fs.readFileSync(p, 'utf-8');
 const bytes = (p: string): Buffer => fs.readFileSync(p);
 const countLf = (s: string): number => (s.match(/\n/g) ?? []).length;
@@ -85,8 +88,8 @@ console.log('\n① 契约与注册（加的是**可选**成员，9 处 ToolProvi
   check('A5 agent-loop 用可选调用 + 兜底（permissionKey 没定义就退回完整 args JSON、permissionDetail 没定义就退回前 80 字符）',
     /tools\.permissionKey\?\.\(tc\.function\.name, args\) \|\| argsJson/.test(loopSrc)
     && /tools\.permissionDetail\?\.\(tc\.function\.name, args\) \|\| argsJson\.slice\(0, 80\)/.test(loopSrc));
-  check('A6 拒绝路径用 [ERROR] 这一点留有承重注释（防止后人为一致性改成 [NO_MATCH] 关掉重复失败保护）',
-    /状态前缀的选择是\*\*承重的\*\*/.test(builtinSrc));
+  check('A6 拒绝路径用 error（toolError）这一点留有承重注释（防止后人为一致性改成 negative 关掉重复失败保护）',
+    /状态的选择是\*\*承重的\*\*/.test(builtinSrc) && /return toolError\(`oldText 在文件中找不到/.test(builtinSrc));
 }
 
 /* ── ② 唯一命中：真改，且只改那一处 ── */
@@ -113,12 +116,16 @@ console.log('\n③ 0 命中 → 拒绝（模型记错原文时任何"猜"都是�
   check('C2 文件逐字节一字不动', bytes(p).equals(before));
   check('C3 文案给出可操作的下一步：报文件行数 + 要求逐字符一致 + 让模型先 read',
     r.includes('文件共 3 行') && r.includes('逐字符一致') && r.includes('read'), r);
-  // 判定式从"子串存在"改成"名单精确相等"：原写法只验前两个前缀连续出现，第三个前缀
-  // 加在同一行时它照样绿 —— 名字说"只认两个"，判定式却拦不住第三个，是假绿。
-  const c4Stmt = loopSrc.match(/failed = resultContent[\s\S]*?;/)?.[0] ?? '';
-  const c4Prefixes = [...c4Stmt.matchAll(/startsWith\('\[([A-Z_]+)\]'\)/g)].map((m) => m[1]);
-  check('C4 agent-loop 认作失败的前缀恰好是 ERROR / VERIFY_FAILED / INVALID 三个（C1 的意义依赖这条）',
-    c4Prefixes.join(',') === 'ERROR,VERIFY_FAILED,INVALID', `实际=${JSON.stringify(c4Prefixes)}`);
+  // 结构化返回值（2026-09-12）后分类不再解析前缀文本，钉两件事：
+  // ① core 里 toolStatusFails 的名单**恰好**是 invalid / error / verify_failed 三个；
+  // ② agent-loop 只准调这个唯一判定式（`failed = toolStatusFails(result.status)`），
+  //    不许再自己 startsWith——副本会漂移，正是旧协议的病根。
+  const failsDef = coreSrc.match(/export function toolStatusFails[\s\S]*?\n}/)?.[0] ?? '';
+  const failsList = [...failsDef.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+  check('C4 计失败的状态恰好是 invalid / error / verify_failed 三个（C1 的意义依赖这条）',
+    failsList.join(',') === 'invalid,error,verify_failed', `实际=${JSON.stringify(failsList)}`);
+  check('C4b agent-loop 的 failed 判定走唯一判定式 toolStatusFails，不再解析前缀文本',
+    /failed = toolStatusFails\(result\.status\)/.test(loopSrc), loopSrc.slice(0, 0) || 'loop 缺 toolStatusFails 接线');
 }
 
 /* ── ④ 多命中：拒绝并回报候选行号；replaceAll 才全改 ── */

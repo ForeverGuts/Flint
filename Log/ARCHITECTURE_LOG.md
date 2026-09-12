@@ -11,6 +11,29 @@
 
 ---
 
+<a id="log-2026-09-12-tool-result"></a>
+
+## 2026-09-12 | 工具结构化返回值：机器读 status、模型读 content，前缀退居展示层
+
+**牵连系统**：`core/tools.ts`（ToolStatus / ToolResult / toolStatusFails 契约）· `tools/spec.ts`（五个返回值构造器）· `tools/registry.ts`（ToolInputError 就地转 invalid）· `loop/agent-loop.ts`（failed 判定）· `tools/builtin.ts`（7 个 handler 全部 return 点）
+
+**面向的问题**：handler 返回裸字符串，"这次算不算失败"由 agent-loop 对前缀做 startsWith 解析（`[ERROR]` / `[VERIFY_FAILED]` / `[INVALID]` 三个）——**前缀是工具层与消费层之间唯一的协议**。两条后果：① 前缀拼错一个字母（`[ERORR]`）分类就静默漂移成"成功答案"，且没有任何机制会说话；② 新增一个状态（如第三类"有效否定"当年入场时）必须两头同时改，改漏一头就是静默错分类。2026-09-06 决策日志明确记过"结构化返回值这一步没做"，本轮补齐另一半。
+
+**做出的改动**：
+
+1. **契约**（`core/tools.ts`）：`ToolStatus` 五态（ok / negative / invalid / error / verify_failed）+ `ToolResult { status, content }`；`handler` 与 `ToolProvider.execute` 的返回契约一并改掉（不是旁路可选成员——旁路等于第二个协议，病根还在）。分类判定式**只有一份**：`toolStatusFails`（invalid/error/verify_failed 计失败，ok/negative 不计），消费方一律调它、不许重抄。
+2. **生产端**（`spec.ts`）：五个构造器 `toolOk / toolInvalid / toolError / toolVerifyFailed / toolNegative` 是结构化返回值的**唯一入口**——status 是机器读的字段，content 由构造器统一拼前缀（handler 只写正文，`[ERORR]` 式拼错在构造器层就不可能发生）；`ToolNegativePrefix` 类型把有效否定限定在五个既有标识（NOT_FOUND/NOT_DIR/NOT_FILE/NO_MATCH/EMPTY），新前缀必须显式扩名单。
+3. **消费端**（`agent-loop.ts`）：三行 startsWith 换成 `failed = toolStatusFails(result.status)`；三类失败的语义注释原样保留（① 硬失败 ② 无效输入计失败，③ 有效否定不计——把③当②会让模型每查一个不存在的符号都被念一次）。
+4. **模型可见协议零变更**：content 与改前逐字节一致（前缀还在，模型看到的文本一字未动）——变的只是**机器通道**。会话历史、`tool_execution_end` 事件、Anthropic `is_error` 映射（`[工具` 前缀）、重复失败保护全部无需改判定逻辑或照旧工作。
+
+**解决的问题**：分类从"解析文本"变成"读字段"；前缀拼错在构造器层被类型与测试共同拦住；新增状态时编译器逼着生产方表态、判定式逼着消费方表态——协议不再靠"人手把同一个词打对两遍"。
+
+**刻意不做**：① 不做 `string | ToolResult` 联合类型的兼容层——那是把旧协议养在机器里当 dead code；scripts/ 下 17 处假 ToolProvider 全量迁移，一步到位。② 会话历史里不落 status 字段（历史回放侧的 `is_error` 仍靠前缀）——那是存储格式变更，等真实需求出现再立项。
+
+**未来可优化**：`tool_execution_end` 事件把 status 一并带给 UI（当前事件只有 ok 布尔与文本）；技能/扩展自定义工具回归裸字符串的入口收口（`defineTool` 之外的手写 ToolDefinition 由 review 把关）。
+
+---
+
 <a id="log-2026-09-12-skill-deps"></a>
 
 ## 2026-09-12 | 技能依赖追踪：声明式依赖 + 双出口（提示词标注 / 热重载断裂提示）

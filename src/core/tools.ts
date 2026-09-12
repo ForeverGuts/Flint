@@ -12,18 +12,47 @@ export interface ToolParameterSchema {
   required?: string[];
 }
 
+/**
+ * 工具返回值的机器可读分类（结构化返回值，2026-09-12 落地）。
+ *
+ * 改前 handler 返回裸字符串，"这次算不算失败"由消费方（agent-loop）对前缀做
+ * startsWith 解析——前缀是工具层与消费层之间**唯一的协议**：拼错前缀、新增状态忘了
+ * 通知消费方，分类都会静默漂移（[ERORR] 会被当成成功答案）。现在生产方在返回值里
+ * **直接声明**分类，消费方读字段，不再解析文本。
+ *
+ * 五个值各有语义边界（与 agent-loop 的三类失败分类一一对应）：
+ *   ok / negative          —— 不计失败：negative 是"工具正常工作、答案是没有"
+ *                             （NOT_FOUND/NOT_DIR/NOT_FILE/NO_MATCH/EMPTY），
+ *                             把它当失败会让模型每查一个不存在的符号都被念一次；
+ *   invalid / error / verify_failed —— 计失败：原样重试必然再错。
+ * 判定式只有一份：toolStatusFails（别处不许重抄，副本会漂移）。
+ */
+export type ToolStatus = 'ok' | 'negative' | 'invalid' | 'error' | 'verify_failed';
+
+/** 工具返回值：机器读 status，模型读 content（content 仍自带 [前缀]，措辞不变） */
+export interface ToolResult {
+  status: ToolStatus;
+  /** 回给模型的文本。前缀由 spec.ts 的构造器统一生成，handler 不手写 */
+  content: string;
+}
+
+/** 该状态是否计入失败。全项目唯一判定式——消费方一律用它，不许各自 startsWith */
+export function toolStatusFails(s: ToolStatus): boolean {
+  return s === 'invalid' || s === 'error' || s === 'verify_failed';
+}
+
 /** 工具定义 —— 注册到工具子系统，供 LLM 调用 */
 export interface ToolDefinition {
   name: string;
   description: string;
   parameters: ToolParameterSchema;
-  handler: (args: Record<string, unknown>) => Promise<string>;
+  handler: (args: Record<string, unknown>) => Promise<ToolResult>;
   /**
    * 参数校验（**可选**成员，与 permissionDetail / permissionKey 同一手法：调用方判空回退）。
    *
    * 由 ToolProvider.execute 在 handler **之前**调用：把模型传来的原始 args 校验一遍、
    * 补齐可选字段的默认值，产出 handler 真正需要的形状。校验不过抛 ToolInputError，
-   * execute 就地转成 `[INVALID] ...` 回给模型（agent-loop 把这个前缀计入失败）。
+   * execute 就地转成 status='invalid' 的 ToolResult 回给模型（agent-loop 把这个状态计入失败）。
    *
    * 为什么它必须是契约的一部分而不是各 handler 自己的事：改前 parameters 与 handler 里的
    * 校验是**同一套规则的两份手写副本**，而 execute() 只有 3 行、parameters 一个字段都没读
@@ -99,6 +128,6 @@ export interface ToolProvider {
    * ToolProvider 替身（2026-09-06 逐处数过；旧注释写的 7 处不准）。
    */
   permissionKey?(name: string, args: Record<string, unknown>): string | undefined;
-  /** 执行工具调用 */
-  execute(name: string, args: Record<string, unknown>): Promise<string>;
+  /** 执行工具调用（返回结构化 ToolResult：status 给机器分类，content 给模型） */
+  execute(name: string, args: Record<string, unknown>): Promise<ToolResult>;
 }

@@ -225,7 +225,7 @@ console.log('\n⑥ 行为证明：真 Runtime 跑一轮');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     session: { getMessages: async () => [], appendMessage: async () => {}, clear: async () => {} } as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => '', register: () => {} } as any,
+    tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => ({ status: 'ok', content: '' }), register: () => {} } as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     permission: { isAutoAllowed: () => true, grantAutoAllow: () => {}, clear: () => {} } as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

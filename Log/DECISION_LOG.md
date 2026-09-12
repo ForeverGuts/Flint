@@ -4,6 +4,26 @@
 
 ---
 
+<a id="log-2026-09-12-tool-result"></a>
+
+## 2026-09-12 | 结构化返回值：content 保留前缀、status 走机器通道，而不是让模型协议改版
+
+**决策**：`ToolResult = { status: ToolStatus, content: string }`，其中 **content 保留 `[前缀]` 且措辞与改前逐字节一致**，status 是给机器读的分类字段；五个构造器（toolOk/toolInvalid/toolError/toolVerifyFailed/toolNegative）是唯一入口，前缀由构造器生成、handler 不手写。
+
+**决策过程**
+
+1. 改前"算不算失败"靠 agent-loop 对前缀 startsWith——2026-09-06 决策日志已记过这是欠账（"结构化返回值这一步没做"）。两条路：**A. 让模型协议改版**（content 去掉前缀，纯靠结构）→ 波及所有提示词、会话历史格式、`is_error` 映射、以及所有断言结果文本的测试，收益只是"文本干净一点"；**B. 双通道**（文本不动 + 加机器字段）→ 消费方读字段、模型读文本，互不干扰。
+2. 选 B。前缀对模型本身是**有用信息**（`[NO_MATCH]` 与 `[ERROR]` 的区别模型一眼可读，这是"输出格式统一为 `[状态标识]`"这条工具层设计原则的初衷），没有理由把它从模型视野里拿掉——要消灭的不是前缀，是"靠解析前缀做决策"。
+3. 替身迁移的取舍：`ToolProvider.execute` 返回契约直接改 `ToolResult`，scripts/ 下 17 处假 ToolProvider 一轮迁完。考虑过 `string | ToolResult` 联合 + 兼容归一化，放弃——兼容层就是把旧协议养在机器里当 dead code，与"`parse` 是可选成员 → 绕过合法"是同一种病。
+
+**关键取舍**
+
+- **`toolStatusFails` 只此一份**：agent-loop 与验证套件都调它，不许各自 startsWith/重抄名单——副本会漂移，这正是旧协议的病根（verify-edit C4b / verify-tools E11 钉死这条接线）。
+- **`ToolNegativePrefix` 用类型限定**五个既有标识而非开放 string：新否定前缀必须显式扩名单，防止"随手发明前缀"借尸还魂。
+- **历史回放侧不动**：anthropic.ts 的 `is_error` 仍按 `[工具` 前缀判（历史消息只有文本），不在本轮顺手改存储格式——那是另一个量级的变更，别搭车。
+
+---
+
 <a id="log-2026-09-12-skill-deps"></a>
 
 ## 2026-09-12 | 技能依赖追踪：声明式 frontmatter 而非程序化 addDependency——不给"支持但未接线"债添第四笔

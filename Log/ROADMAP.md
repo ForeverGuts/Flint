@@ -168,7 +168,8 @@
   - “自动校验”这一步的实测根据：改前 `execute()` 只有 3 行、`tool.parameters` **一个字段都没读**——造一个 `required: ['mustHave']` 的工具，①什么都不传 ②传一个对象 ③传 Schema 里根本不存在的参数名，三次全部 `[OK]`，所以那份单子的身份是“给模型的建议书”。另堵掉 `String(val)` 那个**永远通过的校验**留下的四个类型盲区（`123` / `{a:1}` / `['src']` / `true` 改前全过关，到文件系统层才报 `[NOT_FOUND]` / `[NOT_FILE]`，归因错层会让模型去猜路径）与多余参数静默忽略（`{pattern:'x', pathh:'typo'}` 让 `path` 退回默认 `'.'`，搜完整个项目还报 `[OK]`）
   - 理由：工具参数校验标准化（原案这句成立，但真病不是“两份副本可能不一致”，而是“没人执行”）
   - 对标：Cline 工具参数 schema 校验——**不引它的依赖**（Zod 还要 `zodToJsonSchema` 这座**有损**的桥，而本项目零运行时依赖是既有立场），三选一取舍见 DECISION_LOG 2026-09-06
-  - 剩余（未立项）：结构化返回值（handler 仍返回字符串前缀，前缀仍是工具层与消费层之间唯一的协议；ARCHITECTURE_LOG 2026-09-05 那块写的“那是工具参数校验框架那一步的事”，本轮只做了参数校验这一半）· `parse` 是可选成员，手写一个不走 `defineTool` 的工具绕过全部校验是合法的（编译期不拦，防线是 verify-spec ⑤/⑥ 段的源码断言）
+  - 剩余（未立项）：`parse` 是可选成员，手写一个不走 `defineTool` 的工具绕过全部校验是合法的（编译期不拦，防线是 verify-spec ⑤/⑥ 段的源码断言）
+  - **以本条为准：结构化返回值已于 2026-09-12 落地**（原"剩余"第一项划出）：`ToolResult { status, content }` 五态契约 + 五个构造器唯一入口，agent-loop 分类从 startsWith 前缀解析改读 `toolStatusFails`（唯一判定式）；模型可见文本逐字节不变。见 DECISION_LOG / ARCHITECTURE_LOG 锚点 `log-2026-09-12-tool-result`，verify-tool-result 27 项
 - [x] **可观测性增强** — 结构化 trace/span 观测层（2026-09-02 落地：总线 emit() 盖 at/seq/turnId 公共头 + SpanRecorder 打卡机（trace 自动配对 / beginSpan 手动）+ 四组骨架 span 覆盖三重循环（prompt/llm_request/tool_call/compaction）+ note_start/note_end 便签通道 + trace-log hook 落 trace.jsonl，verify-events 55 项）
   - L3 真实 usage 同日补齐：两条流式协议各自取用量（OpenAI 兼容靠 stream_options.include_usage 显式索取 + 撞 400 自动降级，Anthropic 靠 message_start 输入三项相加 + message_delta 输出累计值），AgentLoopResult 逐轮合计、任一轮缺失即整体 null，verify-usage 22 项；实测同一条冒烟的 promptTokens 从估算 26 变真值 2834（估算没算 system prompt 与 5 个工具描述）
   - 对标：Pi 的 docs/observability.md

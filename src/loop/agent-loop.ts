@@ -28,6 +28,7 @@
  */
 import type { LLMProvider, LLMMessage, LLMToolCall, ThinkingBlock, LLMUsage } from '../llm/types.js';
 import type { ToolProvider } from '../core/tools.js';
+import { toolStatusFails } from '../core/tools.js';
 import type { PermissionProvider } from '../core/permission.js';
 import type { EventBus, SpanRecorder } from '../core/events.js';
 import { spanRecorderOf } from '../core/events.js';
@@ -266,14 +267,19 @@ export class AgentLoopServiceImpl implements AgentLoopService {
           continue;
         }
 
-        // 执行并分类结果。三类，前两类计失败：
-        //   ① 硬失败 = 抛异常（下面 catch）或工具层返回 [ERROR]/[VERIFY_FAILED]
-        //   ② 无效输入 = [INVALID]：工具**没能工作**，因为模型给的参数不合法（缺参/空值/坏正则/坏 glob）。
+        // 执行并分类结果（结构化返回值，2026-09-12 起）。分类不再解析前缀文本：
+        // ToolResult.status 由生产方（工具/构造器）声明，这里只读字段——改前靠
+        // startsWith 解析前缀，前缀拼错一个字母分类就静默漂移成"成功"，且新增状态两头改。
+        // 判定式只有 toolStatusFails 一份（core/tools.ts），别处不许重抄。
+        //
+        // 三类语义（维持不变）：
+        //   ① 硬失败 = 抛异常（下面 catch）或 status 为 error / verify_failed
+        //   ② 无效输入 = invalid：工具**没能工作**，因为模型给的参数不合法（缺参/空值/坏正则/坏 glob）。
         //      计入失败，因为原样重试必然再错。改前不计，实测后果：grep 缺 pattern 连传三次，
         //      三次都只拿回干净的 [INVALID]，下面的 [系统提示] 一次也没注入 —— 模型能在同一个
         //      错参数上烧完全部轮次而收不到任何“你在重复犯错”的信号。
-        //   ③ 有效否定 = NOT_FOUND/NO_MATCH/NOT_FILE/NOT_DIR/EMPTY：工具**正常工作**了，答案是“没有”。
-        //      不计失败：那是有用信息而不是错误，连查三个不同的词都落空是合法探索。
+        //   ③ 有效否定 = negative（NOT_FOUND/NO_MATCH/NOT_FILE/NOT_DIR/EMPTY）：工具**正常工作**了，
+        //      答案是“没有”。不计失败：那是有用信息而不是错误，连查三个不同的词都落空是合法探索。
         // 把③当②会让模型每查一个不存在的符号都被念一次；把②当③就是改前那个洞。verify-phase-ab 的 A4/A5 两头钉住
         let resultContent = '';
         let failed = false;
@@ -281,10 +287,9 @@ export class AgentLoopServiceImpl implements AgentLoopService {
         try {
           const callAttrs: SpanAttrs<'tool_call'> = { name: tc.function.name, args };
           await spans.trace('tool_call', callAttrs, async (span) => {
-            resultContent = await tools.execute(tc.function.name, args);
-            failed = resultContent.startsWith('[ERROR]')
-              || resultContent.startsWith('[VERIFY_FAILED]')
-              || resultContent.startsWith('[INVALID]');
+            const result = await tools.execute(tc.function.name, args);
+            resultContent = result.content;
+            failed = toolStatusFails(result.status);
             const done: SpanResult<'tool_call'> = { name: tc.function.name, resultLength: resultContent.length };
             // 工具层软失败（[ERROR] 前缀）不抛异常，只能在这里把它抬成 status
             if (failed) done.status = 'error';

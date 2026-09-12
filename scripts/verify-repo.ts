@@ -57,7 +57,7 @@ function makeRuntime(session: any, sessionRepo?: any): any {
     llm: { chat: async () => ({ content: '' }), stream: () => { throw new Error('本脚本不触发 LLM'); } },
     session,
     sessionRepo,
-    tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => '', register: () => {} },
+    tools: { getLLMTools: () => [], requiresPermission: () => false, execute: async () => ({ status: 'ok', content: '' }), register: () => {} },
     permission: { isAutoAllowed: () => true, grantAutoAllow: () => {} },
     skills: { load: () => {} },
     events: new PromptEventEmitter(),

@@ -69,14 +69,14 @@ const failingTools: any = {
 const invalidTools: any = {
   getLLMTools: () => [],
   requiresPermission: () => false,
-  execute: async () => '[INVALID] 搜索模式 (pattern) 是必填参数',
+  execute: async () => ({ status: 'invalid', content: '[INVALID] 搜索模式 (pattern) 是必填参数' }),
   register: () => {},
 };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const noMatchTools: any = {
   getLLMTools: () => [],
   requiresPermission: () => false,
-  execute: async () => '[NO_MATCH] 无匹配结果: 某个确实不存在的符号',
+  execute: async () => ({ status: 'negative', content: '[NO_MATCH] 无匹配结果: 某个确实不存在的符号' }),
   register: () => {},
 };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

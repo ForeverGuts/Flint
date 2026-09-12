@@ -7,13 +7,18 @@
  * 设计原则：
  * 1. 参数名只认规范名，不搞多别名（结构化 function calling 由 API 保证参数格式）
  * 2. 每个参数有明确的类型约束和示例值
- * 3. 输出格式统一为 `[状态标识] 描述\n详情`
+ * 3. 输出格式统一为 `[状态标识] 描述\n详情`——前缀由 spec.ts 的构造器（toolOk/toolInvalid/
+ *    toolError/toolVerifyFailed/toolNegative）统一生成并携带机器可读的 status，
+ *    handler 只写正文（结构化返回值，2026-09-12 起）
  * 4. 输入参数做运行时校验，非法参数不执行
  * 5. 改类工具拿不准时**拒绝且一字不落盘**，把原因回给模型让它重试：
  *    静默改错地方比拒绝一次的代价大得多（edit 的 0 命中与多命中两条拒绝路径即此原则）
  */
 import type { ToolProvider } from '../core/tools.js';
-import { defineTool, str, strAllowEmpty, optStr, optPosInt, optBool, ToolInputError } from './spec.js';
+import {
+  defineTool, str, strAllowEmpty, optStr, optPosInt, optBool, ToolInputError,
+  toolOk, toolInvalid, toolError, toolVerifyFailed, toolNegative,
+} from './spec.js';
 import { TaskStore, taskStore } from '../todo/store.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -139,10 +144,10 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
         const resolvedPath = path.replace(/\\/g, '/');
 
         if (!existsSync(resolvedPath)) {
-          return `[NOT_FOUND] 目录不存在: ${resolvedPath}`;
+          return toolNegative('NOT_FOUND', `目录不存在: ${resolvedPath}`);
         }
         if (!statSync(resolvedPath).isDirectory()) {
-          return `[NOT_DIR] 不是目录: ${resolvedPath}`;
+          return toolNegative('NOT_DIR', `不是目录: ${resolvedPath}`);
         }
 
         // 递归列目录（目录名带 / 后缀；跳过噪音目录；限制条目数防膨胀）
@@ -173,13 +178,13 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
         walk(resolvedPath, 1);
 
         if (lines.length === 0) {
-          return `[EMPTY] 目录为空或全部被过滤: ${resolvedPath}`;
+          return toolNegative('EMPTY', `目录为空或全部被过滤: ${resolvedPath}`);
         }
         const count = lines.length;
-        return `[OK] 目录 ${resolvedPath} (${count} 项${count >= MAX_ENTRIES ? ', 已达上限截断' : ''}):\n${lines.join('\n')}`;
+        return toolOk(`目录 ${resolvedPath} (${count} 项${count >= MAX_ENTRIES ? ', 已达上限截断' : ''}):\n${lines.join('\n')}`);
       } catch (e) {
-        if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
-        return `[ERROR] 列目录失败: ${e instanceof Error ? e.message : String(e)}`;
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`列目录失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   }));
@@ -201,10 +206,10 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
         const resolvedPath = path.replace(/\\/g, '/');
 
         if (!existsSync(resolvedPath)) {
-          return `[NOT_FOUND] 文件不存在: ${resolvedPath}`;
+          return toolNegative('NOT_FOUND', `文件不存在: ${resolvedPath}`);
         }
         if (!statSync(resolvedPath).isFile()) {
-          return `[NOT_FILE] 不是文件: ${resolvedPath}`;
+          return toolNegative('NOT_FILE', `不是文件: ${resolvedPath}`);
         }
 
         const content = readFileSync(resolvedPath, 'utf-8');
@@ -214,10 +219,10 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
         const selected = lines.slice(start, start + count);
         const output = selected.map((line, i) => `${start + i + 1} | ${line}`).join('\n');
 
-        return `[OK] 文件 ${resolvedPath} (${lines.length} 行) 行 ${offset}-${offset + count - 1}:\n${output}`;
+        return toolOk(`文件 ${resolvedPath} (${lines.length} 行) 行 ${offset}-${offset + count - 1}:\n${output}`);
       } catch (e) {
-        if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
-        return `[ERROR] 读取失败: ${e instanceof Error ? e.message : String(e)}`;
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`读取失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   }));
@@ -252,14 +257,14 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
         // 写回验证
         const verified = readFileSync(resolvedPath, 'utf-8');
         if (verified !== content) {
-          return `[VERIFY_FAILED] 写入内容与读取内容不一致: ${resolvedPath}`;
+          return toolVerifyFailed(`写入内容与读取内容不一致: ${resolvedPath}`);
         }
 
         const lineCount = content.split('\n').length;
-        return `[OK] 写入成功: ${resolvedPath} (${content.length} 字符, ${lineCount} 行)`;
+        return toolOk(`写入成功: ${resolvedPath} (${content.length} 字符, ${lineCount} 行)`);
       } catch (e) {
-        if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
-        return `[ERROR] 写入失败: ${e instanceof Error ? e.message : String(e)}`;
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`写入失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   }));
@@ -297,16 +302,16 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
 
         // 新旧文本相同：不落盘、不报成功，直接回一句无效（省掉无谓的写与验证）
         if (oldText === newText) {
-          return `[INVALID] oldText 与 newText 完全相同，无需改动: ${resolvedPath}`;
+          return toolInvalid(`oldText 与 newText 完全相同，无需改动: ${resolvedPath}`);
         }
 
         const { readFileSync, writeFileSync, existsSync, statSync } = await import('node:fs');
 
         if (!existsSync(resolvedPath)) {
-          return `[NOT_FOUND] 文件不存在: ${resolvedPath}（新建文件请用 write）`;
+          return toolNegative('NOT_FOUND', `文件不存在: ${resolvedPath}（新建文件请用 write）`);
         }
         if (!statSync(resolvedPath).isFile()) {
-          return `[NOT_FILE] 不是文件: ${resolvedPath}`;
+          return toolNegative('NOT_FILE', `不是文件: ${resolvedPath}`);
         }
 
         // 按字节读，不按 'utf-8' 读字符串：BOM 判定与写回验证都落在字节上。
@@ -335,17 +340,17 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
           hits.push(i);
         }
 
-        // 状态前缀的选择是**承重的**，不要"为一致性"改成 [NO_MATCH] / [NOT_FOUND]：
-        // agent-loop 把 [ERROR] / [VERIFY_FAILED] / [INVALID] 记作失败，而"重复失败保护"只在失败时计数，
+        // 状态的选择是**承重的**，不要"为一致性"改成 NO_MATCH / NOT_FOUND：
+        // agent-loop 把 error / verify_failed / invalid 记作失败，而"重复失败保护"只在失败时计数，
         // 第 2 次同样调用就会追加 [系统提示] 叫模型停止原样重试、先去 read 确认。
-        // 定位失败（0 命中 / 多命中）恰恰是最容易被原样重试的一类，用有效否定前缀等于把这层保护关掉。
-        // 为何不用 [INVALID]（2026-09-05 起它也计失败，行为上已等价）：0 命中不是"参数格式不合法"，
+        // 定位失败（0 命中 / 多命中）恰恰是最容易被原样重试的一类，用有效否定状态等于把这层保护关掉。
+        // 为何不用 invalid（2026-09-05 起它也计失败，行为上已等价）：0 命中不是"参数格式不合法"，
         // 而是"文件内容与模型预期不符"——参数本身完全合法，语义上属执行失败。
-        // 反之 [NOT_FOUND]（目标文件不存在）保持与 read/write 一致的有效否定语义。
+        // 反之 NOT_FOUND（目标文件不存在）保持与 read/write 一致的有效否定语义。
         if (hits.length === 0) {
-          return `[ERROR] oldText 在文件中找不到，未做任何改动: ${resolvedPath}\n`
+          return toolError(`oldText 在文件中找不到，未做任何改动: ${resolvedPath}\n`
             + `文件共 ${work.split('\n').length} 行。oldText 必须与文件内容逐字符一致（缩进、空格、标点全算）。\n`
-            + `先用 read 看清原文再重试，不要凭记忆猜。`;
+            + `先用 read 看清原文再重试，不要凭记忆猜。`);
         }
 
         if (hits.length > 1 && !replaceAll) {
@@ -353,9 +358,9 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
           const lineOf = (idx: number): number => work.slice(0, idx).split('\n').length;
           const shown = hits.slice(0, 20).map(lineOf);
           const more = hits.length > shown.length ? `（仅列出前 ${shown.length} 处）` : '';
-          return `[ERROR] oldText 命中 ${hits.length} 处，无法确定该改哪一处，未做任何改动: ${resolvedPath}\n`
+          return toolError(`oldText 命中 ${hits.length} 处，无法确定该改哪一处，未做任何改动: ${resolvedPath}\n`
             + `候选行号: 第 ${shown.join(', ')} 行${more}\n`
-            + `给 oldText 加上下文使其唯一；确认每一处都要改成同样内容时，才传 replaceAll: true。`;
+            + `给 oldText 加上下文使其唯一；确认每一处都要改成同样内容时，才传 replaceAll: true。`);
         }
 
         const updated = replaceAll
@@ -368,18 +373,18 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
 
         // 写回验证按字节比：不依赖"编码读会不会吃 BOM"这类行为细节
         if (!readFileSync(resolvedPath).equals(Buffer.from(payload, 'utf-8'))) {
-          return `[VERIFY_FAILED] 写回内容与读取内容不一致: ${resolvedPath}`;
+          return toolVerifyFailed(`写回内容与读取内容不一致: ${resolvedPath}`);
         }
 
         const before = work.split('\n').length;
         const after = updated.split('\n').length;
         const delta = after - before;
-        return `[OK] 已替换 ${replaceAll ? hits.length : 1} 处: ${resolvedPath} `
+        return toolOk(`已替换 ${replaceAll ? hits.length : 1} 处: ${resolvedPath} `
           + `(${before} → ${after} 行${delta === 0 ? '' : `, ${delta > 0 ? '+' : ''}${delta}`}, `
-          + `${original.length} → ${updated.length} 字符${allCrlf ? ', CRLF 已保持' : ''}${hasBom ? ', BOM 已保持' : ''})`;
+          + `${original.length} → ${updated.length} 字符${allCrlf ? ', CRLF 已保持' : ''}${hasBom ? ', BOM 已保持' : ''})`);
       } catch (e) {
-        if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
-        return `[ERROR] 替换失败: ${e instanceof Error ? e.message : String(e)}`;
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`替换失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   }));
@@ -405,19 +410,19 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
            agent-loop 把 NO_MATCH 归为"有效否定（不计失败）"，于是模型搜一个**确实存在**的
            符号会得到"无匹配"，据此形成对整个代码库的错误认知，且收不到任何警告。 */
 
-        // 坏正则必须是 [INVALID]，不能混进 [NO_MATCH]：那是"我写错了"与"项目里没有"的区别
+        // 坏正则必须是 invalid，不能混进 NO_MATCH：那是"我写错了"与"项目里没有"的区别
         let re: RegExp;
         try {
           re = new RegExp(pattern);
         } catch (e) {
-          return `[INVALID] 正则无法编译: /${pattern}/ —— ${e instanceof Error ? e.message : String(e)}`;
+          return toolInvalid(`正则无法编译: /${pattern}/ —— ${e instanceof Error ? e.message : String(e)}`);
         }
         const includeRe = glob ? globToRegExp(glob) : null;
-        if (glob && includeRe === null) return `[INVALID] include 过滤模式无法编译: ${glob}`;
+        if (glob && includeRe === null) return toolInvalid(`include 过滤模式无法编译: ${glob}`);
 
         const { existsSync, statSync, readdirSync, readFileSync } = await import('node:fs');
         const resolvedPath = searchPath.replace(/\\/g, '/');
-        if (!existsSync(resolvedPath)) return `[NOT_FOUND] 路径不存在: ${resolvedPath}`;
+        if (!existsSync(resolvedPath)) return toolNegative('NOT_FOUND', `路径不存在: ${resolvedPath}`);
 
         const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist']);
         const MAX_FILE_BYTES = 2 * 1024 * 1024;   // 超大文件跳过：读进来只为搜一遍不值得
@@ -484,18 +489,18 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
         ].filter(Boolean).join('，');
 
         if (hits.length === 0) {
-          return `[NO_MATCH] 无匹配结果: /${pattern}/ 在 ${resolvedPath}${glob ? ` (${glob})` : ''} —— ${stats}`;
+          return toolNegative('NO_MATCH', `无匹配结果: /${pattern}/ 在 ${resolvedPath}${glob ? ` (${glob})` : ''} —— ${stats}`);
         }
         const body = hits.join('\n');
         const shown = body.length > 4000
           ? `${body.slice(0, 4000)}\n...（结果截断：共 ${body.length} 字符）`
           : body;
-        return `[OK] 找到 ${hits.length} 处匹配（${stats}）:\n${shown}`;
+        return toolOk(`找到 ${hits.length} 处匹配（${stats}）:\n${shown}`);
       } catch (e) {
-        if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
-        // 执行失败报 [ERROR] 而非 [NO_MATCH]：前者计入失败、会触发重复失败保护，
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        // 执行失败报 error 而非 negative：前者计入失败、会触发重复失败保护，
         // 后者被当成"有效否定"悄悄放过。把两者混为一谈正是改前那个洞
-        return `[ERROR] 搜索失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`;
+        return toolError(`搜索失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
       }
     },
   }));
@@ -542,7 +547,7 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
         const trimmed = decodeChildOutput(raw).trim();
 
         if (!trimmed) {
-          return `[OK] 命令执行成功（无输出）: ${cmd.slice(0, 100)}`;
+          return toolOk(`命令执行成功（无输出）: ${cmd.slice(0, 100)}`);
         }
 
         // 行数与字符数都按**截断前**的原文算。改前 lineCount 取的是截断后的串，而同一句里
@@ -553,11 +558,11 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
           ? `${trimmed.slice(0, 4000)}\n...（输出截断：共 ${trimmed.length} 字符、${lineCount} 行，此处只显示前 4000 字符）`
           : trimmed;
 
-        return `[OK] 命令执行成功 (${lineCount} 行输出，${trimmed.length} 字符):\n${shown}`;
+        return toolOk(`命令执行成功 (${lineCount} 行输出，${trimmed.length} 字符):\n${shown}`);
       } catch (e) {
-        if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
         const msg = e instanceof Error ? e.message.slice(0, 500) : String(e);
-        return `[ERROR] 命令执行失败: ${msg}`;
+        return toolError(`命令执行失败: ${msg}`);
       }
     },
   }));
@@ -582,21 +587,21 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
         switch (op) {
           case 'add': {
             if (store.add(text) < 0) {
-              return `[INVALID] add 需要非空的 text（要追加的步骤描述）`;
+              return toolInvalid(`add 需要非空的 text（要追加的步骤描述）`);
             }
             break;
           }
           case 'start': {
             if (!store.start(index)) {
               const t = store.counts().total;
-              return `[INVALID] start 的 index=${index} 越界（当前 ${t} 项，序号 1..${t}）`;
+              return toolInvalid(`start 的 index=${index} 越界（当前 ${t} 项，序号 1..${t}）`);
             }
             break;
           }
           case 'done': {
             if (!store.done(index)) {
               const t = store.counts().total;
-              return `[INVALID] done 的 index=${index} 越界（当前 ${t} 项，序号 1..${t}）`;
+              return toolInvalid(`done 的 index=${index} 越界（当前 ${t} 项，序号 1..${t}）`);
             }
             break;
           }
@@ -604,21 +609,21 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
             store.clear();
             break;
           default:
-            return `[INVALID] 未知操作 op=${op}，可用的是 add / start / done / clear`;
+            return toolInvalid(`未知操作 op=${op}，可用的是 add / start / done / clear`);
         }
 
         // 投影到 TASK.md（失败不致命：内存仍是真相源，只是丢跨重启存档）
         const warn = store.projectToFile('TASK.md');
         const c = store.counts();
-        if (c.total === 0) return `[OK] 任务清单已清空（TASK.md 已移除）`;
-        const head = `[OK] 任务清单（${c.total} 项：${c.done} 完成 / ${c.active} 进行中 / ${c.pending} 待办）`;
+        if (c.total === 0) return toolOk(`任务清单已清空（TASK.md 已移除）`);
+        const head = `任务清单（${c.total} 项：${c.done} 完成 / ${c.active} 进行中 / ${c.pending} 待办）`;
         const tail = warn
           ? `\n（注：TASK.md 写入失败：${warn} —— 内存状态仍有效，但重启后会丢失）`
           : '';
-        return `${head}\n${store.renderNumbered()}${tail}`;
+        return toolOk(`${head}\n${store.renderNumbered()}${tail}`);
       } catch (e) {
-        if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
-        return `[ERROR] todo 执行失败: ${e instanceof Error ? e.message : String(e)}`;
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`todo 执行失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   }));

@@ -163,7 +163,7 @@ function endOf(events: LLMStreamEvent[]): EndEvent | undefined {
 function loopWith(llm: LLMProvider, events?: unknown): AgentLoopServiceImpl {
   return new AgentLoopServiceImpl({
     llm,
-    tools: { getLLMTools: () => [], execute: async () => '[OK]', requiresPermission: () => false } as never,
+    tools: { getLLMTools: () => [], execute: async () => ({ status: 'ok', content: '[OK]' }), requiresPermission: () => false } as never,
     permission: { isAutoAllowed: () => true, grantAutoAllow: () => {} } as never,
     events: (events ?? { subscribe: () => () => {}, on: () => () => {}, emit: () => {} }) as never,
   });

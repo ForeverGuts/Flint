@@ -262,7 +262,9 @@ console.log('\n⑥ 接线证明（parse 写出来却没人调 = 白写；本项�
   registerBuiltinTools(registry);
   fs.writeFileSync(path.join(tmpDir, 'a.ts'), 'export const x = 1;\n');
 
-  const run = async (args: Record<string, unknown>): Promise<string> => registry.execute('grep', args);
+  // execute 现在返回结构化 ToolResult；helper 解包出模型可见文本，下面的断言不动
+  const run = async (args: Record<string, unknown>): Promise<string> =>
+    (await registry.execute('grep', args)).content;
 
   check('6-1 缺 pattern 仍报 [INVALID]（改前就绿：handler 里 requireString 拦的；改后必须由 parse 拦）',
     (await run({})).startsWith('[INVALID]'), (await run({})).slice(0, 60));

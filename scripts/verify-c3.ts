@@ -138,7 +138,7 @@ console.log('── C3-7/8 多轮回放端到端（agent-loop 收集→挂载→
 const noopEvents = { subscribe: () => () => {}, on: () => () => {}, emit: () => {} };
 const loop = new AgentLoopServiceImpl({
   llm: provider('auto'),
-  tools: { getLLMTools: () => [], execute: async () => '[OK]', requiresPermission: () => false } as never,
+  tools: { getLLMTools: () => [], execute: async () => ({ status: 'ok', content: '[OK]' }), requiresPermission: () => false } as never,
   permission: { isAutoAllowed: () => true, grantAutoAllow: () => {} } as never,
   events: noopEvents as never,
 });

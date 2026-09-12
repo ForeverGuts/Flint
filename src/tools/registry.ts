@@ -8,9 +8,9 @@
  *   - 可选的参数校验（parse），在 handler 之前把模型传来的 args 校一遍、补齐默认值
  *   - 处理器（handler），实际执行的函数
  */
-import type { ToolProvider, ToolDefinition } from '../core/tools.js';
+import type { ToolProvider, ToolDefinition, ToolResult } from '../core/tools.js';
 import type { LLMTool } from '../llm/types.js';
-import { ToolInputError } from './spec.js';
+import { ToolInputError, toolInvalid } from './spec.js';
 
 /** 工具注册表管理器（实现 core ToolProvider） */
 export class ToolRegistry implements ToolProvider {
@@ -62,14 +62,15 @@ export class ToolRegistry implements ToolProvider {
    * 传 Schema 里不存在的参数名，三次全部返回 [OK]。那份 Schema 因此只是"给模型的建议书"。
    * 现在规格真的生效了：先跑 parse，拿到校验过、默认值补齐的对象再交给 handler。
    *
-   * ToolInputError 必须在这里**就地**转成 [INVALID]：它是一套返回值前缀协议（agent-loop 靠
-   * 前缀分类、并把 [INVALID] 计入失败）。让它穿透出去会被 agent-loop 的 catch 包成
-   * "[工具 grep 执行失败]\nError: ..."，模型看到的是一句没有参数名、也不计入失败的通用错误。
+   * ToolInputError 必须在这里**就地**转成 status='invalid' 的 ToolResult：这是一套结构化
+   * 返回值协议（agent-loop 读 status 分类、并把 invalid 计入失败）。让它穿透出去会被
+   * agent-loop 的 catch 包成 "[工具 grep 执行失败]\nError: ..."，模型看到的是一句没有
+   * 参数名、也不计入失败的通用错误。
    *
    * try 只包住 parse，不包住 handler：handler 自己的异常该走它自己的 catch（那里面区分
-   * [INVALID] 与 [ERROR]），在这里一并兜住会让两类错误混成一类。
+   * invalid 与 error），在这里一并兜住会让两类错误混成一类。
    */
-  async execute(name: string, args: Record<string, unknown>): Promise<string> {
+  async execute(name: string, args: Record<string, unknown>): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) throw new Error(`Unknown tool: ${name}`);
     let parsed = args;
@@ -77,7 +78,7 @@ export class ToolRegistry implements ToolProvider {
       try {
         parsed = tool.parse(args);
       } catch (e) {
-        if (e instanceof ToolInputError) return `[INVALID] ${e.message}`;
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
         throw e;   // 不是模型的错（规格自己写坏了）→ 让它穿透，该报成执行失败
       }
     }

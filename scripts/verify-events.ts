@@ -90,7 +90,7 @@ const mixedTools = {
   requiresPermission: () => false,
   execute: async (name: string) => {
     if (name === 'boom') throw new Error('模拟工具崩溃');
-    return '[OK] 读取成功';
+    return { status: 'ok', content: '[OK] 读取成功' };
   },
   register: () => {},
 };
