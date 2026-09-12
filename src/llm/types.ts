@@ -24,11 +24,13 @@ export interface LLMMessage {
   tool_calls?: LLMToolCall[];
   /**
    * 本轮产出的 thinking 块（仅 assistant 角色、仅 Anthropic 路径；阶段 C3 问题3）。
-   * 作用域：单次 run() 内的内存消息链——MessageEntry 没有这个字段，块永不落盘，故跨用户轮无回放义务。
+   * 作用域：单次 run() 内的内存消息链——MessageEntry 没有这个字段，块永不落盘
+   * （2026-09-12 方案 B 的前提：thinking 开时跨轮历史本就回退纯文本，块无回放义务）。
    *
-   * 别把理由记成“会话存储只存纯文本”：MessageEntry 是有 tool_calls / tool_call_id / name 的，
-   * getMessages() 也会还原。真正让跨轮历史变回纯文本的是 runtime.ts 组装请求时只映射
-   * role + content（那道丢弃是承重的，详见 Log/ARCHITECTURE.md 第四节第 9 条）。
+   * 别把历史形态记成"会话存储只存纯文本"：MessageEntry 有 tool_calls / tool_call_id / name，
+   * getMessages() 会还原，runtime.ts 落盘也会写入。跨轮历史的形态由 runtime.ts 按 thinking
+   * 开关分叉——开则纯文本（承重丢弃，防安全阀误杀），关则全量结构化回传
+   * （详见 Log/ARCHITECTURE.md 第四节第 9 条）。
    */
   thinkingBlocks?: ThinkingBlock[];
   /** 工具调用结果名称（仅 tool 角色携带） */

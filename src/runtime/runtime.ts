@@ -696,14 +696,43 @@ export class Runtime {
       historyCount: history.length,
     });
 
-    // 历史只映射 role + content —— 这道丢弃是**承重的**，不要“顺手补全”：
-    // getMessages() 其实会还原 tool_calls / tool_call_id / name（虽然当前也没人写入，见下方 appendMessage），
-    // 但 thinkingBlocks 永不落盘；一旦透传，历史里带 tool_calls 的 assistant 轮就没有配对的 thinking 块，
-    // anthropic.ts 的 resolveAnthropicThinking 安全阀会因此把 extended thinking 全程静默关掉。
-    // 详见 Log/ARCHITECTURE.md 第四节第 9 条（已固化为 verify-session.ts ⑨ 段断言）。
+    // thinking 自动判定（阶段 C2）先于历史组装（方案 B：历史形态跟着 thinking 走）：
+    // 'on' 常开；'auto' 仅当有进行中任务（清单有未完成项）时开；'off' 常关。
+    // 与注入共享同一信号：taskMemory 仅在 hasUnchecked 时非空，空清单/全完成不会污染 auto
+    const thinkingOn = this.thinkingMode === 'on' || (this.thinkingMode === 'auto' && taskMemory !== undefined);
+
+    // 历史组装按 thinking 分叉（2026-09-12 跨轮结构化接通，方案 B）：
+    // - thinking **开** → 降级为纯文本。这道丢弃仍是**承重的**：getMessages() 会还原
+    //   tool_calls / tool_call_id / name，但 thinkingBlocks 永不落盘；透传后历史里带 tool_calls
+    //   的 assistant 轮没有配对的 thinking 块，anthropic.ts 的 resolveAnthropicThinking 安全阀
+    //   会把 extended thinking 全程静默关掉。降级不是原样丢弃：tool 结果转 user 文本（信息保住）、
+    //   纯工具调用的空 assistant 轮剔除（两条协议都不收空内容消息）。
+    //   （本轮循环**内**仍是全结构化，不受影响。）
+    // - thinking **关** → 全量结构化回传：上一轮真实调过什么工具、结果是什么，模型看得到。
+    //   两条协议线路此时都合法：Anthropic 关 thinking 无块回放义务；OpenAI 无此约束。
+    //   安全阀原样保留当兜底——任何漏网的无块结构化历史会被它拦下而不是 400。
+    // 详见 Log/ARCHITECTURE.md 第四节第 9 条（已随本轮改写，verify-session.ts ⑨ 段断言同步）。
     const toolMessages: LLMMessage[] = [
       ...systemMessages.map(({ content }) => ({ role: 'system' as const, content })),
-      ...history.map((m) => ({ role: m.role as LLMMessage['role'], content: m.content })),
+      ...(thinkingOn
+        ? history.flatMap((m) => {
+            // 降级视图（方案 B）：tool 结果转 user 文本（保住信息、shape 合法——孤儿 tool 消息
+            // 丢了 tool_call_id 两条协议都不认）；纯工具调用轮（assistant 空文本）剔除——它的
+            // 信息在 tool 结果里，空 assistant 消息两条协议都不收。
+            if (m.role === 'tool') {
+              return [{ role: 'user' as const, content: `[工具 ${m.name ?? ''} 结果] ${m.content}` }];
+            }
+            if (m.role === 'assistant' && !m.content.trim()) return [];
+            return [{ role: m.role as LLMMessage['role'], content: m.content }];
+          })
+        : history.map((m) => ({
+            role: m.role as LLMMessage['role'],
+            content: m.content,
+            ...(m.tool_calls?.length ? { tool_calls: m.tool_calls } : {}),
+            ...(m.tool_call_id
+              ? { tool_call_id: m.tool_call_id, ...(m.name ? { name: m.name } : {}) }
+              : {}),
+          }))),
       { role: 'user' as const, content: currentText },
     ];
 
@@ -711,10 +740,8 @@ export class Runtime {
     // ⑧: Agent Loop —— 委托给 AgentLoop 子系统（LLM 生成 + 工具执行循环）
     // ═══════════════════════════════════════════════════════════════════════════
     // 轮数预算：有进行中任务（taskStore 有未完成项）时放大轮数，否则用默认预算（防死循环）
-    // thinking 自动判定（阶段 C2）：'on' 常开；'auto' 仅当有进行中任务（清单有未完成项）时开；'off' 常关。
-    // 与注入共享同一信号：taskMemory 仅在 hasUnchecked 时非空，空清单/全完成不会污染 auto
-    const thinkingOn = this.thinkingMode === 'on' || (this.thinkingMode === 'auto' && taskMemory !== undefined);
-    const { finalText, usage } = await this.agentLoop.run(toolMessages, onToken, {
+    // （thinkingOn 已在上方组装前判定）
+    const { finalText, usage, turnLog } = await this.agentLoop.run(toolMessages, onToken, {
       maxTurns: taskMemory ? WITH_PLAN_MAX_TURNS : DEFAULT_MAX_TURNS,
       thinking: thinkingOn,
       model: this.currentModel,
@@ -733,8 +760,10 @@ export class Runtime {
     });
     this.events.emit({ type: 'message_end' });
 
-    // 只传 role + content，不传第三个参数 extra：tool_calls / tool_call_id / name 从未被写进会话文件。
-    // 于是 MessageEntry 的结构化字段是“格式支持、入口未接线”，与上面那道丢弃合起来构成双向死路。
+    // 落盘（2026-09-12 接通写侧）：本轮中间消息（agent-loop 上交的 turnLog）带 extra 落盘，
+    // 跨轮后模型（thinking 关时回传）与 /history 都看得到上一轮真实调过什么工具、结果是什么。
+    // 顺序：user → steers → 中间消息（忠实于发生顺序）→ 最终回复。thinkingBlocks 不在 extra
+    // 三字段内，自然不落盘——方案 B 的前提：thinking 开时历史本就回退纯文本，块无回放义务。
     await this.session?.appendMessage('user', currentText);
     // 被内层吸收的引导：作为独立 user 条目补在本轮 assistant **之前** —— 时序忠实，
     // 引导确实发生在「用户提问」与「助手回复」之间，而不是等回复完才冒出来。
@@ -743,6 +772,21 @@ export class Runtime {
     // 内容带 STEER_PREFIX：三个存储后端都只保 role + content，前缀因此是唯一通用的标记通道。
     for (const steer of absorbedSteers) {
       await this.session?.appendMessage('user', STEER_PREFIX + steer);
+    }
+    // turnLog 逐条落盘：tool 结果带 tool_call_id + name，assistant 带 tool_calls。
+    // 引导/收尾提示已被 agent-loop 原地追加进 tool 结果 content，落盘即模型实际所见（忠实回放）。
+    // InMemory/Mock 不接第三个参数会静默丢 extra——可接受：它们是测试后端，Jsonl 是唯一真相后端。
+    for (const m of turnLog) {
+      if (m.role === 'tool') {
+        await this.session?.appendMessage('tool', m.content, {
+          ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+          ...(m.name ? { name: m.name } : {}),
+        });
+      } else {
+        await this.session?.appendMessage(m.role, m.content, {
+          ...(m.tool_calls?.length ? { tool_calls: m.tool_calls } : {}),
+        });
+      }
     }
     await this.session?.appendMessage('assistant', finalText);
     // 用量：优先 API 真值（Agent Loop 已合计各轮），缺失才回退估算——

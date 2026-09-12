@@ -11,6 +11,26 @@
 
 ---
 
+<a id="log-2026-09-12-history-structured"></a>
+
+## 2026-09-12 | 历史结构化数据接通：落盘归 runtime、请求侧按 thinking 分叉
+
+**牵连系统**：`core/loop.ts`（AgentLoopResult 增 turnLog）· `core/storage.ts`（getMessages 读侧类型放宽）· `loop/agent-loop.ts`（turnLog 切片上交）· `runtime/runtime.ts`（落盘 turnLog + 请求侧分叉）· `llm/types.ts` / `llm/anthropic.ts`（权威注释同步）· `scripts/verify-history-structured.ts`（新套件）· `scripts/verify-session.ts` ⑨ 段 / `scripts/verify-steering.ts` S8 组（随新语义更新）
+
+**面向的问题**：跨用户轮历史不带工具调用结构——模型看得到本轮调了什么工具，看不到上一轮的（中间消息从未落盘）；存储格式早就支持，但"入口没人写 + 出口被丢弃"构成双向死路。直接接通出口会让 `resolveAnthropicThinking` 安全阀把 extended thinking 静默全程关掉（thinkingBlocks 永不落盘，带 tool_calls 的历史 assistant 轮没有配对块可回放）。
+
+**做出的改动**：
+
+1. **turnLog 契约**（`core/loop.ts`）：`AgentLoopResult` 新增 `turnLog: LLMMessage[]`——run() 入口捕获 `startLen`，结束时 `toolMessages.slice(startLen)` 上交本轮**实际生成**的中间消息。落盘仍归 runtime（C3 断言"agent-loop 不碰存储"保持成立），引导/收尾提示对 tool 结果的原地追加因共享引用如实包含，最终回复不入 turnLog（runtime 已单独落盘）。
+2. **落盘接线**（`runtime.ts`）：turnLog 逐条带 extra 落盘，顺序 user → steers → turnLog → 最终回复。`getMessages()` 契约读侧放宽（补三个可选结构化字段的类型声明）。
+3. **请求侧分叉（方案 B）**：thinking 判定上移到组装之前；thinking 关（或 auto 未激活）→ 全量结构化回传；thinking 开 → 降级纯文本——**转写不是过滤**：tool 结果转 user 文本（`[工具 X 结果] …`）、纯工具调用的空 assistant 轮剔除（孤儿 tool 消息与空内容消息两条协议都不收——这个缺口是新套件 C5 首跑揪出来的）。安全阀原样保留当兜底。
+
+**解决的问题**：模型跨用户轮看得到上一轮的工具调用与结果（thinking 关/auto 场景）；`/history` 与 fork 保留完整工具轮； thinking 场景不受影响（本轮循环内本就全结构化，历史降级保住 extended thinking）。
+
+**未来可优化**：方案 A（thinkingBlocks 落盘 + 全量回放）留作增量——需要契约加字段、三存储后端、compaction 摘要交互对齐；steer 独立条目落在工具循环之前（runtime 只有"本轮内被吸收"一个时刻），真实时序由 tool 结果内嵌的 `[用户引导]` 文本承载，两份记录并存是刻意取舍。
+
+---
+
 <a id="log-2026-09-12-skill-hot-reload"></a>
 
 ## 2026-09-12 | 技能热重载：观察者只管 UI，提示词层自愈

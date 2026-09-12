@@ -99,6 +99,9 @@ export class AgentLoopServiceImpl implements AgentLoopService {
     // 重复失败追踪器：抓"同一工具+同参数连续重复失败"（换了调用或成功即中断）
     let repeatTracker: { key: string; count: number } | null = null;
     let finishedEarly = false;
+    // 本轮起始下标：之后 push 进来的都是**本次循环生成**的消息（assistant+tool_calls / tool 结果），
+    // 结束时切片上交 turnLog 供 Runtime 落盘（最终回复不入 toolMessages，天然不在此列）
+    const startLen = toolMessages.length;
 
     for (let turn = 0; turn < maxTurns; turn++) {
       // ── ① LLM 流式生成 + 收集工具调用（整段包在 llm_request span 里） ──
@@ -381,6 +384,6 @@ export class AgentLoopServiceImpl implements AgentLoopService {
       }
     }
 
-    return { finalText, usage: usageComplete ? usageTotal : null };
+    return { finalText, usage: usageComplete ? usageTotal : null, turnLog: toolMessages.slice(startLen) };
   }
 }

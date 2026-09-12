@@ -238,30 +238,46 @@ console.log('\n⑨ tool_calls 持久化（钉死“存储只存纯文本”这�
   check('B2 存储层全文无 thinkingBlocks（块永不落盘）', !/thinkingBlocks/.test(storageSrc));
   check('B3 落盘内容里不含 thinkingBlocks', !raw.includes('thinkingBlocks'));
 
-  // ── C. 入口未接线：没人写入结构化字段 ──
+  // ── C. 入口已接线（2026-09-12 跨轮结构化接通）：turnLog 逐条带 extra 落盘 ──
   const runtimeSrc = fs.readFileSync(path.join(ROOT, 'src/runtime/runtime.ts'), 'utf8');
   // 先切段再断言（TESTING.md 第八节的口径；本轮实踩）：只在 runSingleTurn 的方法体内数调用点。
   // 裸扫全文件会把我写进顶部 STEER_PREFIX JSDoc 的那句「appendMessage(role, content) 不接第三个
   // 参数」也数成一个调用点——它引用这句代码正是为了解释"为什么改用内容前缀"。
   const turnSeg = runtimeSrc.slice(runtimeSrc.indexOf('private async runSingleTurn('));
   const appendCalls = turnSeg.match(/appendMessage\([^\n]*/g) ?? [];
-  check('C1 runSingleTurn 内恰好三处 appendMessage 调用（2026-09-10 前是两处，多出的一处是引导落盘）',
-    appendCalls.length === 3, JSON.stringify(appendCalls));
-  check('C2 三处都只传两个参数（不传 extra → 结构化字段仍从未被写进会话文件）',
-    appendCalls.every((c) => !c.includes('{') && /\);/.test(c)), JSON.stringify(appendCalls));
+  check('C1 runSingleTurn 内恰好五处 appendMessage 调用（user / steer / turnLog 的 tool / turnLog 的 assistant / 最终回复）',
+    appendCalls.length === 5, JSON.stringify(appendCalls));
+  check('C2 turnLog 两处带 extra 落盘（tool 传 tool_call_id+name，assistant 传 tool_calls）',
+    /appendMessage\('tool', m\.content, \{\s*\.\.\.\(m\.tool_call_id/.test(turnSeg)
+    && /appendMessage\(m\.role, m\.content, \{\s*\.\.\.\(m\.tool_calls/.test(turnSeg));
+  check('C2b user / steer / 最终回复三处仍只传两个参数（steer 靠内容前缀，不靠结构化字段）',
+    appendCalls.filter((c) => /appendMessage\('user'|appendMessage\('assistant', finalText/.test(c))
+      .every((c) => !c.includes('{')),
+    JSON.stringify(appendCalls));
   const loopSrc = fs.readFileSync(path.join(ROOT, 'src/loop/agent-loop.ts'), 'utf8');
-  check('C3 agent-loop.ts 一处 appendMessage 都没有（存储层头注释声称的“Agent 循环”调用方从未接线）',
+  check('C3 agent-loop.ts 一处 appendMessage 都没有（落盘是 Runtime 的编排职责，循环只上交 turnLog）',
     !/appendMessage/.test(loopSrc));
+  check('C3b agent-loop 以 turnLog 切片上交本轮生成的中间消息（startLen 捕获 + slice）',
+    /const startLen = toolMessages\.length;/.test(loopSrc) && /toolMessages\.slice\(startLen\)/.test(loopSrc));
 
-  // ── D. 出口承重：这道丢弃**不能**被“顺手补全” ──
-  check('D1 runtime.ts 组装历史时只映射 role + content',
-    /history\.map\(\(m\) => \(\{ role: m\.role as LLMMessage\['role'\], content: m\.content \}\)\)/.test(runtimeSrc));
-  check('D2 丢弃点留有承重警告注释（没注释下一个人会当遗漏补掉，从而静默关闭 extended thinking）',
-    /这道丢弃是\*\*承重的\*\*/.test(runtimeSrc) && /extended thinking 全程静默关掉/.test(runtimeSrc));
+  // ── D. 出口按 thinking 分叉（方案 B）：开则降级纯文本承重丢弃，关则结构化回传 ──
+  check('D1 thinking-on 分支降级为纯文本（flatMap：tool 结果转 user 文本、空 assistant 轮剔除）',
+    /history\.flatMap\(\(m\) => \{/.test(runtimeSrc)
+    && /\[工具 \$\{m\.name \?\? ''\} 结果\]/.test(runtimeSrc)
+    && /m\.role === 'assistant' && !m\.content\.trim\(\)\) return \[\]/.test(runtimeSrc));
+  check('D1b thinking-off 分支全量结构化回传（tool_calls / tool_call_id / name 条件展开）',
+    /m\.tool_calls\?\.length \? \{ tool_calls: m\.tool_calls \} : \{\}/.test(runtimeSrc)
+    && /tool_call_id: m\.tool_call_id/.test(runtimeSrc));
+  check('D2 thinkingOn 判定先于历史组装（分叉依赖它，顺序错了分叉就是摆设）',
+    runtimeSrc.indexOf('const thinkingOn') < runtimeSrc.indexOf('const toolMessages: LLMMessage[]'));
+  check('D2b 承重警告注释仍在（没注释下一个人会当遗漏补掉，从而静默关闭 extended thinking）',
+    /这道丢弃仍是\*\*承重的\*\*/.test(runtimeSrc) && /extended thinking 全程静默关掉/.test(runtimeSrc));
   const anthropicSrc = fs.readFileSync(path.join(ROOT, 'src/llm/anthropic.ts'), 'utf8');
   const typesSrc = fs.readFileSync(path.join(ROOT, 'src/llm/types.ts'), 'utf8');
-  check('D3 anthropic.ts 的安全阀注释点明成因在 runtime 组装而非存储层',
-    /而是 runtime\.ts 组装 toolMessages 时只映射 role \+ content/.test(anthropicSrc));
+  check('D3 anthropic.ts 安全阀注释点明分叉策略与兜底定位',
+    /thinking 开时 runtime\.ts 只映射 role \+ content/.test(anthropicSrc) && /本阀保留作兜底/.test(anthropicSrc));
+  check('D3b 安全阀函数本体未被拆除（兜底必须在）',
+    /m\.role !== 'assistant' \|\| !m\.tool_calls\?\.length \|\| \(m\.thinkingBlocks\?\.length \?\? 0\) > 0/.test(anthropicSrc));
   check('D4 types.ts 的 thinkingBlocks 注释点明 MessageEntry 无此字段',
     /MessageEntry 没有这个字段/.test(typesSrc));
   check('D5 三处注释都指回 ARCHITECTURE.md 第四节第 9 条（单一权威叙述）',

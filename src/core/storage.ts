@@ -33,8 +33,20 @@ export interface SessionStorage {
     content: string,
     extra?: { tool_calls?: unknown[]; tool_call_id?: string; name?: string },
   ): Promise<void>;
-  /** 读取当前会话全部消息 */
-  getMessages(): Promise<Array<{ role: string; content: string }>>;
+  /**
+   * 读取当前会话全部消息（压缩视图：摘要 + 保留窗口）。
+   * 结构化字段（tool_calls / tool_call_id / name）由实现尽力还原——Jsonl 后端真实往返，
+   * InMemory/Mock 可能只保 role+content（字段缺席 = 调用方按纯文本消息处理）。
+   */
+  getMessages(): Promise<
+    Array<{
+      role: string;
+      content: string;
+      tool_calls?: import('../llm/types.js').LLMToolCall[];
+      tool_call_id?: string;
+      name?: string;
+    }>
+  >;
   /** 清空会话 */
   clear(): Promise<void>;
 

@@ -16,9 +16,9 @@
 
 两道稳健性保护：同一调用（工具名 + 规范化参数）连续失败 2 次就追加“换策略”提示；最后一轮之前注入收尾提示（写进度 + 返回已有结论）。
 
-`AgentLoopResult.usage` 是各轮真值合计（L3 打通后不再估算）。
+`AgentLoopResult.usage` 是各轮真值合计（L3 打通后不再估算）。`AgentLoopResult.turnLog`（2026-09-12）是本轮**实际生成**的中间消息切片（assistant+tool_calls / tool 结果，按发生顺序，最终回复不入内）——Runtime 据此把工具轮带 extra 落盘，循环自身一处 `appendMessage` 都没有（落盘是 Runtime 的编排职责）。
 
-参见：[Runtime](#runtime)、[Usage](#usage用量)、[Span](#span行为段)
+参见：[Runtime](#runtime)、[Usage](#usage用量)、[Span](#span行为段)、[turnLog](#turnlog本轮中间消息切片)
 
 ### Async Generator（异步生成器）
 `async function*` + `yield` 构成的函数，每次 `yield` 暂停执行，等待消费者调用 `next()` 后继续。本项目 LLM 流式输出用的就是它——但对外暴露的是 [EventStream](#eventstream推拉通道)（`implements AsyncIterable`，内部用 `async *[Symbol.asyncIterator]()` 把队列转发出去），不是裸生成器。
@@ -697,6 +697,18 @@ params: { sessionId, update } }`，`update.sessionUpdate` 是判别式，决定�
 一次用户输入引发的全部事件共用的分组标记，由 `events.beginTurn()` 换发，同时事件序号归零。**仅在不在流式中时换发**——用户在生成期间输入的消息会走排队分支再次进入 `prompt()`，那时若换发，在飞回合的后续事件会被错误归到新组里。
 
 参见：[EventBus](#eventbus事件总线)
+
+### turnLog（本轮中间消息切片）
+`AgentLoopResult.turnLog`（`core/loop.ts`）：agent-loop 在 `run()` 入口捕获消息数组下标，结束时把**本次循环生成**的消息切片上交——assistant（带 `tool_calls`）与 tool 结果，按发生顺序；最终回复不入内（Runtime 单独落盘）。引导/收尾提示对 tool 结果的原地追加因共享引用如实包含——**落盘即模型实际所见**。流异常轮 / 纯文本回合 turnLog 为空（没产出就不上交）。
+
+消费方只有 Runtime：逐条带 extra 落盘（见[降级视图](#降级视图thinking-on-的历史形态)），跨轮后模型（thinking 关时回传）与 `/history` 都看得到。
+
+参见：[Agent Loop](#agent-loop)、[Steering](#steering内层引导)
+
+### 降级视图（thinking-on 的历史形态）
+thinking 开启时跨轮历史不能回传结构化数据（`thinkingBlocks` 永不落盘，带 `tool_calls` 的历史轮没有配对块，`resolveAnthropicThinking` 安全阀会强制关 thinking）。降级是**转写不是过滤**：tool 结果转成 `[工具 X 结果] …` 的 user 文本（孤儿 tool 消息丢了 `tool_call_id` 两条协议都不认）、纯工具调用的空 assistant 轮剔除（空内容消息同样不合法）。信息保住、只丢结构。
+
+参见：[ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第 9 条 · [DECISION_LOG.md](./DECISION_LOG.md) 2026-09-12 那条
 
 ## U
 

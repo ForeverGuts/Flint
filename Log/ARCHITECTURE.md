@@ -220,12 +220,16 @@
 
 8. **`InputHandler` 同名冲突**（修第 7 条时查出）。`runtime.ts` 导出的是**函数类型** `type InputHandler = (text: string) => InputEventResult | Promise<...>`（输入预处理器），`io/ui/input-handler.ts` 导出的是**类** `class InputHandler`（raw mode 逐键解析）。删掉 demo 前，`main.ts` 里两者相隔两行同时出现（一行用函数类型注册、下一行注释在说那个类），同一段代码里两个含义混用。这是项目里第三组同名混淆（前两组：两个 `SessionStorage`——本日已收敛；`Provider` vs `LLMProvider`——仍成立，见第 3 条）。未改，只在两处各加了注释互指。
 
-9. **`tool_calls` 持久化是双向死路，而堵住出口的那道丢弃是承重的**（2026-09-04 修文档失真时查出）。
-   - **格式支持**：`MessageEntry` 声明了 `tool_calls?` / `tool_call_id?` / `name?`，`appendMessage(role, content, extra?)` 能写，`getMessages()` 会还原。所以“会话存储只存纯文本”这个流传很广的说法是**错的**（它曾同时出现在 `llm/types.ts` 注释、`llm/anthropic.ts` 注释、GLOSSARY 两个词条、ARCHITECTURE_LOG 一处，本轮全部改正）。
-   - **入口未接线**：`runtime.ts` 的 `runSingleTurn` 里三处调用是 `appendMessage('user', currentText)` / `appendMessage('user', STEER_PREFIX + steer)`（2026-09-10 新增的引导落盘，见第 11 条）/ `appendMessage('assistant', finalText)`，**都不传第三个参数**；`agent-loop.ts` 里一处 `appendMessage` 都没有（尽管 `jsonl-storage.ts` 的头注释声称调用方含“Agent 循环（tool 结果消息）”）。所以结构化字段从未被写进任何会话文件。
-   - **出口被堵**：`runtime.ts` 组装 `toolMessages` 时 `history.map((m) => ({ role, content }))`，把 `getMessages()` 刚还原的 `tool_calls` 又丢掉。
-   - **为何不能直接“修好”出口**：`resolveAnthropicThinking` 的安全阀是“存在带 `tool_calls` 但无 `thinkingBlocks` 的 assistant 消息就强制关 thinking”，而 `thinkingBlocks` 永不落盘（`MessageEntry` 无此字段）。一旦透传历史 `tool_calls`，任何有过工具调用的会话都会让 extended thinking 被**静默全程关闭**——看上去像“修好了历史保真度”，实际是拿推理能力换了它。要接通必须同时解决历史 thinking 块的回放（要么落盘 signature，要么把带工具调用的历史轮折叠成文本）。
-   - **本轮处理**：行为一行未改（改它是独立的一件事），只改正全部失真注释/文档，并把“入口未接线 + 出口承重”固化为断言（`verify-session.ts` ⑨ 段），让下次想“顺手补全”的人先撞上测试。这是项目里第二处“支持但未接线”（第一处：`runtime.onInput()`，见第 7 条）。
+9. ✅ **`tool_calls` 持久化曾是双向死路**（2026-09-04 修文档失真时查出；**2026-09-12 按方案 B 接通**，下面原状保留以便回溯）。
+   - **怎么接通的**（`core/loop.ts` / `loop/agent-loop.ts` / `runtime.ts`）：agent-loop 以 `turnLog` 切片上交本轮生成的中间消息（assistant+tool_calls / tool 结果，最终回复不在其中），runtime 逐条带 `extra` 落盘（顺序：user → steers → turnLog → 最终回复）。**请求侧按 thinking 开关分叉**：thinking 关（或 auto 未激活）→ 历史全量结构化回传，跨轮工具可见；thinking 开 → 降级纯文本（tool 结果转 user 文本、纯工具调用的空 assistant 轮剔除），因为 `thinkingBlocks` 永不落盘（`MessageEntry` 无此字段），透传结构化历史会让 `resolveAnthropicThinking` 安全阀把 extended thinking 静默全程关掉。安全阀原样保留当兜底。这就是"方案 B"——落盘 thinking 块的全保真方案留作将来的增量。
+   - **为什么 thinking-on 分支不能原样丢**：降级视图里孤儿 `tool` 消息（丢了 `tool_call_id`）与空文本 assistant 消息两条协议都不收——所以降级是"转写"不是"过滤"。
+   - **引导落盘的时序说明**：steer 的独立 user 条目落在本轮工具循环**之前**（runtime 只有"本轮内被吸收"这一个时刻，拿不到循环内的精确位置）；真实时序由 agent-loop 原地追加进 tool 结果的 `[用户引导]` 文本承载，两份记录并存。
+   - **原状**（2026-09-04 ~ 2026-09-12）：
+     - **格式支持**：`MessageEntry` 声明了 `tool_calls?` / `tool_call_id?` / `name?`，`appendMessage(role, content, extra?)` 能写，`getMessages()` 会还原。所以“会话存储只存纯文本”这个流传很广的说法是**错的**。
+     - **入口未接线**：runtime 落盘只传 `role + content`；agent-loop 一处 `appendMessage` 都没有。结构化字段从未被写进任何会话文件。
+     - **出口被堵**：`runtime.ts` 组装 `toolMessages` 时 `history.map((m) => ({ role, content }))`，把 `getMessages()` 刚还原的 `tool_calls` 又丢掉。
+     - **为何不能直接“修好”出口**：一旦透传历史 `tool_calls`，任何有过工具调用的会话都会让 extended thinking 被**静默全程关闭**——看上去像“修好了历史保真度”，实际是拿推理能力换了它。
+     - 当时行为一行未改，只固化断言（`verify-session.ts` ⑨ 段）；接通后该段 C/D 组断言已随新语义更新，另有 `verify-history-structured.ts` 全套行为证明。
 
 10. ✅ **`PermissionManager` 的前缀匹配同时“过窄”和“过宽”，而注释描述的那个 detail 格式没有任何调用方产生过**（2026-09-04 实现 `edit` 工具时查出，同日晚些时候已修；下面四段是原状，保留以便回溯）。
    - **过窄（声称的能力从未生效）**：`permission/manager.ts` 的注释举例“用户选了‘本次全部允许’ `write:src/` → 后续检查 `write:src/data.txt` 时 `key.startsWith(prefix)` 命中 → 自动放行”，并据此总结“授权了一个目录，该目录下所有文件自动放行”。但唯一的真实调用方 `agent-loop.ts` 传的是 `JSON.stringify(args).slice(0, 80)`，形如 `write:{"path":"src/data.txt","content":"...`——detail 里含内容片段，换一个文件（甚至同一文件换内容）就失配。**目录级授权一次也没生效过**，注释描述的是一个没有任何调用方产生过的输入格式。这与第 9 条查出的 `jsonl-storage.ts` 头注释属同一类失真（注释里的“调用方”与真实调用点长期不一致）。

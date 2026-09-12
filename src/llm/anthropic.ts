@@ -33,13 +33,14 @@ const THINKING_BUDGET_TOKENS = 2048;
  * 安全阀（阶段 C3 问题3 精确化）：Anthropic 要求带 tool_use 的 assistant 轮回放 thinking 块（验 signature）。
  *   - 历史存在“带 tool_calls 但无 thinkingBlocks”的 assistant 消息 → 无法回放，强制关（防 400）；
  *   - run() 内的 assistant 消息已被挂载 thinkingBlocks → 可回放，正常开启；
- *   - 跨用户轮历史到达这里时不带 tool_calls，无回放义务 → 不拦截。
+ *   - 跨用户轮历史：thinking 开时 runtime.ts 只映射 role + content（承重丢弃），到达这里
+ *     不带 tool_calls，无回放义务 → 不拦截。
  *
- * 第三条的成因常被说错：不是“会话存储不存结构化信息”（MessageEntry 有 tool_calls，getMessages()
- * 会还原），而是 runtime.ts 组装 toolMessages 时只映射 role + content。那道丢弃是**承重的**——
- * 若改成透传，历史里的 assistant 会带 tool_calls 却永远没有 thinkingBlocks（块不落盘），
- * 上面第一条分支就会把 extended thinking 全程静默关掉。要接通得先解决历史 thinking 块的回放。
- * 详见 Log/ARCHITECTURE.md 第四节第 9 条。
+ * 第三条的成因常被说错：不是“会话存储不存结构化信息”（MessageEntry 有 tool_calls，
+ * getMessages() 会还原、runtime.ts 落盘也会写入）。2026-09-12 起跨轮历史按 thinking 开关分叉
+ * （方案 B）：开则纯文本（本阀的搭档），关则全量结构化回传——此时本阀第一分支也不会触发
+ * （thinking 关，resolveThinkingEnabled 已先行放行 false）。本阀保留作兜底：任何漏网的
+ * 无块结构化历史会被它拦下而不是 400。详见 Log/ARCHITECTURE.md 第四节第 9 条。
  */
 function resolveAnthropicThinking(config: LLMConfig, opts: LLMRequestOptions | undefined, messages: LLMMessage[]): boolean {
   if (!resolveThinkingEnabled(config, opts)) return false;
