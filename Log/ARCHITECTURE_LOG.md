@@ -11,6 +11,22 @@
 
 ---
 
+<a id="log-2026-09-12-skill-hot-reload"></a>
+
+## 2026-09-12 | 技能热重载：观察者只管 UI，提示词层自愈
+
+**牵连系统**：`runtime/skill.ts`（SkillLoader）· `runtime/loader.ts`（Loader 基类）· `harness/main.ts`（装配）· `io/ui/tree-ui.ts`（通知线）· `scripts/verify-skill-watch.ts`（新套件）
+
+**面向的问题**：skills/ 目录下的技能文件改动需重启进程才生效（skill.ts 躺着 startWatch/stopWatch TODO）；动手前必须回答上次 TaskStore 落地时登记的老问题——"把状态从文件搬进内存后，谁通知 UI"。另探针实锤一个静默 bug：装配传 `SkillLoader('skills')`、Loader 内部再拼一级 `'skills'`，实际扫描 `skills/skills/`（不存在），运行期技能数恒为 0，`skills/review.md` 从未进过 LLM 视野。
+
+**做出的改动**：① `SkillLoader` 补 `startWatch`/`stopWatch`/`reload`/`onChange` 四件套——零依赖 `fs.watch`（`persistent:false`，不独自撑事件循环），事件防抖 300ms 合并，`reload` 算增删差后通知观察者（观察者异常隔离，fail-open）；watcher error 静默退场。② **通知问题的答案**：不需要"通知"——提示词层每轮 `systemPromptService.build` 现取 `getAll()`，内存清单一刷新 LLM 侧自动生效（与任务面板"每帧无条件重建"同一自愈范式）；`onChange` 观察者只服务 UI 提示（TreeUI 诊断区追加「🔄 技能已热更新」一行）。启动期 `load()` 不通知，通知只在热重载路径。③ 装配改传 `'.'`，`Loader` 基类抽 `dirFor()` 让 `scanFiles` 与 watcher 共用同一拼法。
+
+**解决的问题**：技能改动即改即生效，不用重启；扫错目录 bug 修复后技能首次真正进入 LLM 视野。
+
+**未来可优化**：依赖追踪（skill.ts 剩余 TODO）；RPC 模式未接技能变更通知（无消费者，刻意裁剪）；watcher 对"目录删了又建"不自动复活（显式 load 是恢复路径，已在 W25 钉住）。
+
+---
+
 <a id="log-2026-09-12-fork-summary"></a>
 
 ## 2026-09-12 | 分支摘要落地 + 压缩三连修

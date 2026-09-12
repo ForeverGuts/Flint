@@ -127,6 +127,8 @@ export class TreeUI {
   private taskBox = new Container();
   /** 任务面板的退订函数（stop 时调用，防监听器泄漏） */
   private unsubscribeTask: (() => void) | null = null;
+  /** 技能热重载的退订函数（stop 时调用，防监听器泄漏） */
+  private unsubscribeSkills: (() => void) | null = null;
   /** 等待状态行（回答前的阶段提示：分析/压缩/等待响应/推理中；空文本时不占行） */
   private statusHint = new Text('');
   /** banner 诊断区（可回填：后台网络探测完成后追加结果，启动提速第一档） */
@@ -368,6 +370,13 @@ export class TreeUI {
     // 没有这个订阅，模型勾完一项屏幕上是不会动的。
     this.unsubscribeTask = taskStore.onChange(() => this.requestRender());
 
+    // 订阅技能热重载 —— 与任务面板同一根通知线范式：文件变了 → SkillLoader 内存清单刷新，
+    // 提示词层下一轮自愈（每轮 build 现取 getAll()），这根线只负责"让你看见它变了"。
+    this.unsubscribeSkills = this.runtime.getSkillLoader().onChange((change) => {
+      this.diagBox.addChild(this.skillChangeLine(change));
+      this.requestRender();
+    });
+
     // 后台网络探测（启动提速第一档）：订阅完成后才挂 then——
     // 结果永远不会早于订阅到达（时序上杜绝竞态）；异常静默（占位行由 catch 分支清理）
     if (this.probePromise) {
@@ -381,6 +390,15 @@ export class TreeUI {
   private diagLine(d: import('../../types.js').Diagnostic): Text {
     const icon = d.level === 'fail' ? C.red + '❌' : d.level === 'warn' ? C.yellow + '⚠️' : C.green + '✅';
     return new Text(`  ${icon}${C.reset} ${C.dim}[${d.item}]${C.reset} ${d.message}`);
+  }
+
+  /** 技能热更新提示行（🔄 + 增删差 + 当前总数；纯增删都无时是"内容更新"） */
+  private skillChangeLine(change: import('../../runtime/skill.js').SkillChange): Text {
+    const parts: string[] = [];
+    if (change.added.length > 0) parts.push(`+${change.added.join(' +')}`);
+    if (change.removed.length > 0) parts.push(`-${change.removed.join(' -')}`);
+    const diff = parts.length > 0 ? `（${parts.join(' ')}）` : '（内容更新）';
+    return new Text(`  ${C.dim}🔄 技能已热更新${diff}，当前 ${change.result.skills.length} 个${C.reset}`);
   }
 
   /** 后台探测结果回填：移除占位行，追加结果行（失败/断网时是 warn 行，同样如实展示） */
@@ -403,6 +421,7 @@ export class TreeUI {
     this.screen.clear();
     process.stdout.write('\x1b[?25h');
     if (this.unsubscribeTask) { this.unsubscribeTask(); this.unsubscribeTask = null; }
+    if (this.unsubscribeSkills) { this.unsubscribeSkills(); this.unsubscribeSkills = null; }
     if (this.heartbeat) {
       clearInterval(this.heartbeat);
       this.heartbeat = null;

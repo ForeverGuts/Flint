@@ -47,6 +47,8 @@ const fakeRuntime = {
   registerMultiSelect: () => {},
   registerReadLine: () => {},
   subscribe: () => {},
+  // 技能热重载订阅线（start() 里挂）：返回退订函数
+  getSkillLoader: () => ({ onChange: () => () => {} }) as never,
   prompt: async () => '',
 } as unknown as Runtime;
 

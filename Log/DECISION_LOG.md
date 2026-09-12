@@ -4,6 +4,29 @@
 
 ---
 
+<a id="log-2026-09-12-skill-hot-reload"></a>
+
+## 2026-09-12 | 技能热重载："谁通知 UI"这次不取消、不补线，而是发现根本不用通知
+
+**决策**：`SkillLoader` 落地 `startWatch`/`stopWatch`/`reload`/`onChange`；提示词层**零接线**，观察者只服务 UI 提示。
+
+**决策过程**
+
+1. 动手前先回答 TaskStore 那次登记的老问题——"把状态从文件搬进内存后，谁通知 UI"。盘 consumers 时发现这次局面与 TaskStore 根本不同：任务面板是**常驻组件**，不通知就静默；而技能清单的唯一消费点是 `runSingleTurn` 里的 `systemPromptService.build`，它**每轮请求重新执行、现取 `getAll()`**——内存清单一刷新，下一轮自动生效。
+2. 所以答案不是"补一根通知线"也不是像压缩服务那样"取消通知需求"，而是**确认系统里已经没有需要通知的人**：LLM 侧自愈；TreeUI 是唯一想"看见变化"的消费者，走 `onChange` 观察者（TaskStore 同款零依赖回调集合，刻意不走事件总线——SkillLoader 不该依赖 runtime/events）。
+3. 顺带探针实锤装配 bug：`SkillLoader('skills')` 拼出 `skills/skills/`，运行期技能数恒为 0。修法传 `'.'`，并把路径拼法收进 Loader 基类 `dirFor()` 单一来源。
+
+**关键取舍**
+
+- **fs.watch 而非轮询**：零依赖既定立场；`persistent:false` 让 watcher 不独自撑事件循环，进程退出无需显式 stop。
+- **防抖 300ms 而非每事件 reload**：编辑器一次保存触发一串 change/rename；变异测试证明摘掉防抖后三连写变 6 次 reload。
+- **watcher error 静默退场**：目录被删时内存清单保持旧值，LLM 继续用旧视图——fail-safe 优于崩溃（与 tool-hooks 的 fail-open 同族：基础设施出错不应拖垮业务）。
+- **通知载荷带增删差**：UI 提示要能说清"变了什么"（+x -y），在 notify 侧算好比让每个消费者自己 diff。
+
+**教训登记**：verify-ui 的假 runtime 缺 `getSkillLoader` 会被 `start()` 里的新订阅炸到——"契约加必需成员不会在 tsc 层面暴露，只能逐处数替身"这条纪律再次应验（本次是在写套件前盘点出来的，实跑 zero 红）。
+
+---
+
 <a id="log-2026-09-12-fork-summary"></a>
 
 ## 2026-09-12 | 分支摘要：上午"核实后关闭"，下午用户拍板仍实现——两次反转的完整记录

@@ -79,7 +79,12 @@ export async function main(checkResult: CheckResult): Promise<void> {
   // 会话仓库层：目录级管理（列表/打开/新建/删除），与单会话存储分家（P6）
   const sessionRepo = new JsonlSessionRepo(sessionDir);
   const permission = new PermissionManager();
-  const skills = new SkillLoader('skills');
+  // ⚠ 传 '.'：Loader 内部再拼一级 'skills'（此前传 'skills' 拼成 skills/skills，
+  //   运行期技能数恒为 0——review.md 从未进过 LLM 视野，2026-09-12 探针实锤后修复）
+  const skills = new SkillLoader('.');
+  // 技能热重载：文件变更 → 重新 load 内存清单；提示词层每轮 build 现取 getAll() 自动生效，
+  // 无需任何"通知 runtime"的线；观察者只服务 UI 提示（TreeUI 订阅）
+  skills.startWatch();
   const events = new PromptEventEmitter();
   const commandSystem = new CommandServiceImpl();
   const diagnosticsService = new DiagnosticsServiceImpl({ events });

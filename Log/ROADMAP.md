@@ -153,8 +153,13 @@
     规范化整体搬入（列表逻辑单一来源），并补上此前缺失的**删除**——两层守卫（repo 白名单拒穿越 +
     Runtime 拒删当前活跃会话）+ UI 层 disabled。`sessionRepo` 可选注入，缺省回退旧静态路径。
     `verify-repo.ts` 51 项（探针 repo 钉委托、变异测试证明守卫承重）。
-- [ ] **技能系统补全** — SkillLoader 热重载 + 依赖追踪（当前 TODO）
+- [ ] **技能依赖追踪** — addDependency / getDependents（skill.ts 剩余 TODO）
   - 对标：Pi 的 skills.ts
+  - 补记（2026-09-12）：本条的另一半**技能热重载已落地**——`SkillLoader` 的
+    `startWatch`/`stopWatch`/`reload`/`onChange` 四件套（零依赖 fs.watch + 300ms 防抖 +
+    增删差通知，观察者只服务 UI 提示、提示词层每轮现取 getAll() 自愈）；顺带修掉装配
+    扫错目录的静默 bug（`SkillLoader('skills')` 实际扫 `skills/skills/`，运行期技能数
+    恒为 0）。依赖追踪仍在 TODO（见 verify-skill-watch.ts W32 只摘热重载 TODO）。
 - [x] **工具参数校验框架** —（2026-09-06 落地，实现与原案不同）原案：从手动 requireString 升级为 schema 自动校验
   - 落地的是 `tools/spec.ts`（**自研**，不引 Zod / TypeBox）：5 个构造器（`str` / `strAllowEmpty` / `optStr` / `optPosInt` / `optBool`）覆盖现有 16 个字段，一份 spec 派生三样——`toJsonSchema()` 出发给 LLM 的 parameters、`parseSpec()` 做运行时审核并补默认值、`Infer<typeof spec>` 推 handler 入参类型；`ToolDefinition` 加**可选**成员 `parse?`，`registry.execute()` 在 handler 之前跑它（`ToolInputError` → `[INVALID]`，别的异常穿透），6 个工具全走 `defineTool()`、删掉 4 个校验件共 18 处
   - “自动校验”这一步的实测根据：改前 `execute()` 只有 3 行、`tool.parameters` **一个字段都没读**——造一个 `required: ['mustHave']` 的工具，①什么都不传 ②传一个对象 ③传 Schema 里根本不存在的参数名，三次全部 `[OK]`，所以那份单子的身份是“给模型的建议书”。另堵掉 `String(val)` 那个**永远通过的校验**留下的四个类型盲区（`123` / `{a:1}` / `['src']` / `true` 改前全过关，到文件系统层才报 `[NOT_FOUND]` / `[NOT_FILE]`，归因错层会让模型去猜路径）与多余参数静默忽略（`{pattern:'x', pathh:'typo'}` 让 `path` 退回默认 `'.'`，搜完整个项目还报 `[OK]`）
@@ -340,5 +345,6 @@
    可拦截、不可改参，细节见上面 P6 Hook 条的补记）。"改完自动跑测试""工具级审计"从今天起有落点。
 4. **会话仓库层 / 分支摘要 / 技能热重载（P6）** —— 会话仓库层 ✅ **已于 2026-09-12 落地**（见上面
    P6 会话仓库层条的补记）；分支摘要 ✅ **2026-09-12 核实后关闭、同日用户拍板仍实现**（关闭论据依赖的视图裁剪是坏的，见该条再补记
-   核实结论）；剩技能热重载（skill.ts 的 startWatch/stopWatch TODO，做之前先回答"谁通知 UI"）。
+   核实结论）；技能热重载 ✅ **已于 2026-09-12 落地**（见上面技能依赖追踪条的补记，
+   "谁通知 UI"的答案：提示词每轮现取自愈，观察者只服务 UI 提示）。
 5. **预编译发行（P6 第三档）** —— 收益递减（第一/二档后启动已 0.7ms 级），优先级最低。

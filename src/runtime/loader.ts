@@ -12,9 +12,14 @@ import { join } from 'node:path';
 export abstract class Loader<T> {
   constructor(protected baseDir: string) {}
 
+  /** 子目录的完整路径 —— scanFiles 与子类的热重载 watcher 共用同一拼法（防两处拼法漂移） */
+  protected dirFor(subDir: string): string {
+    return join(this.baseDir, subDir);
+  }
+
   /** 扫描目录中指定扩展名的文件 */
   protected scanFiles(subDir: string, ext: string): string[] {
-    const dir = join(this.baseDir, subDir);
+    const dir = this.dirFor(subDir);
     if (!existsSync(dir)) return [];
     return readdirSync(dir).filter((f) => f.endsWith(ext)).map((f) => join(dir, f));
   }

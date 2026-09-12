@@ -512,6 +512,11 @@ Agent 可调用的能力模块，**已落地**（旧文档标“计划中”已�
 
 不属于[项目元数据](#project-metadata项目元数据)——Skill 是可执行的，元数据是声明式的。
 
+### 技能热重载（Skill hot reload）
+`SkillLoader` 的 `startWatch`/`stopWatch`/`reload`/`onChange` 四件套（2026-09-12）：零依赖 `fs.watch` 盯 `skills/` 目录，事件防抖 300ms 合并，`reload` 算增删差（added/removed）后通知观察者；watcher error（目录被删）静默退场、内存清单保持旧值。
+
+**"谁通知 UI"的答案**：不需要通知——提示词层每轮 `systemPromptService.build` 现取 `getAll()`，内存清单一刷新 LLM 侧自动生效；`onChange` 观察者只服务 UI 提示（TreeUI 诊断区追加「🔄 技能已热更新」行）。启动期 `load()` 不通知，通知只在热重载路径。参见 [TaskStore](#taskstore任务清单真相源)（同一观察者范式）与 [Compaction](#compaction上下文压缩)（同日修掉的绑死 bug）。
+
 ### spec（工具参数规格）
 `tools/spec.ts`（2026-09-06 新增，5 个构造器 + 2 个派生函数 + [defineTool](#definetool工具定义构造器)）。**一份定义派生三样**：`toJsonSchema(spec)` → 发给 LLM 的 `parameters`；`parseSpec(spec, args)` → 运行时审核并补齐默认值；`Infer<typeof spec>` → handler 的入参类型。改一处、三处同时变——`verify-spec.ts` 的 1-6~1-8b 用**对照组**钉住这一点（只改 spec 里一个键，两个派生物必须同时跟着变），否则“同源”可以被实现成“两份各自硬编码但恰好一致”而全绿。
 
