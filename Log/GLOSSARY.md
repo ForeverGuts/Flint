@@ -611,7 +611,7 @@ NOOP **不是跳过这段代码，是跳过打卡**：回调照常执行，只�
 
 三个阶段：**C1** 开关与流解析（OpenAI 兼容路径的 `reasoning_content` → `reasoning` 事件，只展示、不进 fullText 与历史）；**C2** auto 判定；**C3** Anthropic 多轮回放。
 
-C3 的关键约束：`ThinkingBlock` = 推理文本 + `signature`（Anthropic 对块内容的加密签名），下一轮必须**一字不改原样回放**，否则签名验证失败 400——它是**协议数据而非展示内容**。安全阀：assistant 历史里带 `tool_calls` 却没有对应 thinking 块时强制不开。
+C3 的关键约束：`ThinkingBlock` = 推理文本 + `signature`（Anthropic 对块内容的加密签名），**带回去的块必须一字不改**（签名校验），但只有**当前工具循环内**的块有回传义务——更早轮次的块 API 自动忽略、不计上下文，官方文档明确允许省略。它是**协议数据而非展示内容**。安全阀：assistant 历史里带 `tool_calls` 却没有对应 thinking 块时强制不开——API 对这种"历史与 thinking 不兼容"的处理是静默关 thinking。
 
 参见：[LLMConfig](#llmconfig)、[EventStream](#eventstream推拉通道)
 

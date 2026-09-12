@@ -198,7 +198,12 @@
 
 **代价：** thinking 开启的会话里，跨轮看到的是转写文本而非原始结构；OpenAI 兼容路径原样透传，会真的发出连续 user（标准语义容忍，风险低，`verify-steering` 的 S10 钉住）。
 
-**现状与将来：** 行为证明在 `verify-history-structured.ts`（分叉两路 / 落盘还原 / turnLog 上交）与 `verify-session.ts` ⑨ 段；历史包袱的来龙去脉见第四节第 9 条。将来若做**方案 A 增量**（思考块落盘），thinking 开也能结构化回传，本决策的降级转写退为兜底路径——判定分叉的骨架不变，只是"开"那条路换成全量回传。
+**现状与将来：** 行为证明在 `verify-history-structured.ts`（分叉两路 / 落盘还原 / turnLog 上交）与 `verify-session.ts` ⑨ 段；历史包袱的来龙去脉见第四节第 9 条。
+
+**补记（2026-09-12 晚，核对官方文档后）：跨轮回传义务其实不存在。** 官方原话（docs.anthropic.com，区域屏蔽下经 AWS Bedrock 等镜像逐字核对）："It is only strictly necessary to send back thinking blocks when using tools with extended thinking. Otherwise you can omit thinking blocks from previous turns, or let the API strip them for you if you pass them back."；"the API automatically ignores thinking blocks from previous turns and they are not included when calculating context usage"。三个推论：
+- 协议只硬性要求**当前工具循环**内的块（"Required: within a tool-use turn … Allowed: outside tool use, omit prior turns' thinking."）——flint 的这些块活在单次 `run()` 的内存消息链上，本来就没丢。跨轮落盘（原"方案 A"设想）是在给 API 不要的东西付工程成本。
+- 历史带 `tool_calls` 而无块时，API 的真实行为不是 400 而是**静默关 thinking**（"the API may … disable thinking when the conversation history is incompatible with thinking being enabled"）——这正是安全阀刻意替用户避免的。降级转写的价值由此坐实：让历史**兼容** thinking 开启，而不只是免于报错。
+- 缓存：存储布局与缓存命中无关（缓存认的是请求前缀字节序列）；真正动缓存的是 thinking 参数变化本身（"Changes to thinking parameters invalidate cached prompt prefixes that include messages"，system prompt 缓存幸免）——on↔off 切换本来就会失效一次，与块落不落盘无关。
 
 ---
 
