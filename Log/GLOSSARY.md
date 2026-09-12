@@ -515,6 +515,9 @@ Agent 可调用的能力模块，**已落地**（旧文档标“计划中”已�
 ### 技能热重载（Skill hot reload）
 `SkillLoader` 的 `startWatch`/`stopWatch`/`reload`/`onChange` 四件套（2026-09-12）：零依赖 `fs.watch` 盯 `skills/` 目录，事件防抖 300ms 合并，`reload` 算增删差（added/removed）后通知观察者；watcher error（目录被删）静默退场、内存清单保持旧值。
 
+### 技能依赖追踪（depends / getDependents / broken）
+技能的**声明式依赖**（2026-09-12）：frontmatter 写 `depends: a, b`（逗号分隔、去重保序），加载进 `Skill.depends`；`getDependents(name)` 反查"谁声明了依赖 X"（悬空名字也可查）。两个消费出口：系统提示词技能段标注「依赖 / 缺失」（静态悬空声明的暴露口，每轮自愈）；热重载 `SkillChange.broken` 列出因本次删除而失去依赖的技能（TreeUI 提示「⚠ x 失去依赖」）。**没有 `addDependency`**——无调用方的公开方法是「支持但未接线」债，见 [DECISION_LOG](./DECISION_LOG.md#log-2026-09-12-skill-deps)。
+
 **"谁通知 UI"的答案**：不需要通知——提示词层每轮 `systemPromptService.build` 现取 `getAll()`，内存清单一刷新 LLM 侧自动生效；`onChange` 观察者只服务 UI 提示（TreeUI 诊断区追加「🔄 技能已热更新」行）。启动期 `load()` 不通知，通知只在热重载路径。参见 [TaskStore](#taskstore任务清单真相源)（同一观察者范式）与 [Compaction](#compaction上下文压缩)（同日修掉的绑死 bug）。
 
 ### spec（工具参数规格）

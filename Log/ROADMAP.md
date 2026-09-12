@@ -153,13 +153,16 @@
     规范化整体搬入（列表逻辑单一来源），并补上此前缺失的**删除**——两层守卫（repo 白名单拒穿越 +
     Runtime 拒删当前活跃会话）+ UI 层 disabled。`sessionRepo` 可选注入，缺省回退旧静态路径。
     `verify-repo.ts` 51 项（探针 repo 钉委托、变异测试证明守卫承重）。
-- [ ] **技能依赖追踪** — addDependency / getDependents（skill.ts 剩余 TODO）
+- [x] **技能依赖追踪** —（2026-09-12 落地，实现与原案 TODO 不同）声明式依赖：frontmatter `depends: a, b`（逗号分隔、去空白、去重保序）→ `Skill.depends`；`SkillLoader.getDependents(name)` 反查（悬空名字也可查——"谁声明了依赖它"正是排查悬空声明要的形状）；`SkillChange.broken` = 因本次删除而失去依赖的技能名
   - 对标：Pi 的 skills.ts
+  - **设计偏差（记入 DECISION_LOG）**：TODO 原写 addDependency / getDependents，落地时**刻意不做 addDependency**——没有真实调用方的公开方法就是本仓库付过三次学费的「支持但未接线」债（runtime.onInput / appendMessage extra / permission.clear）。依赖的声明口唯一走 frontmatter，运行期没有第二个写入方
+  - 接线两点：skills-section 标注「依赖 / 缺失」（`ctx.skillDeps` 可选成员，旧 ctx 缺省兼容）；TreeUI 热重载提示行追加「失去依赖」。静态悬空声明（依赖了不存在的技能）**不进 broken**——它不是"本次删除导致的断裂"，由系统提示词的「缺失」标注每轮如实暴露
+  - 验证：新增 `verify-skill-deps.ts` 29 项；变异三轮各自精准变红（parseDepends 钉空 → 8 红；broken 恒空 → 3 红；section 忽略标注 → 3 红）
   - 补记（2026-09-12）：本条的另一半**技能热重载已落地**——`SkillLoader` 的
     `startWatch`/`stopWatch`/`reload`/`onChange` 四件套（零依赖 fs.watch + 300ms 防抖 +
     增删差通知，观察者只服务 UI 提示、提示词层每轮现取 getAll() 自愈）；顺带修掉装配
     扫错目录的静默 bug（`SkillLoader('skills')` 实际扫 `skills/skills/`，运行期技能数
-    恒为 0）。依赖追踪仍在 TODO（见 verify-skill-watch.ts W32 只摘热重载 TODO）。
+    恒为 0）。依赖追踪仍在 TODO（见 verify-skill-watch.ts W32 只摘热重载 TODO）。**以本条为准：依赖追踪已于同日晚落地**
 - [x] **工具参数校验框架** —（2026-09-06 落地，实现与原案不同）原案：从手动 requireString 升级为 schema 自动校验
   - 落地的是 `tools/spec.ts`（**自研**，不引 Zod / TypeBox）：5 个构造器（`str` / `strAllowEmpty` / `optStr` / `optPosInt` / `optBool`）覆盖现有 16 个字段，一份 spec 派生三样——`toJsonSchema()` 出发给 LLM 的 parameters、`parseSpec()` 做运行时审核并补默认值、`Infer<typeof spec>` 推 handler 入参类型；`ToolDefinition` 加**可选**成员 `parse?`，`registry.execute()` 在 handler 之前跑它（`ToolInputError` → `[INVALID]`，别的异常穿透），6 个工具全走 `defineTool()`、删掉 4 个校验件共 18 处
   - “自动校验”这一步的实测根据：改前 `execute()` 只有 3 行、`tool.parameters` **一个字段都没读**——造一个 `required: ['mustHave']` 的工具，①什么都不传 ②传一个对象 ③传 Schema 里根本不存在的参数名，三次全部 `[OK]`，所以那份单子的身份是“给模型的建议书”。另堵掉 `String(val)` 那个**永远通过的校验**留下的四个类型盲区（`123` / `{a:1}` / `['src']` / `true` 改前全过关，到文件系统层才报 `[NOT_FOUND]` / `[NOT_FILE]`，归因错层会让模型去猜路径）与多余参数静默忽略（`{pattern:'x', pathh:'typo'}` 让 `path` 退回默认 `'.'`，搜完整个项目还报 `[OK]`）
@@ -194,7 +197,7 @@
   - ⏸ **压缩用量没回流（`/usage` 少算）本轮不做**：要改就得改 `ChatResult` 的形状，牵连两个 provider 的非流式路径 + `stream-helper` + 多套 verify 脚本，是独立的一件事，已在上面“可观测性增强”的剩余项里
   - 遗留两项：`src/runtime/commands/` 空目录仍在（git 不跟踪空目录，仓库里本就没它，只是本地残留）；另查出 **`InputHandler` 同名冲突**（`runtime.ts` 的函数类型 vs `io/ui/input-handler.ts` 的类），未改、只在两处各加注释互指，详见 ARCHITECTURE.md 第四节第 8 条
 - [x] **历史结构化数据接通** —（2026-09-04 立项；**2026-09-12 按方案 B 落地**）
-  - 补记：**方案 B（thinking 开关分叉）**——agent-loop 以 `turnLog` 上交本轮生成的中间消息，runtime 逐条带 extra 落盘；请求侧 thinking 关（或 auto 未激活）→ 历史全量结构化回传（跨轮工具可见），thinking 开 → 降级纯文本（tool 结果转 user 文本、空 assistant 轮剔除），`thinkingBlocks` 仍不落盘（全保真方案留作将来增量）。安全阀原样保留当兜底。落盘 thinking 块的"方案 A"被否的原因：契约/三存储后端/compaction 交互全要动，实现面与收益不成比例。实现细节见 ARCHITECTURE.md 第四节第 9 条的改写版
+  - 补记：**方案 B（thinking 开关分叉）**——agent-loop 以 `turnLog` 上交本轮生成的中间消息，runtime 逐条带 extra 落盘；请求侧 thinking 关（或 auto 未激活）→ 历史全量结构化回传（跨轮工具可见），thinking 开 → 降级纯文本（tool 结果转 user 文本、空 assistant 轮剔除），`thinkingBlocks` 仍不落盘，安全阀原样保留当兜底。全保真"方案 A"已于 2026-09-12 晚**关闭**：官方文档证实跨轮思考块**无回传义务**且不计上下文（"the API automatically ignores thinking blocks from previous turns"），协议只硬性要求当前工具循环内的块——而那些块活在单次 `run()` 的内存消息链上从未丢失；落盘是在给 API 不要的东西付工程成本。API 对"历史带 tool_calls 而无块 + thinking 开"的真实处理是**静默关 thinking**（非 400），降级转写让历史兼容、thinking 真开得起来——价值被文档坐实。详见 ARCHITECTURE.md 第二节决策 7 及其补记
   - 原状：`MessageEntry` 的格式**早就支持**（三个可选字段 + `appendMessage` 的 `extra` + `getMessages()` 的还原），但是**双向死路**——入口没人写（`runtime.ts` 两处 `appendMessage` 都不传 `extra`，`agent-loop.ts` 里一处 `appendMessage` 都没有，尽管存储层头注释声称调用方含“Agent 循环”），出口被堵（`runtime.ts` 组装 `toolMessages` 时只映射 `role` + `content`）
   - **前置障碍（不能只接线）**：出口那道丢弃是**承重的**。`resolveAnthropicThinking` 的安全阀一见“带 `tool_calls` 但无 `thinkingBlocks` 的 assistant 消息”就强制关 thinking，而 `thinkingBlocks` 永不落盘——直接透传会让任何有过工具调用的会话把 extended thinking **静默全程关闭**（看上去像修好了历史保真度，实际是拿推理能力换了它）。要接通必须先定 thinking 块的历史策略：要么落盘 `signature`（体积 + 敏感数据），要么把带工具调用的历史轮折叠成文本（丢工具语义）
   - 依赖：无硬依赖；但若同时要落盘 tool 结果消息，需给 `AgentLoopServiceImpl` 注入 session（当前它拿不到，只拿到 events）——**实际落地时用了更干净的解法**：agent-loop 把中间消息作为 `turnLog` **返回**，落盘仍归 runtime，不给循环注入存储依赖

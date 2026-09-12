@@ -28,6 +28,8 @@ export interface Skill {
   baseDir: string;
   /** 是否禁止 LLM 调用（纯工具类 skill 可设为 true） */
   disableModelInvocation: boolean;
+  /** 声明的依赖技能名（frontmatter `depends: a, b`，逗号分隔；无声明为空数组） */
+  depends: string[];
   /** 技能正文（不含 frontmatter） */
   body: string;
   /** 原始 frontmatter */
@@ -46,11 +48,24 @@ export interface SkillChange {
   added: string[];
   /** 消失的技能名 */
   removed: string[];
+  /** 因本次删除而**失去依赖**的技能名（其 depends 引用了 removed 中的名字；声明缺失是静态问题，走系统提示词，不在这里） */
+  broken: string[];
 }
 
 /* ── Frontmatter 解析 ── */
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
+
+/** 解析 `depends: a, b` —— 逗号分隔、去空白、去空段、去重（声明式依赖的唯一入口，见 DECISION_LOG） */
+function parseDepends(raw: unknown): string[] {
+  if (typeof raw !== 'string') return [];
+  const seen = new Set<string>();
+  for (const part of raw.split(',')) {
+    const name = part.trim();
+    if (name !== '') seen.add(name);
+  }
+  return [...seen];
+}
 
 function parseFrontmatter(raw: string): { frontmatter: SkillFrontmatter; body: string } {
   const match = raw.match(FRONTMATTER_RE);
@@ -99,6 +114,7 @@ export class SkillLoader extends Loader<LoadSkillsResult> {
           filePath,
           baseDir: this.baseDir,
           disableModelInvocation: frontmatter['disable-model-invocation'] ?? false,
+          depends: parseDepends(frontmatter.depends),
           body,
           frontmatter,
         });
@@ -119,6 +135,15 @@ export class SkillLoader extends Loader<LoadSkillsResult> {
     return [...this.skills];
   }
 
+  /**
+   * 反向查询：声明了依赖 `name` 的技能名（按清单顺序，不要求 name 真实存在——
+   * 对不存在的名字也能问"谁声明了依赖它"，这正是排查悬空声明要用的形状）。
+   * `?? []` 防替身缺 depends 字段（scripts/ 不受 tsc 检查，契约加字段不会在编译层暴露）。
+   */
+  getDependents(name: string): string[] {
+    return this.skills.filter((s) => (s.depends ?? []).includes(name)).map((s) => s.name);
+  }
+
   /* ── 热重载 ── */
 
   /**
@@ -136,11 +161,15 @@ export class SkillLoader extends Loader<LoadSkillsResult> {
     const before = new Set(this.skills.map((s) => s.name));
     const result = this.load();
     const after = result.skills.map((s) => s.name);
-    const change: SkillChange = {
-      result,
-      added: after.filter((n) => !before.has(n)),
-      removed: [...before].filter((n) => !after.includes(n)),
-    };
+    const added = after.filter((n) => !before.has(n));
+    const removed = [...before].filter((n) => !after.includes(n));
+    // 失去依赖：新清单里仍有、但 depends 引用了本次 removed 名字的技能。
+    // 用 getDependents 逐个 removed 名查（反向索引只有这一份实现），与 broken 语义严格对齐。
+    const removedSet = new Set(removed);
+    const broken = result.skills
+      .filter((s) => (s.depends ?? []).some((d) => removedSet.has(d)))
+      .map((s) => s.name);
+    const change: SkillChange = { result, added, removed, broken };
     for (const listener of this.listeners) {
       try {
         listener(change);
@@ -192,6 +221,4 @@ export class SkillLoader extends Loader<LoadSkillsResult> {
       this.reload();
     }, 300);
   }
-
-  // TODO: 依赖追踪 — addDependency / getDependents
 }

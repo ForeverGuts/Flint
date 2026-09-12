@@ -4,6 +4,26 @@
 
 ---
 
+<a id="log-2026-09-12-skill-deps"></a>
+
+## 2026-09-12 | 技能依赖追踪：声明式 frontmatter 而非程序化 addDependency——不给"支持但未接线"债添第四笔
+
+**决策**：依赖的唯一声明口是技能 frontmatter 的 `depends: a, b`（解析进 `Skill.depends`）；`SkillLoader.getDependents(name)` 反查；热重载通知载荷带 `broken`（因本次删除失去依赖的技能名）。**不做 `addDependency`**。
+
+**决策过程**
+
+1. TODO 原写 "addDependency / getDependents"。盘调用方时发现：`addDependency` 若照做，全 `src/` **没有任何运行期调用方**——技能依赖在运行期没有"动态增删"的真实场景（技能是用户写的静态文件，热重载整批刷新清单，不存在"代码临时挂一条依赖"的需求）。
+2. 本仓库为"公开方法/格式字段存在、调用方为零"付过三次学费：`runtime.onInput()`（债 7）、`appendMessage` 的 `extra`（债 9）、`PermissionProvider.clear()`（债 10）。第四笔不添：API 面与真实消费者严格对齐，公开方法必须在 `src/` 里有活着的调用方，否则不公开。
+3. 所以只落地有真实消费者的部分：**声明**（frontmatter，用户可写）→ **反查**（getDependents，被 reload 的 broken 计算真实调用）→ **断裂感知**（broken，被 TreeUI 提示行真实消费）。声明解析的边界（空白容忍、去重保序、非字符串值返回空数组）都在纯函数 `parseDepends` 里钉死。
+
+**关键取舍**
+
+- **broken 只描述"本次删除导致的断裂"**，不吞并"声明悬空"（依赖了从未存在的技能）：后者是声明质量问题的静态势，与热重载事件无关，归系统提示词的「缺失」标注每轮如实暴露。两种问题两个出口，混在一个信号里两头都说不清。
+- **`ctx.skillDeps` 用可选成员**而不是改 `skills: string[]` 的形状：段落函数对旧 ctx（无此成员的替身/扩展）优雅退化成纯列表，与 `ToolProvider.permissionDetail?` 同一手法。
+- **悬空名字也可查**：`getDependents('ghost')` 返回声明者而非报空——反查的语义是"谁声明了依赖 X"，与 X 是否存在正交，这正是排查悬空声明要用的形状。
+
+---
+
 <a id="log-2026-09-12-history-structured"></a>
 
 ## 2026-09-12 | 历史结构化接通：三个策略里选"方案 B"，降级是转写不是过滤

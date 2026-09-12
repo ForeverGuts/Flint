@@ -690,6 +690,8 @@ export class Runtime {
     const { messages: systemMessages } = await this.systemPromptService.build({
       tools: toolDescriptions,
       skills: this.skills.getAll().map((s) => s.name),
+      // 技能声明的依赖：给 skills-section 标注"依赖谁 / 缺了谁"用（与清单同一时刻现取，同样自愈）
+      skillDeps: Object.fromEntries(this.skills.getAll().map((s) => [s.name, s.depends ?? []])),
       model: this.currentModel,
       summary: compacted.summary,
       task: taskMemory,

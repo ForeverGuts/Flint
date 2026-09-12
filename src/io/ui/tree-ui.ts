@@ -392,13 +392,14 @@ export class TreeUI {
     return new Text(`  ${icon}${C.reset} ${C.dim}[${d.item}]${C.reset} ${d.message}`);
   }
 
-  /** 技能热更新提示行（🔄 + 增删差 + 当前总数；纯增删都无时是"内容更新"） */
+  /** 技能热更新提示行（🔄 + 增删差 + 当前总数；纯增删都无时是"内容更新"；有技能失去依赖时追加 ⚠ 提示） */
   private skillChangeLine(change: import('../../runtime/skill.js').SkillChange): Text {
     const parts: string[] = [];
     if (change.added.length > 0) parts.push(`+${change.added.join(' +')}`);
     if (change.removed.length > 0) parts.push(`-${change.removed.join(' -')}`);
     const diff = parts.length > 0 ? `（${parts.join(' ')}）` : '（内容更新）';
-    return new Text(`  ${C.dim}🔄 技能已热更新${diff}，当前 ${change.result.skills.length} 个${C.reset}`);
+    const broken = change.broken.length > 0 ? `，⚠ ${change.broken.join('、')} 失去依赖` : '';
+    return new Text(`  ${C.dim}🔄 技能已热更新${diff}，当前 ${change.result.skills.length} 个${broken}${C.reset}`);
   }
 
   /** 后台探测结果回填：移除占位行，追加结果行（失败/断网时是 warn 行，同样如实展示） */

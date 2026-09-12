@@ -11,6 +11,28 @@
 
 ---
 
+<a id="log-2026-09-12-skill-deps"></a>
+
+## 2026-09-12 | 技能依赖追踪：声明式依赖 + 双出口（提示词标注 / 热重载断裂提示）
+
+**牵连系统**：`runtime/skill.ts`（`Skill.depends` + `parseDepends` + `getDependents` + `SkillChange.broken`）· `core/system-prompt.ts`（`SystemPromptContext` 加可选 `skillDeps`）· `runtime/runtime.ts`（构造 ctx 时随清单现取）· `context/sections/skills-section.ts`（标注依赖与缺失）· `io/ui/tree-ui.ts`（🔄 提示行追加「失去依赖」）· `scripts/verify-skill-deps.ts`（新套件）
+
+**面向的问题**：skill.ts 挂着最后一个 TODO（addDependency / getDependents）。技能之间客观存在引用关系（一个技能的正文假定另一个技能已加载），但系统对此零感知：被依赖的技能被删/写坏，依赖方静默残废，用户与 LLM 两头都不知道。
+
+**做出的改动**：
+
+1. **声明**：frontmatter `depends: a, b` → 纯函数 `parseDepends`（逗号分隔、去空白、去重保序、非字符串值返回空数组）→ `Skill.depends`。
+2. **反查**：`getDependents(name)` —— 对不存在的名字也可查（"谁声明了依赖它"与它是否存在正交）；`reload()` 的 broken 计算真实调用它（反向索引单一实现）。
+3. **双出口**：提示词段标注「依赖 / 缺失」（`ctx.skillDeps` 可选成员，随清单每轮现取、自愈；静态悬空声明的暴露口）；TreeUI 热重载提示行对 `broken` 追加「⚠ x 失去依赖」（删除事件的暴露口）。
+
+**解决的问题**：依赖断裂第一次可感知——删除被依赖技能时，UI 明说谁残废了；声明悬空时，LLM 每轮都看得到「缺失」标注。
+
+**刻意不做**：`addDependency` 程序化注册——无运行期调用方的公开方法是「支持但未接线」债（本仓库已付三次学费），取舍见 [DECISION_LOG](./DECISION_LOG.md#log-2026-09-12-skill-deps)。
+
+**未来可优化**：技能加载时递归展开依赖（先把被依赖技能正文带上）——等真实需求出现再说，当前标注已够 LLM 自行判断加载顺序。
+
+---
+
 <a id="log-2026-09-12-history-structured"></a>
 
 ## 2026-09-12 | 历史结构化数据接通：落盘归 runtime、请求侧按 thinking 分叉

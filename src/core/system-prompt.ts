@@ -30,6 +30,8 @@ export interface SystemPromptContext {
   tools: string;
   /** 技能名称列表（SkillLoader 提供） */
   skills: string[];
+  /** 技能声明的依赖（名字 → frontmatter `depends` 解析结果；可选——缺省时段落跳过依赖标注） */
+  skillDeps?: Record<string, string[]>;
   /** 当前模型名 */
   model: string;
   /** 会话摘要（compaction 结果，可选） */
