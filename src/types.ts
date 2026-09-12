@@ -63,8 +63,11 @@ export interface RuntimeOptions {
   mode?: Mode;
   /** LLM 模型调用（必注入） */
   llm: import('./llm/types.js').LLMProvider;
-  /** 会话存储（必注入）——契约在 core/storage.ts，含 entry 树的三个可选成员 */
+  /** 会话存储（必注入）——契约在 core/storage.ts，含 entry 树的可选成员 */
   session: import('./core/storage.js').SessionStorage;
+  /** 会话仓库层（可选注入）——目录级管理（列表/打开/新建/删除），契约在 core/session-repo.ts；
+   *  缺省时 Runtime 回退到 JsonlSessionStorage 的静态路径（mock / 兼容场景） */
+  sessionRepo?: import('./core/session-repo.js').SessionRepo;
   /** 工具子系统（必注入） */
   tools: import('./core/tools.js').ToolProvider;
   /** 权限子系统（必注入） */

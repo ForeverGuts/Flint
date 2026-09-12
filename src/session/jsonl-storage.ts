@@ -5,7 +5,7 @@
  *
  *   - 每条消息是树里的一个 entry（id + parentId），文件顺序 ≠ 对话顺序
  *   - leaf 指针标记"当前在哪条线上"，持久化靠 leaf entry，内存靠 currentLeafId
- *   - compaction entry 承载上下文压缩摘要（替代旧的独立 _summary.jsonl 文件）
+ *   - compaction entry 承载上下文压缩摘要（旧机制曾有独立的摘要文件，已废弃并入树）
  *   - fork 复制根→leaf 前缀到新文件，原文件不动（审计性）
  *
  * 文件行格式（version 2）：
@@ -18,7 +18,6 @@
  */
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as fsSync from 'node:fs';
 import type { SessionStorage } from '../core/storage.js';
 import type { CompactionStore } from '../core/compaction-store.js';
 import type { LLMMessage, LLMToolCall } from '../llm/types.js';
@@ -82,13 +81,8 @@ function nextEntryId(): string {
   return `e${Date.now().toString(36).slice(-6)}_${entryCounter}`;
 }
 
-/** 会话文件扩展名识别（供 /sessions 列出、fork 命名） */
+/** 会话文件扩展名（fork 命名用；目录级识别/校验已搬去 session/jsonl-repo.ts） */
 export const SESSION_EXT = '.jsonl';
-
-/** 是否为合法的会话文件名（不含 _summary 之类，version 2 摘要已入树） */
-function isSessionFileName(name: string): boolean {
-  return name.endsWith(SESSION_EXT) && !name.includes('_summary');
-}
 
 export class JsonlSessionStorage implements SessionStorage, CompactionStore {
   private filePath: string;
@@ -366,30 +360,6 @@ export class JsonlSessionStorage implements SessionStorage, CompactionStore {
       entries.push(line);
     }
     return new JsonlSessionStorage(filePath, header, entries);
-  }
-
-  /** 列出 sessions/ 下所有会话文件信息（供 /sessions） */
-  static async listAll(sessionsDir: string): Promise<Array<{ fileName: string; msgCount: number; updatedAt: number }>> {
-    const results: Array<{ fileName: string; msgCount: number; updatedAt: number }> = [];
-    try {
-      const files = await fs.readdir(sessionsDir);
-      for (const name of files) {
-        if (!isSessionFileName(name)) continue;
-        const full = path.join(sessionsDir, name);
-        try {
-          const storage = await JsonlSessionStorage.open(full);
-          const msgs = storage.getAllStored();
-          const stat = fsSync.statSync(full);
-          results.push({ fileName: name, msgCount: msgs.length, updatedAt: stat.mtimeMs });
-        } catch {
-          // 单个文件损坏/格式不符 → 跳过
-        }
-      }
-    } catch {
-      // sessions 目录不存在 → 空列表
-    }
-    results.sort((a, b) => b.updatedAt - a.updatedAt);
-    return results;
   }
 
   /* ── 私有 ── */

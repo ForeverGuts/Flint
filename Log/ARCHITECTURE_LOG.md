@@ -11,6 +11,45 @@
 
 ---
 
+<a id="log-2026-09-12-session-repo"></a>
+
+## 2026-09-12 10:51 | 会话仓库层：单会话存储与会话管理分家，删除能力从无到有
+
+**牵连系统**：`core/session-repo.ts`（新增，SessionRepo 契约）、`session/jsonl-repo.ts`（新增，Jsonl 实现）、
+`session/jsonl-storage.ts`（摘走 listAll 与文件名识别）、`core/storage.ts`（可选成员 +getFilePath）、
+`runtime.ts`（四方法委托 + deleteSession + 守卫）、`harness/main.ts`（装配注入）、
+`commands/builtin/sessions.ts`（删除流程）、`scripts/verify-repo.ts`（新增 51 项）、
+`scripts/verify-session.ts`（一条断言的语义更新）。
+
+**面向的问题**：改造前"会话管理"散在两处——`JsonlSessionStorage` 的静态方法（listAll/open/create）
+与 `runtime.ts` 的私有方法（文件名规范化、目录推导），而"单会话存储"（entry 树 / leaf / compaction）
+与"目录里有哪些会话文件"是两类职责，混在一个类里导致：runtime 要 import 具体类而非依赖契约；
+文件名规范化逻辑在 runtime 复制一份；且**全项目没有删除会话的入口**（fork 出的废线只能手工进
+文件系统删）。
+
+**做出的改动**：
+- 分家：目录级操作收进 `SessionRepo` 契约（core 层，与其他 9 个子系统接口同列）+ Jsonl 实现。
+  `listAll` 整体搬走、`jsonl-storage` 不再认目录；`create` 返回 `{fileName, storage}`（此前调用方
+  要自己拼一遍文件名才能知道建了哪个）。
+- 删除能力两层守卫：repo 层 `isRemovableSessionName` 白名单（拒路径分隔符与 `..`，堵路径穿越）；
+  Runtime 层拒删**当前活跃会话**——否则 `this.session` 指向已 unlink 的文件，后续 append 静默丢
+  消息。UI 层再加一道 disabled（三层里 UI 只是提示，真正承重的是 Runtime 守卫）。
+- 守卫比对用 `getFilePath` **可选成员探测**而非 instanceof（core/storage.ts 新增该可选成员）——
+  与 storage.ts 注释里那段收敛史同一立场：Runtime 不缩窄到具体类。InMemory/Mock 无此成员时
+  守卫跳过、不误伤。
+- `RuntimeOptions.sessionRepo` **可选注入**，缺省回退旧静态路径（mock / 兼容场景不强迫依赖新契约）；
+  回退的 listSessions 临时建 repo 委托——列表逻辑全库仍只一份。
+
+**解决的问题**：会话管理依赖契约而非具体类（可替身、可换实现）；删除从无到有且带穿越防护；
+"列表怎么排、坏文件怎么办"这类目录级判断有了唯一落点。
+
+**未来可优化**：repo 的 `list()` 逐文件 `open` 只为数消息数，会话多了之后可换成只读 header 行的
+轻量统计；`switchSession` / `createSession` 目前只换存储不通知 UI（TreeUI 的 banner 消息数靠
+下次请求刷新），若将来面板要实时跟随会话切换，需要补一条 onChange 型通知线——"把状态从文件
+搬进内存必须回答谁通知 UI"的教训在这里同样适用。
+
+---
+
 <a id="log-2026-09-12-tool-hooks"></a>
 
 ## 2026-09-12 00:00 | 工具生命周期钩子：程序闸先于人闸，可拦截不可改参

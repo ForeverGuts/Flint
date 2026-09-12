@@ -46,4 +46,6 @@ export interface SessionStorage {
   forkTo?(forkEntryId: string): Promise<{ fileName: string; storage: SessionStorage }>;
   /** 获取会话目录（/sessions 列表用） */
   getDir?(): string;
+  /** 获取会话文件完整路径（/sessions 删除守卫用它比对"是不是当前会话"；InMemory/Mock 无） */
+  getFilePath?(): string;
 }

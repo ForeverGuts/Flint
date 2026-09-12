@@ -11,6 +11,7 @@ import type { CheckResult, SessionStorage } from '../types.js';
 import { existsSync } from 'node:fs';
 import { closeTerminal } from '../io/terminal.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
+import { JsonlSessionRepo } from '../session/jsonl-repo.js';
 import { registerBuiltinCommands } from '../commands/loader.js';
 import { registerBuiltinTools } from '../tools/builtin.js';
 import { ToolRegistry } from '../tools/registry.js';
@@ -75,6 +76,8 @@ export async function main(checkResult: CheckResult): Promise<void> {
 
   // 显式组装子系统（多系统分离：Runtime 不创建任何子系统，全部注入）
   const tools = new ToolRegistry();
+  // 会话仓库层：目录级管理（列表/打开/新建/删除），与单会话存储分家（P6）
+  const sessionRepo = new JsonlSessionRepo(sessionDir);
   const permission = new PermissionManager();
   const skills = new SkillLoader('skills');
   const events = new PromptEventEmitter();
@@ -107,6 +110,7 @@ export async function main(checkResult: CheckResult): Promise<void> {
       mode: Mode.Repl,
       llm,
       session: actualSession,
+      sessionRepo,
       tools,
       permission,
       skills,

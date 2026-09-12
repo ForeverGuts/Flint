@@ -127,9 +127,14 @@
     `verify-hooks.ts` S1/S2 机器守护。**本条仍剩**：`runtime.onInput()`（输入预处理）依旧空着；
     消息生命周期钩子（LLM 请求前后的用户级挂点）未做——`before_request` 是 system-prompt 内部的，
     对 extensions 开放的只有工具这两个
-- [ ] **会话仓库层** — 从 jsonl-storage 抽出 repo 层（会话列表/管理/删除）
+- [x] **会话仓库层** —（2026-09-12 落地）从 jsonl-storage 抽出 repo 层（会话列表/管理/删除）
   - 理由：区分"单会话存储"与"会话管理"，支持多会话完整操作
   - 对标：Pi 的 jsonl-repo.ts
+  - 补记（2026-09-12 完成）：契约在新增 `core/session-repo.ts`（getDir/list/open/create/remove）、
+    实现在 `session/jsonl-repo.ts`；`JsonlSessionStorage` 的静态 `listAll` 与 runtime 里的文件名
+    规范化整体搬入（列表逻辑单一来源），并补上此前缺失的**删除**——两层守卫（repo 白名单拒穿越 +
+    Runtime 拒删当前活跃会话）+ UI 层 disabled。`sessionRepo` 可选注入，缺省回退旧静态路径。
+    `verify-repo.ts` 51 项（探针 repo 钉委托、变异测试证明守卫承重）。
 - [ ] **技能系统补全** — SkillLoader 热重载 + 依赖追踪（当前 TODO）
   - 对标：Pi 的 skills.ts
 - [x] **工具参数校验框架** —（2026-09-06 落地，实现与原案不同）原案：从手动 requireString 升级为 schema 自动校验
@@ -315,5 +320,6 @@
    想做先做决策，不要先写代码。
 3. **工具生命周期 Hook（P6）** —— ✅ **已于 2026-09-12 落地**（`before_tool_call` / `after_tool_call`，
    可拦截、不可改参，细节见上面 P6 Hook 条的补记）。"改完自动跑测试""工具级审计"从今天起有落点。
-4. **会话仓库层 / 分支摘要 / 技能热重载（P6）** —— 三项都是对标补齐，互不依赖，可按手感挑。
+4. **会话仓库层 / 分支摘要 / 技能热重载（P6）** —— 三项互不依赖，可按手感挑。
+   会话仓库层 ✅ **已于 2026-09-12 落地**（见上面 P6 会话仓库层条的补记）；剩分支摘要、技能热重载。
 5. **预编译发行（P6 第三档）** —— 收益递减（第一/二档后启动已 0.7ms 级），优先级最低。

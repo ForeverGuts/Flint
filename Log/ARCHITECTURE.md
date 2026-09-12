@@ -39,6 +39,8 @@
 ┌─ 子系统实现（一目录一个，互不 import）────────────────────
 │ loop/             AgentLoopServiceImpl —— LLM 流式 + 工具执行的循环
 │ session/          JsonlSessionStorage（entry 树 + leaf 指针 + fork）· InMemory · Mock
+│                   + JsonlSessionRepo —— 会话仓库层（目录级 list/open/create/remove，core/session-repo 契约；
+│                     删除两层守卫：文件名白名单拒穿越 + Runtime 拒删当前活跃会话）
 │ tools/            ToolRegistry + spec.ts（参数规格：一份定义派生 Schema / 运行时校验 / 入参类型）
 │                   + 7 个内置工具（ls / read / write / edit / grep / bash / todo）
 │ todo/             TaskStore —— 任务清单的内存真相源（render/parse 互逆 + TASK.md 投影/种子）

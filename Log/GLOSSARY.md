@@ -297,6 +297,21 @@ DECISION_LOG 锚点 log-2026-09-12-tool-hooks）。容错是 **fail-open**：钩
 
 对比：[Watcher](#watcher旁观扩展)
 
+### 会话仓库层（SessionRepo / jsonl-repo）
+
+**目录级的会话管理**，与"单会话存储"分家——`SessionStorage` 只管一个会话文件**内部**的读写
+（entry 树 / leaf / compaction），`SessionRepo`（契约在 `src/core/session-repo.ts`，实现在
+`src/session/jsonl-repo.ts`）管 `sessions/` 目录下**一群**会话文件：`list`（列表，按修改时间倒序、
+坏文件跳过）/ `open` / `create` / `remove`。对标 Pi 的 jsonl-repo.ts。
+
+删除是它带来的**第一个破坏性会话操作**，守卫两层：repo 层 `isRemovableSessionName` 白名单
+（拒路径分隔符与 `..`，堵穿越）+ Runtime 层拒删**当前活跃会话**（否则 `this.session` 指向已
+unlink 的文件、后续 append 静默丢消息）；UI 的 disabled 只是提示层。
+`RuntimeOptions.sessionRepo` 可选注入，缺省回退旧静态路径。四个管理方法都由 Runtime 委托
+repo，`verify-repo.ts` 用探针 repo 钉住这条委托线。
+
+参见：[JsonlSessionStorage](#jsonlsessionstorage)、[SessionStorage](#sessionstorage)
+
 ## I
 
 ### InMemorySession

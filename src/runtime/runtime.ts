@@ -9,6 +9,9 @@ import type { Diagnostic, RuntimeOptions } from '../types.js';
 import { SkillLoader } from './skill.js';
 import { PromptEventEmitter } from './events.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
+import { JsonlSessionRepo } from '../session/jsonl-repo.js';
+import type { SessionRepo } from '../core/session-repo.js';
+import * as path from 'node:path';
 import type { EventHandler, HookHandler, SpanAttrs, SpanResult } from './events.js';
 import type { CollectedSpan, SpanCollector } from '../core/events.js';
 import { AgentLoopServiceImpl, DEFAULT_MAX_TURNS, WITH_PLAN_MAX_TURNS } from '../loop/agent-loop.js';
@@ -63,6 +66,8 @@ export type InputHandler = (text: string) => InputEventResult | Promise<InputEve
 export class Runtime {
   private llm: LLMProvider;
   private session;
+  /** 会话仓库层（可选注入）——目录级管理；缺省时回退 JsonlSessionStorage 静态路径 */
+  private sessionRepo: SessionRepo | undefined;
   /** 命令子系统（接口注入，存储/注册/分发） */
   private commandSystem: import('../core/commands.js').CommandService;
   /** 诊断子系统（接口注入，收集/查询/落盘） */
@@ -164,6 +169,7 @@ export class Runtime {
   constructor(options: RuntimeOptions) {
     this.llm = options.llm;
     this.session = options.session;
+    this.sessionRepo = options.sessionRepo;
     // 子系统：全部必注入（多系统分离——Runtime 不创建任何子系统，只编排）
     this.tools = options.tools;
     this.permission = options.permission;
@@ -330,9 +336,12 @@ export class Runtime {
   /**
    * 列出 sessions/ 下所有会话文件。
    * 调用方：/sessions 命令
+   * 有 repo 时委托 repo 层（core/session-repo.ts 契约）；缺省回退旧静态路径。
    */
   async listSessions(): Promise<Array<{ fileName: string; msgCount: number; updatedAt: number }>> {
-    return JsonlSessionStorage.listAll(this.sessionDir());
+    if (this.sessionRepo) return this.sessionRepo.list();
+    // 回退：临时建一个 repo（列表逻辑只在 jsonl-repo 一处，不在 runtime 复制第二份）
+    return new JsonlSessionRepo(this.sessionDir()).list();
   }
 
   /**
@@ -340,6 +349,14 @@ export class Runtime {
    * 调用方：/sessions 命令
    */
   async switchSession(fileName: string): Promise<boolean> {
+    if (this.sessionRepo) {
+      try {
+        this.session = await this.sessionRepo.open(fileName);
+        return true;
+      } catch {
+        return false;
+      }
+    }
     const dir = this.sessionDir();
     const storage = await JsonlSessionStorage.open(`${dir}/${fileName}`);
     if (!storage) return false;
@@ -352,11 +369,39 @@ export class Runtime {
    * 调用方：/sessions 命令（"新建会话"）
    */
   async createSession(name?: string): Promise<string> {
+    if (this.sessionRepo) {
+      const { fileName, storage } = await this.sessionRepo.create(name);
+      this.session = storage;
+      return fileName;
+    }
     const dir = this.sessionDir();
     const fileName = name?.endsWith('.jsonl') ? name : `${name ?? `session-${Date.now().toString(36)}`}.jsonl`;
     const storage = await JsonlSessionStorage.create(dir, fileName);
     this.session = storage;
     return fileName;
+  }
+
+  /**
+   * 删除指定会话文件（repo 层能力，此前整个项目没有删除会话的入口）。
+   * 调用方：/sessions 命令（"删除会话"）
+   *
+   * 守卫：**当前活跃会话不可删**——删掉后 this.session 指向已 unlink 的文件，
+   * 后续 append 会静默丢消息。想删它请先切换到别的会话。
+   * 守卫比对用 getFilePath（可选成员探测，InMemory/Mock 无此成员则跳过比对）。
+   */
+  async deleteSession(fileName: string): Promise<boolean> {
+    if (!this.sessionRepo) return false;
+    const currentPath = this.session?.getFilePath?.();
+    if (currentPath) {
+      const target = path.join(this.sessionRepo.getDir(), fileName);
+      if (path.resolve(currentPath) === path.resolve(target)) return false;
+    }
+    return this.sessionRepo.remove(fileName);
+  }
+
+  /** 当前会话文件路径（供 /sessions 标记"当前"；InMemory/Mock 无 → undefined） */
+  getCurrentSessionFile(): string | undefined {
+    return this.session?.getFilePath?.();
   }
 
   /** 当前会话目录（供列表/切换/新建复用） */

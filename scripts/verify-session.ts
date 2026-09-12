@@ -71,8 +71,8 @@ console.log('\n① 契约形状（types.ts 不得再自己定义 SessionStorage�
 
   const runtimeSrc = fs.readFileSync(path.join(ROOT, 'src/runtime/runtime.ts'), 'utf8');
   check('runtime.ts 里已无 session instanceof 缩窄', !/this\.session\s+instanceof/.test(runtimeSrc));
-  check('runtime.ts 仍保留 JsonlSessionStorage 的静态调用（listAll/open/create）',
-    /JsonlSessionStorage\.(listAll|open|create)/.test(runtimeSrc));
+  check('runtime.ts 仍保留 JsonlSessionStorage 的静态 open/create（无 repo 注入时的回退路径）',
+    /JsonlSessionStorage\.(open|create)/.test(runtimeSrc));
 }
 
 /* ── ② 三个实现的可选成员真值表 ── */
@@ -287,9 +287,9 @@ console.log('\n⑨ tool_calls 持久化（钉死“存储只存纯文本”这�
     }
   };
   walk(path.join(ROOT, 'src'));
-  check('E3 全 src/ 无任何代码**写入** _summary 文件（只有 jsonl-storage.ts 的读侧排除判断）',
+  check('E3 全 src/ 无任何代码**写入** _summary 文件（读侧排除判断在 jsonl-repo.ts，2026-09-12 随 repo 层搬入）',
     srcFiles.every((f) => !/(writeFile|appendFile|createWriteStream)[^\n]*_summary/.test(fs.readFileSync(f, 'utf8')))
-    && srcFiles.filter((f) => /_summary/.test(fs.readFileSync(f, 'utf8'))).length === 1);
+    && srcFiles.filter((f) => /_summary/.test(fs.readFileSync(f, 'utf8'))).map((f) => path.basename(f)).join(',') === 'jsonl-repo.ts');
 }
 
 /* ── 收尾 ── */

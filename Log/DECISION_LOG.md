@@ -4,6 +4,37 @@
 
 ---
 
+<a id="log-2026-09-12-session-repo"></a>
+## 2026-09-12 — 会话删除的守卫放几层、比对靠什么：三层里 UI 只是提示
+
+**场景**：会话管理从单会话存储里分家时补上删除能力。删除是第一个**破坏性**的会话操作，
+守卫放几层、当前会话怎么识别，都是能力边界决策。
+
+**选项与理由**：
+
+- **删除守卫放几层** —— A) 只在 UI 层禁选当前会话；B) Runtime 层守卫；C) UI disabled +
+  Runtime 拒删 + repo 层文件名白名单，三层各管各的。选 **C**。判据：**每层守卫只挡自己那类错**。
+  A 挡不住 RPC / 命令行直达 runtime 的调用；B 挡不住 `../../etc` 这类穿越（那是"名字合不合法"，
+  不是"是不是当前会话"）；repo 白名单挡不住"名字合法但它是活跃线"。三层互不替代，
+  且真正承重的是 Runtime 守卫（verify-repo 变异测试摘掉它，R36/R37/R38 立刻红），
+  UI 的 disabled 只是让用户不用撞到报错才知道。
+- **"当前会话"怎么识别** —— A) `instanceof JsonlSessionStorage` 缩窄后取 filePath；
+  B) `core/storage.ts` 加可选成员 `getFilePath?()`，Runtime 探测。选 **B**。判据：
+  **storage.ts 注释里写明的历史教训**——类型双身那阵子，Runtime 被迫 instanceof 缩窄才能调可选
+  成员，收敛后立了"探测可选成员"的立场；这次是同一条立场的第一次新增应用。InMemory/Mock
+  无此成员 → 守卫跳过 → 不误伤（R39 有对照组钉住）。
+- **sessionRepo 注入可选还是必选** —— A) 必注入（对齐"全部必注入"的子系统表）；
+  B) 可选，缺省回退旧静态路径。选 **B**。判据：**mock / 兼容场景的迁移成本**。verify-permission
+  等既有套件的 makeRuntime 都没给 repo，必选会让每个替身都多造一个成员；
+  且 InMemory 场景下"目录管理"本来就不存在，必注入是逼着假件实现 no-op。
+  代价是 runtime 里留了一条回退路径（verify-session S 段的断言相应改语义：
+  钉的是"回退在场"而非"管理在 runtime"）。
+
+**结果**：SessionRepo 契约 + 两层承重守卫 + UI 提示层，51 项验证（探针 repo 钉委托、
+变异测试钉守卫）。实现见 ARCHITECTURE_LOG 锚点 log-2026-09-12-session-repo。
+
+---
+
 <a id="log-2026-09-12-tool-hooks"></a>
 ## 2026-09-12 — 工具钩子能做到哪一步：可拦截、不可改参；坏了怎么办：fail-open
 
