@@ -96,13 +96,25 @@ export interface AgentEndEvent {
   type: 'agent_end';
 }
 
-/** Token 用量事件（本轮 + 累计） */
+/** Token 用量事件（本轮 + 累计）。缓存明细字段有报才有，全程无报缺省 */
 export interface UsageEvent {
   type: 'usage';
   /** 本轮用量 */
-  current: { promptTokens: number; completionTokens: number; totalTokens: number };
+  current: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+  };
   /** 累计用量 */
-  total: { promptTokens: number; completionTokens: number; totalTokens: number };
+  total: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+  };
 }
 
 /** Agent 开始思考（用户输入后、LLM 响应前） */

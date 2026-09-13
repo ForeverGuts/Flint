@@ -185,6 +185,13 @@ export class AgentLoopServiceImpl implements AgentLoopService {
         usageTotal.promptTokens += turnUsage.promptTokens;
         usageTotal.completionTokens += turnUsage.completionTokens;
         usageTotal.totalTokens += turnUsage.totalTokens;
+        // 缓存明细逐轮有报就累加；全程无报则字段保持缺省（不伪报 0）
+        if (turnUsage.cacheReadTokens !== undefined) {
+          usageTotal.cacheReadTokens = (usageTotal.cacheReadTokens ?? 0) + turnUsage.cacheReadTokens;
+        }
+        if (turnUsage.cacheCreationTokens !== undefined) {
+          usageTotal.cacheCreationTokens = (usageTotal.cacheCreationTokens ?? 0) + turnUsage.cacheCreationTokens;
+        }
       }
 
       // ── ② 无工具调用 → 最终答案 ──

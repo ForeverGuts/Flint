@@ -90,6 +90,16 @@ export interface LLMUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /**
+   * 命中缓存复用的输入 token。**是 API 返回的**（服务端缓存机制的结算结果，本层只搬运不计算）：
+   * Anthropic = cache_read_input_tokens（message_start 携带），OpenAI 兼容 = prompt_tokens_details.cached_tokens。
+   * 口径注意：两家报的 promptTokens 都**已含**缓存部分（Anthropic 的 promptTokens 是三者和，
+   * OpenAI 的 prompt_tokens 本身就含 cached_tokens），所以 cacheReadTokens ⊆ promptTokens，
+   * 明细只做拆解展示，不改变 promptTokens / totalTokens 的合计口径。API 没报就缺省——不伪报 0。
+   */
+  cacheReadTokens?: number;
+  /** 本次新写入缓存的输入 token（仅 Anthropic 显式 cache_control 有此概念；OpenAI 隐式缓存无） */
+  cacheCreationTokens?: number;
 }
 
 /** 非流式 chat() 的返回结果（可能是纯文本，也可能含结构化工具调用） */

@@ -642,7 +642,12 @@ export class TreeUI {
       }
 
       case 'usage': {
-        this.lastUsage = `⚡ ${event.current.totalTokens} tokens  · 累计 ${event.total.totalTokens}`;
+        // 缓存命中占比（本轮 API 报了才算——是调优提示词结构最直接的反馈信号）
+        const cur = event.current;
+        const cachePct = cur.cacheReadTokens !== undefined && cur.promptTokens > 0
+          ? `（缓存命中 ${Math.round((cur.cacheReadTokens / cur.promptTokens) * 100)}%）`
+          : '';
+        this.lastUsage = `⚡ ${cur.totalTokens} tokens${cachePct} · 累计 ${event.total.totalTokens}`;
         break;
       }
 

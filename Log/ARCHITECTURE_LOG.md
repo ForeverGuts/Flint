@@ -11,6 +11,22 @@
 
 ---
 
+<a id="log-2026-09-13-cache-usage"></a>
+
+## 2026-09-13 | 缓存命中率明细：同一笔账拆个明细，总量口径一字不动
+
+**牵连系统**：`llm/types.ts`（`LLMUsage` 加可选 `cacheReadTokens` / `cacheCreationTokens`）· `llm/anthropic.ts`（流式 `message_start` 捕获 + 非流式 `anthropicUsageToLLM` 两处解析点）· `llm/stream-helper.ts`（OpenAI 兼容吃 `prompt_tokens_details.cached_tokens`）· `loop/agent-loop.ts` 与 `runtime/runtime.ts`（两处累加点）· `runtime/events.ts`（usage 事件类型）· `commands/builtin/usage.ts` 与 `io/ui/tree-ui.ts`（展示）· `scripts/verify-cache-usage.ts`（新套件 21 项）。
+
+**面向的问题**：缓存命中与否、占比多少，是调优提示词结构（系统提示与工具描述稳定前置）最直接的反馈信号，但 `LLMUsage` 只有三个槽——Anthropic 返回的 `cache_read_input_tokens` 被并进 promptTokens，账面只见总量、看不见"大头其实是 1 折价格的缓存读取"。
+
+**做出的改动与关键口径**：明细是**服务端结算、本层只搬运**（缓存是否命中由 API 的缓存机制决定，程序不计算）。两条铁律：① **promptTokens / totalTokens 口径一字不动**——Anthropic 的 promptTokens 保持 input+cache_creation+cache_read 三者和、OpenAI 的 prompt_tokens 本身已含 cached_tokens，明细是同一笔账的拆解，不是第二笔账；② **API 没报就缺省，不伪报 0**（累加点守卫是 `!== undefined` 才加，全程无报字段不落）；③ /usage 展示条件同样是 `!== undefined` 而非 `> 0`——把"显示 0"的门关死在源码守护里（G5）。
+
+**解决的问题**：`/usage` 与 usage 事件（UI ⚡ 行）现在能报"缓存命中 N tokens（占输入 N%）"与"缓存写入"，缓存命中占比从此可见。
+
+**未来可优化**：OpenAI 兼容端若后续出现显式缓存写入语义，再补 cacheCreationTokens 的第三来源；`runtime/utils.ts` 的估算回退路径无缓存概念（估算本就是近似，不动）。
+
+---
+
 <a id="log-2026-09-12-fork-rpc"></a>
 
 ## 2026-09-12 | 会话分叉 RPC 化：编辑器拿得到 /history 的"从此继续"，内核零改动

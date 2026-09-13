@@ -54,11 +54,28 @@ export function resolveThinkingEnabled(config: LLMConfig, opts?: LLMRequestOptio
 /** 本进程内是否还尝试索取流式用量（撞上不兼容端点后永久关闭，不再白跑一趟） */
 let streamUsageSupported = true;
 
-/** OpenAI 兼容用量 → 内部 LLMUsage（缺字段按 0；total 缺则自加） */
-function toLLMUsage(u: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }): LLMUsage {
+/**
+ * OpenAI 兼容用量 → 内部 LLMUsage（缺字段按 0；total 缺则自加）。
+ * 缓存明细（2026-09-13）：prompt_tokens_details.cached_tokens = 命中缓存复用的输入，
+ * API 报了才单列 cacheReadTokens（没报缺省，不伪报 0）。OpenAI 的 prompt_tokens 本身
+ * 已含 cached_tokens，promptTokens 口径不动；无 cacheCreation 概念（隐式缓存）。
+ */
+function toLLMUsage(u: {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+}): LLMUsage {
   const promptTokens = u.prompt_tokens ?? 0;
   const completionTokens = u.completion_tokens ?? 0;
-  return { promptTokens, completionTokens, totalTokens: u.total_tokens ?? promptTokens + completionTokens };
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: u.total_tokens ?? promptTokens + completionTokens,
+    ...(u.prompt_tokens_details?.cached_tokens !== undefined
+      ? { cacheReadTokens: u.prompt_tokens_details.cached_tokens }
+      : {}),
+  };
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -85,7 +102,12 @@ export async function createChat(
   const data = await res.json() as {
     choices: Array<{ message: { content: string | null; tool_calls?: LLMToolCall[] } }>;
     /** 非流式响应自带用量（与流式不同，无需 stream_options 索取；缺省则不报） */
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      total_tokens?: number;
+      prompt_tokens_details?: { cached_tokens?: number };
+    };
   };
   const message = data.choices[0]?.message;
   return {
@@ -183,7 +205,12 @@ export function createSSEStream(
             const json = JSON.parse(trimmed.slice(6)) as {
               choices?: Array<{ delta: { content?: string; reasoning_content?: string; tool_calls?: StreamToolCallDelta[] } }>;
               /** include_usage 索取到的用量（末尾那个 choices=[] 的 chunk 专带） */
-              usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+              usage?: {
+                prompt_tokens?: number;
+                completion_tokens?: number;
+                total_tokens?: number;
+                prompt_tokens_details?: { cached_tokens?: number };
+              };
             };
             const delta = json.choices?.[0]?.delta;
 

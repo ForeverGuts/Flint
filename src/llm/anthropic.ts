@@ -259,13 +259,25 @@ function toAnthropicTools(tools: LLMTool[]): AnthropicTool[] {
 /**
  * Anthropic 非流式用量 → 内部 LLMUsage。
  * 缓存写入与命中都要加回输入（同流式口径，缺了就严重少报）；total 缺则自加。
+ * 2026-09-13 起缓存明细单列（cacheRead/cacheCreation）：promptTokens 的三者和口径不变，
+ * 只是同一笔账拆个明细——API 没报的字段缺省，不伪报 0。
  */
 function anthropicUsageToLLM(u: NonNullable<AnthropicResponse['usage']>): LLMUsage {
   const promptTokens = (u.input_tokens ?? 0)
     + (u.cache_creation_input_tokens ?? 0)
     + (u.cache_read_input_tokens ?? 0);
   const completionTokens = u.output_tokens ?? 0;
-  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+    ...(u.cache_read_input_tokens !== undefined
+      ? { cacheReadTokens: u.cache_read_input_tokens }
+      : {}),
+    ...(u.cache_creation_input_tokens !== undefined
+      ? { cacheCreationTokens: u.cache_creation_input_tokens }
+      : {}),
+  };
 }
 
 /**
@@ -383,6 +395,9 @@ export class AnthropicProvider implements LLMProvider {
         /** 用量累积器：两个事件分别填，都没见到则保持 sawUsage=false（上层报 null） */
         let promptTokens = 0;
         let completionTokens = 0;
+        /** 缓存明细（message_start 携带；字段本身缺省说明服务端没报，保持 undefined 不伪报 0） */
+        let cacheRead: number | undefined;
+        let cacheCreation: number | undefined;
         let sawUsage = false;
 
         // ── 工具调用累积（Anthropic 流式 tool_use） ──
@@ -427,13 +442,16 @@ export class AnthropicProvider implements LLMProvider {
                 usage?: AnthropicStreamUsage;
               };
 
-              // 用量·输入（message_start）：缓存写入与命中都要加回来，否则严重少报
+              // 用量·输入（message_start）：缓存写入与命中都要加回来，否则严重少报；
+              // 明细单列（2026-09-13），promptTokens 三者和口径不变
               if (data.type === 'message_start' && data.message?.usage) {
                 const u = data.message.usage;
                 promptTokens = (u.input_tokens ?? 0)
                   + (u.cache_creation_input_tokens ?? 0)
                   + (u.cache_read_input_tokens ?? 0);
                 completionTokens = u.output_tokens ?? 0;
+                if (u.cache_read_input_tokens !== undefined) cacheRead = u.cache_read_input_tokens;
+                if (u.cache_creation_input_tokens !== undefined) cacheCreation = u.cache_creation_input_tokens;
                 sawUsage = true;
               }
 
@@ -516,7 +534,13 @@ export class AnthropicProvider implements LLMProvider {
         }
         // Anthropic 不给 total，自加；一个用量事件都没见到则不填（不伪报 0）
         const usage: LLMUsage | undefined = sawUsage
-          ? { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens }
+          ? {
+              promptTokens,
+              completionTokens,
+              totalTokens: promptTokens + completionTokens,
+              ...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
+              ...(cacheCreation !== undefined ? { cacheCreationTokens: cacheCreation } : {}),
+            }
           : undefined;
         eventStream.push({ type: 'end', fullText: full, ...(usage ? { usage } : {}) });
       } catch (err) {

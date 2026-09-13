@@ -140,8 +140,8 @@ export class Runtime {
    */
   private steerQueue: string[] = [];
 
-  /** 累计 token 用量 */
-  totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  /** 累计 token 用量（缓存明细字段：API 报过才有，全程没报缺省） */
+  totalUsage: LLMUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
   /** 发送一条 followUp 消息到队列中（等当前回复结束后处理） */
   private queueFollowUp(text: string): void {
@@ -810,6 +810,13 @@ export class Runtime {
     this.totalUsage.promptTokens += u.promptTokens;
     this.totalUsage.completionTokens += u.completionTokens;
     this.totalUsage.totalTokens += u.totalTokens;
+    // 缓存明细：有报就累加，全程无报字段保持缺省（不伪报 0）
+    if (u.cacheReadTokens !== undefined) {
+      this.totalUsage.cacheReadTokens = (this.totalUsage.cacheReadTokens ?? 0) + u.cacheReadTokens;
+    }
+    if (u.cacheCreationTokens !== undefined) {
+      this.totalUsage.cacheCreationTokens = (this.totalUsage.cacheCreationTokens ?? 0) + u.cacheCreationTokens;
+    }
     this.events.emit({ type: 'usage', current: u, total: { ...this.totalUsage } });
   }
 
