@@ -26,7 +26,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { registerBuiltinTools } from '../src/tools/builtin.js';
-import { TaskStore, taskStore } from '../src/todo/store.js';
+import { TASK_HISTORY_FILE, TaskStore, taskStore } from '../src/todo/store.js';
 import { hasUncheckedTask } from '../src/context/system-prompt.js';
 import { Runtime } from '../src/runtime/runtime.js';
 import { PromptEventEmitter } from '../src/runtime/events.js';
@@ -527,6 +527,45 @@ console.log('\n⑧ 展示层支撑：onChange 通知 / 最近一份快照 / /tas
   check('H21 清空后回看最近一份已完成的清单',
     after.includes('最近一份已完成') && after.includes('步骤一') && after.includes('步骤二'), after);
   check('H22 回看的那一份全部是已完成记号（没有残留空框）', !after.includes('☐'), after);
+
+  // ── 历史归档（2026-09-13 用户反馈：/tasks 要能看到历史清单与时间戳） ──
+  // 归档文件写在 cwd（与 TASK.md 同目录）——切到临时目录，避免污染仓库根
+  const cwdH = process.cwd();
+  process.chdir(tmpDir);
+  try {
+    taskStore.reset();
+    const histPath = path.join(tmpDir, TASK_HISTORY_FILE);
+    const s = new TaskStore();
+    s.add('归档甲');
+    s.add('归档乙');
+    check('H23 没有待归档时 archiveToFile 是 no-op（不创建文件）',
+      s.archiveToFile(TASK_HISTORY_FILE) === null && !fs.existsSync(histPath));
+    s.done(1);
+    check('H24 只完成一部分时不产生归档（半途而废的不叫"已完成"）',
+      !fs.existsSync(histPath));
+    s.done(2);
+    check('H25 全完成产生待归档，archiveToFile 落盘成功',
+      s.archiveToFile(TASK_HISTORY_FILE) === null && fs.existsSync(histPath));
+    check('H26 归档即消费：重复调用不追加重复条目',
+      s.archiveToFile(TASK_HISTORY_FILE) === null
+      && TaskStore.readHistory(histPath).length === 1);
+    const h = TaskStore.readHistory(histPath);
+    check('H27 回读的时间戳形如 YYYY-MM-DD HH:mm',
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(h[0]?.at ?? ''), h[0]?.at);
+    check('H28 回读条目与完成清单逐项一致（文本 + 全 done 状态）',
+      h[0]?.items.length === 2
+      && h[0].items.every((i) => i.status === 'done' && i.text.startsWith('归档')));
+    check('H29 读不存在的历史文件 → 空数组不炸', TaskStore.readHistory(path.join(tmpDir, '没有.md')).length === 0);
+
+    // /tasks 回看历史（真 handler，cwd 已在临时目录；store 已 reset → 走历史分支）
+    const hist = reg!.fn();
+    check('H30 /tasks 无当前清单时展示历史完成记录（时间戳行 + 条目名）',
+      hist.includes('历史完成记录') && /\d{4}-\d{2}-\d{2} \d{2}:\d{2} 完成/.test(hist)
+      && hist.includes('归档甲') && hist.includes('归档乙'), hist);
+  } finally {
+    process.chdir(cwdH);
+    taskStore.reset();
+  }
 
   taskStore.reset();
 }

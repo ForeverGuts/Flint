@@ -16,6 +16,7 @@ import { TreeUI, type TreeUIInfo } from '../src/io/ui/tree-ui.js';
 import type { Runtime } from '../src/runtime/runtime.js';
 import { visibleWidth, wrapText } from '../src/io/ui/fit-width.js';
 import { renderTaskPanel, formatTaskList } from '../src/io/ui/task-panel.js';
+import { PERMISSION_OPTIONS, permissionTitle } from '../src/io/ui/permission-prompt.js';
 import { taskStore, type TaskItem } from '../src/todo/store.js';
 
 let passed = 0;
@@ -455,6 +456,27 @@ console.log('── ⑧ 常驻任务面板（完成 ✓ / 进行中 ▶ / 待办
     formatTaskList(three).every((l) => !/\x1b\[/.test(l)));
   ok('I8 两种渲染共用同一套记号（终端与命令不会各画一套）',
     formatTaskList(three).some((l) => l.includes('✓')));
+
+  // 2026-09-13 用户反馈四连修（面板残留 / 权限弹窗三处）
+  const allDone: TaskItem[] = [
+    { text: '读源码', status: 'done' },
+    { text: '改代码', status: 'done' },
+  ];
+  ok('I15 全部完成的清单 → 零行（做完不散场只会挡输入框；/tasks 兜底回看）',
+    renderTaskPanel(allDone, 80).length === 0);
+
+  const styled = permissionTitle('write', 'calc.py', true);
+  const bare = permissionTitle('write', 'calc.py', false);
+  ok('I16 权限标题 styled 版整行黄加粗（🔧 行高亮，一眼看清对哪个文件操作）',
+    styled.includes('\x1b[33m') && styled.includes('\x1b[1m') && styled.includes('🔧 write 请求：calc.py')
+      && styled.endsWith('\x1b[0m'));
+  ok('I17 权限标题 plain 版不含 ANSI（RPC / 日志通道零转义噪音）', !/\x1b\[/.test(bare));
+
+  const always = PERMISSION_OPTIONS.find((o) => o.value === 'always');
+  ok('I18 "本次全部允许"的描述写明授权粒度是"同一工具同一目标"（不再是含糊的"后续自动放行"）',
+    always !== undefined && always.description.includes('同一工具同一目标') && always.description.includes('本会话'));
+  ok('I19 三个选项值仍是 once / always / deny（与 askPermission 的映射契约）',
+    PERMISSION_OPTIONS.map((o) => o.value).join(',') === 'once,always,deny');
 }
 
 {

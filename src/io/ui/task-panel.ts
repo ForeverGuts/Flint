@@ -45,14 +45,17 @@ export function formatTaskList(items: TaskItem[], indent = '  '): string[] {
 /**
  * 渲染常驻面板（带颜色），返回要挂进组件树的行数组。
  *
- * **空清单返回 `[]`** —— 这是"立即收起"的实现方式：容器没子组件就不渲染，
- * 一行都不占。用户要求"没有任务时屏幕保持干净"，代价是清空后当前快照查不到，
- * 由 `/tasks` 命令 + `TaskStore.lastCompleted()` 兜底回看。
+ * 返回 `[]`（收起）的条件有两个：
+ *   ① **空清单** —— 容器没子组件就不渲染，一行都不占。用户要求"没有任务时屏幕保持干净"。
+ *   ② **全部完成**（2026-09-13，用户实测反馈）—— 任务做完进入后续对话，面板还挂着
+ *      "任务 5/5 ✓✓✓"不散场，只会挡输入框。全完成那一刻 TASK.md 已被"全勾选即删"删掉、
+ *      快照进了 `lastCompleted()`（/tasks 回看，历史归档落 TASK_HISTORY.md），
+ *      面板没有继续存在的理由——直接零行收起。
  *
  * @param width 终端宽度（超宽截断，避免长任务名把整屏撑歪）
  */
 export function renderTaskPanel(items: TaskItem[], width: number): string[] {
-  if (items.length === 0) return [];
+  if (items.length === 0 || !items.some((it) => it.status !== 'done')) return [];
   const done = items.filter((i) => i.status === 'done').length;
   const maxText = Math.max(1, width - 6);   // 2 缩进 + 1 记号 + 1 空格 + 2 安全边距
   const lines: string[] = [`${DIM}  任务 ${done}/${items.length}${RESET}`];

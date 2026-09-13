@@ -25,10 +25,18 @@
  *
  * 零运行时依赖：只用 node:fs（内置）+ 纯数据结构，满足 flint 的硬约束。
  */
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 
 /** 单项状态。`active` 是"进行中"，**同一时刻至多一项**（不变量，由 start 与 parse 共同维护）。 */
 export type TaskStatus = 'pending' | 'active' | 'done';
+
+/**
+ * 任务历史归档文件名 —— 与 TASK.md 同目录（cwd）。
+ * 写入方：todo 工具（每次操作后顺手调 `archiveToFile`）；读取方：/tasks 命令。
+ * 任务清单是"当前轮"的状态，历史归档是"过去每一轮全完成时"的存档——两者刻意分文件：
+ * TASK.md 有"全勾选即删"语义，归档文件只追加、永不删。
+ */
+export const TASK_HISTORY_FILE = 'TASK_HISTORY.md';
 
 export interface TaskItem {
   text: string;
@@ -108,10 +116,72 @@ export class TaskStore {
   /**
    * 若当前清单"全部完成且非空"，把它记为最近一份已完成快照。
    * 只在 `done()` 后调用（别的出口不可能让清单从"未完成"变成"全完成"）。
+   * 同时挂起一份**待归档**（含完成时刻的时间戳），由 `archiveToFile` 落盘——
+   * store 自己不定路径（与 projectToFile 同一分工：文件在哪由调用方说了算）。
    */
   private snapshotIfCompleted(): void {
     if (this.items.length > 0 && !this.hasUnchecked()) {
-      this.lastDone = this.items.map((i) => ({ ...i }));
+      const snap = this.items.map((i) => ({ ...i }));
+      this.lastDone = snap;
+      this.pendingArchive = { at: new Date(), items: snap };
+    }
+  }
+
+  /**
+   * 待归档的"全完成"快照。时间戳记的是**最后一项被标记完成的那一刻**
+   * （与 lastDone 同一取时哲学），落盘后即消费置 null（重复调用不产生重复条目）。
+   */
+  private pendingArchive: { at: Date; items: TaskItem[] } | null = null;
+
+  /**
+   * 把待归档快照**追加**进历史文件（`TASK_HISTORY_FILE`，/tasks 回看的落盘侧）。
+   * 调用方：todo 工具（每次变更 projectToFile 之后顺手调）。
+   * 没有待归档 → 返回 null 且不写。写失败不抛——历史是纯回看性质的存档，
+   * 不该让一次 todo 变 [ERROR]；pendingArchive 保留（下次操作重试），
+   * 错误信息交工具附进返回值提醒。
+   */
+  archiveToFile(path: string): string | null {
+    if (!this.pendingArchive) return null;
+    try {
+      const { at, items } = this.pendingArchive;
+      const pad = (n: number): string => String(n).padStart(2, '0');
+      const ts = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+        + ` ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+      appendFileSync(path, `## ${ts} 完成\n${TaskStore.renderItems(items)}\n\n`, 'utf-8');
+      this.pendingArchive = null;
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /**
+   * 读历史归档（/tasks 回看）。与归档格式严格配对：`## <时间戳> 完成` 开块，
+   * 块内是 renderItems 的清单行（解析复用 ITEM_RE，glyph 语义与 fromMarkdown 同一套）。
+   * 文件不存在 / 读失败 → 空数组（历史是锦上添花，不能让它炸掉命令）。
+   * 空块（只有标题没有条目）丢弃——那不是一份完整的清单。
+   */
+  static readHistory(path: string): Array<{ at: string; items: TaskItem[] }> {
+    try {
+      if (!existsSync(path)) return [];
+      const entries: Array<{ at: string; items: TaskItem[] }> = [];
+      let cur: { at: string; items: TaskItem[] } | null = null;
+      for (const line of readFileSync(path, 'utf-8').split('\n')) {
+        if (line.startsWith('## ')) {
+          cur = { at: line.slice(3).replace(/\s*完成\s*$/, '').trim(), items: [] };
+          entries.push(cur);
+          continue;
+        }
+        const m = ITEM_RE.exec(line);
+        if (!m || !cur) continue;
+        const text = sanitize(m[2]);
+        if (!text) continue;
+        const raw = m[1].toLowerCase();
+        cur.items.push({ text, status: raw === 'x' ? 'done' : raw === '>' ? 'active' : 'pending' });
+      }
+      return entries.filter((e) => e.items.length > 0);
+    } catch {
+      return [];
     }
   }
 
@@ -193,6 +263,7 @@ export class TaskStore {
   reset(): void {
     this.items = [];
     this.lastDone = null;
+    this.pendingArchive = null;   // 测试隔离同样不欠历史账
     this.notify();
   }
 

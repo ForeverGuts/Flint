@@ -333,6 +333,25 @@ console.log('\n⑦ clear() 接线（改前全 src/ 零调用方 → "本次全�
     /clear\(\): void;/.test(permSrc) && /runtime\.clearSession/.test(permSrc));
 }
 
+/* ── ⑧ 弹窗走组件树（2026-09-13 用户反馈：选项 3 被任务面板重绘盖掉） ── */
+
+console.log('\n⑧ 弹窗接线（TTY 走组件树 select；标题高亮；选项唯一定义）');
+{
+  const promptSrc = read('src/io/ui/permission-prompt.ts');
+  // 旧实现裸调 selectFromList 直接写 stdout，与 TreeUI 的 250ms 自绘抢同一块屏幕：
+  // 任务面板一刷新就把"拒绝"那一行盖掉。修法是弹窗进组件树（selectBox），不是修渲染时序。
+  check('H1 askPermission 调 this.select 且传 PERMISSION_OPTIONS（弹窗进组件树）',
+    /await this\.select\(\s*\n\s*PERMISSION_OPTIONS,/.test(runtimeSrc));
+  check('H2 runtime 不再调裸弹窗 promptPermission（旧通道整体退役）',
+    !/promptPermission\(/.test(runtimeSrc));
+  check('H3 标题经 permissionTitle 拼装，TTY 才高亮（styled=isTTY，RPC/日志拿纯文本）',
+    /permissionTitle\(toolName, detail, process\.stdin\.isTTY === true\)/.test(runtimeSrc));
+  check('H4 三个选项唯一定义在 permission-prompt.ts；弹窗本体（selector import）已迁出',
+    /export const PERMISSION_OPTIONS/.test(promptSrc) && !/from '\.\/selector\.js'/.test(promptSrc));
+  check('H5 取消（选择器返回 undefined）与"拒绝"同义：?? deny 兜底',
+    /\?\? 'deny';/.test(runtimeSrc));
+}
+
 /* ── 收尾 ── */
 
 console.log(`\n结果：${passed} 通过 / ${failed} 失败（共 ${passed + failed} 项）`);

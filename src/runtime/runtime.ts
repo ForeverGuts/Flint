@@ -16,7 +16,7 @@ import type { EventHandler, HookHandler, SpanAttrs, SpanResult } from './events.
 import type { CollectedSpan, SpanCollector } from '../core/events.js';
 import { AgentLoopServiceImpl, DEFAULT_MAX_TURNS, WITH_PLAN_MAX_TURNS } from '../loop/agent-loop.js';
 import { estimateTokenUsage } from './utils.js';
-import { promptPermission } from '../io/ui/permission-prompt.js';
+import { PERMISSION_OPTIONS, permissionTitle } from '../io/ui/permission-prompt.js';
 import { selectFromList } from '../io/ui/selector.js';
 import { readLine } from '../io/terminal.js';
 import { taskStore } from '../todo/store.js';
@@ -839,11 +839,18 @@ export class Runtime {
   /**
    * 工具权限确认（AgentLoop 的 onPermission 回调）—— 弹窗询问用户。
    * 返回 'allow' | 'deny' | 'always'。
+   *
+   * 弹窗走 runtime.select 而不是裸 selectFromList（2026-09-13）：
+   * TTY 下 TreeUI 已注册钩子 → 弹窗进组件树，与 spinner/任务面板同布局互不覆盖
+   * （旧实现裸写 stdout，"拒绝"那一行会被面板刷新盖掉）；管道模式回落 selectFromList，
+   * 非 TTY 直接选第一项 = 允许一次（自动放行，无 stdout 噪音）。
    */
   private async askPermission(toolName: string, detail: string): Promise<'allow' | 'deny' | 'always'> {
-    const choice = await promptPermission(toolName, detail);
-    // promptPermission 返回 'deny' | 'always' | undefined（undefined=允许本次）
-    return choice === 'deny' ? 'deny' : choice === 'always' ? 'always' : 'allow';
+    const choice = (await this.select(
+      PERMISSION_OPTIONS,
+      permissionTitle(toolName, detail, process.stdin.isTTY === true),
+    )) ?? 'deny';   // Ctrl+C 取消 = 不做这件事，与"拒绝"同义
+    return choice === 'always' ? 'always' : choice === 'deny' ? 'deny' : 'allow';
   }
 
   /**

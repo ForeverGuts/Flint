@@ -121,8 +121,8 @@ export class TreeUI {
   /** 输入行文本组件 */
   private inputLine: Text;
   /**
-   * 常驻任务面板（输入框正上方）。**空清单时不渲染任何行**——容器没子组件就不占地方，
-   * 这是"全部完成后立即收起"的实现方式。内容由 `refreshTaskPanel()` 每帧重建。
+   * 常驻任务面板（输入框正上方）。**空清单或全部完成时不渲染任何行**——容器没子组件
+   * 就不占地方，这是"立即收起"的实现方式。内容由 `refreshTaskPanel()` 每帧重建。
    */
   private taskBox = new Container();
   /** 任务面板的退订函数（stop 时调用，防监听器泄漏） */

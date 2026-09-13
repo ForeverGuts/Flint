@@ -19,7 +19,7 @@ import {
   defineTool, str, strAllowEmpty, optStr, optPosInt, optBool, ToolInputError,
   toolOk, toolInvalid, toolError, toolVerifyFailed, toolNegative,
 } from './spec.js';
-import { TaskStore, taskStore } from '../todo/store.js';
+import { TASK_HISTORY_FILE, TaskStore, taskStore } from '../todo/store.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    参数规则在每个工具的 spec 里，Schema 与校验都由它派生（实现见 spec.ts）
@@ -614,11 +614,16 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
 
         // 投影到 TASK.md（失败不致命：内存仍是真相源，只是丢跨重启存档）
         const warn = store.projectToFile('TASK.md');
+        // 历史归档紧跟投影：清单"全完成"的那次操作把快照追加进 TASK_HISTORY.md
+        //（/tasks 回看用）。没到全完成时它是 no-op；写失败同样不致命，与投影合并提醒
+        const histWarn = store.archiveToFile(TASK_HISTORY_FILE);
         const c = store.counts();
         if (c.total === 0) return toolOk(`任务清单已清空（TASK.md 已移除）`);
         const head = `任务清单（${c.total} 项：${c.done} 完成 / ${c.active} 进行中 / ${c.pending} 待办）`;
-        const tail = warn
-          ? `\n（注：TASK.md 写入失败：${warn} —— 内存状态仍有效，但重启后会丢失）`
+        const warnParts = [warn && `TASK.md 写入失败：${warn}`, histWarn && `历史归档写入失败：${histWarn}`]
+          .filter((s): s is string => Boolean(s));
+        const tail = warnParts.length > 0
+          ? `\n（注：${warnParts.join('；')} —— 内存状态仍有效，但存档不完整）`
           : '';
         return toolOk(`${head}\n${store.renderNumbered()}${tail}`);
       } catch (e) {
