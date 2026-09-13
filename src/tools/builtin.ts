@@ -625,7 +625,14 @@ export function registerBuiltinTools(
         const warn = store.projectToFile('TASK.md');
         // 历史归档紧跟投影：清单"全完成"的那次操作把快照追加进 TASK_HISTORY.md
         //（/tasks 回看用）。没到全完成时它是 no-op；写失败同样不致命，与投影合并提醒
+        const hadPending = store.hasPendingArchive();
         const histWarn = store.archiveToFile(TASK_HISTORY_FILE);
+        // 事件库自动补记（确定性钩子，不经模型）：归档真正消费掉快照的那次才记——
+        // 写失败时快照保留、下次操作重试，此刻不记可避免双记
+        if (hadPending && histWarn === null) {
+          const done = store.lastCompleted();
+          if (done && done.length > 0) evs.recordTaskArchive(done, EVENTS_FILE);
+        }
         const c = store.counts();
         if (c.total === 0) return toolOk(`任务清单已清空（TASK.md 已移除）`);
         const head = `任务清单（${c.total} 项：${c.done} 完成 / ${c.active} 进行中 / ${c.pending} 待办）`;

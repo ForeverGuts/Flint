@@ -21,6 +21,7 @@ import { selectFromList } from '../io/ui/selector.js';
 import { readLine } from '../io/terminal.js';
 import { taskStore } from '../todo/store.js';
 import { memoryStore } from '../memory/store.js';
+import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
 
 /* ── 工作记忆：真相源是 `taskStore`（src/todo/store.ts） ──
    改造前这里有个模块级函数：每次请求读 TASK.md、数复选框、全勾选即删。那套是"文件即状态"。
@@ -674,6 +675,9 @@ export class Runtime {
     history = compacted.history;
     // 压缩摘要的 LLM 消耗回流 /usage 合计（没压缩 / 失败 / API 没报时 usage 缺省）
     if (compacted.usage) this.bumpUsage(compacted.usage);
+    // 事件库自动补记（确定性钩子）：旧上下文被摘要替代的那一刻给事件库留书签。
+    // 与 taskStore/memoryStore 单例同一直连手法——压缩判定点只在 runtime 这一处。
+    if (compacted.summary) eventStore.recordCompaction(compacted.summary, EVENTS_FILE);
     this.events.emit({ type: 'thinking', phase: 'streaming' });
 
     // ⑧: Agent Loop —— LLM 调用 → Tool 执行 → 循环

@@ -134,6 +134,15 @@ export class TaskStore {
   private pendingArchive: { at: Date; items: TaskItem[] } | null = null;
 
   /**
+   * 是否有待归档快照（"全完成"已发生、archiveToFile 还没消费掉）。
+   * archiveToFile 成功与"无事可归"都返回 null，光看返回值分不出这两态——
+   * 事件库的自动补记（recordTaskArchive）靠它当判据：只有真归档了那次才补。
+   */
+  hasPendingArchive(): boolean {
+    return this.pendingArchive !== null;
+  }
+
+  /**
    * 把待归档快照**追加**进历史文件（`TASK_HISTORY_FILE`，/tasks 回看的落盘侧）。
    * 调用方：todo 工具（每次变更 projectToFile 之后顺手调）。
    * 没有待归档 → 返回 null 且不写。写失败不抛——历史是纯回看性质的存档，

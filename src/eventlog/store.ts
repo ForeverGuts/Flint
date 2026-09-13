@@ -14,6 +14,7 @@
  *   每条事件一行 JSON（与 sessions/*.jsonl、trace.jsonl 同一范式），字段：
  *     kind     decision / experience / incident（叙事，record_event 写）
  *              | tool_call（机器流水，span 自动捕获写）
+ *              | system（机器里程碑，确定性钩子自动写：任务归档 / 压缩发生）
  *     title    一句话书签；context/decision/reason/outcome 叙事四段（可选，空则缺省不写键）
  *     tags     检索标签；turnId 关联当时的执行轮次
  *   修正 = 追加新条目，绝不改写旧行（与 Log/ 追加日志同一纪律：历史条目冻死）。
@@ -32,9 +33,9 @@ import type { CollectedSpan } from '../core/events.js';
 /** 事件库文件落点 —— 与 memory.md 同住 cwd/.flint/（隐藏目录，ls/grep 工具天然跳过）。 */
 export const EVENTS_FILE = '.flint/events.jsonl';
 
-/** 叙事事件的三种人类可记类型；tool_call 由打卡自动捕获产生，record_event 不接受它。 */
+/** 叙事事件的三种人类可记类型；tool_call / system 是机器自动产生的（record_event 不接受）。 */
 export const NARRATIVE_KINDS = ['decision', 'experience', 'incident'] as const;
-export type EventKind = (typeof NARRATIVE_KINDS)[number] | 'tool_call';
+export type EventKind = (typeof NARRATIVE_KINDS)[number] | 'tool_call' | 'system';
 
 export interface EventEntry {
   id: string;
@@ -138,6 +139,46 @@ export class EventStore {
         : { outcome: `status=${span.status}, ${span.durationMs}ms` }),
       tags: ['tool', toolName],
       turnId: span.turnId,
+    };
+    this.entries.push(entry);
+    this.appendLine(entry, file);
+  }
+
+  /**
+   * 确定性钩子 ①：任务清单"全完成归档"那一刻自动补记（不经模型——用户不必记得说，
+   * 程序上能确定判定的时刻由代码保证）。接线：todo 工具在 archiveToFile 真正消费掉
+   * 快照的那次调用后触发（写失败不记——快照保留会重试，避免双记）。
+   * 与 recordToolCall 同一原则：旁路观测，落盘失败静默，绝不反噬主流程。
+   */
+  recordTaskArchive(items: ReadonlyArray<{ text: string }>, file: string): void {
+    const digest = items.map((i) => i.text).join('、');
+    const outcome = opt(`完成清单：${digest}`, 400);
+    const entry: EventEntry = {
+      id: nextEntryId(),
+      time: new Date().toISOString(),
+      kind: 'system',
+      title: clip(`任务清单全完成（${items.length} 项）：${digest}`, 120),
+      ...(outcome ? { outcome } : {}),
+      tags: ['task', 'archive'],
+    };
+    this.entries.push(entry);
+    this.appendLine(entry, file);
+  }
+
+  /**
+   * 确定性钩子 ②：压缩发生时自动补记——旧上下文被摘要替代的那一刻给事件库留书签
+   * （被压掉的细节从此只活在摘要里，"什么时候压过一次"本身值得记）。
+   * 接线：runtime 在 maybeCompact 返回 summary 时触发。落盘失败静默（同上）。
+   */
+  recordCompaction(summary: string, file: string): void {
+    const digest = opt(summary, 400);
+    const entry: EventEntry = {
+      id: nextEntryId(),
+      time: new Date().toISOString(),
+      kind: 'system',
+      title: '对话历史已压缩（旧上下文被摘要替代）',
+      ...(digest ? { context: `摘要快照: ${digest}` } : {}),
+      tags: ['compaction'],
     };
     this.entries.push(entry);
     this.appendLine(entry, file);

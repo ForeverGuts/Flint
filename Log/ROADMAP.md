@@ -329,6 +329,7 @@
   - 复用打卡机：main.ts 挂**第三个 SpanCollector**（capacity 0 落盘型，与 trace-log watcher 同用法），tool_call 段配对成功即 `recordToolCall` 落库，`turnId` 关联当时的执行轮次（复盘完整过程回 trace.jsonl 翻）——配对逻辑零重复
   - 与记忆的分工：一次性步骤归 todo；跨会话一句话结论归 memory；带来龙去脉的完整事件归 record_event
   - 验证：`verify-eventlog.ts` 65 项（追加型纪律 / 检索过滤 / 坏行跳过 / 真总线自动捕获行为证明 / 变异四轮精准变红）
+  - 补记（2026-09-13 晚）：**两个确定性时刻改为自动补记**（kind=system，不经模型——用户不必记得开口）：① 任务清单"整单全完成归档"那一刻 `recordTaskArchive`（单项完成不记，过程归 tool_call 流水）；② compaction 压缩发生时 `recordCompaction`（被压掉的细节从此只在摘要里，"什么时候压过"本身值得记）。套件增至 71 项（变异两轮精准变红）
 - [ ] **全局级长期记忆**（用户偏好、跨项目习惯，后续跟进）
   - 设想：落点 `~/.flint/memory.md`（GLOBAL_DIR 已存在，`config/manager.ts`）；与项目级同一套 MemoryStore 机制，只是作用域不同——两份文件、两条注入（memory 层里分"项目"与"全局"两段，全局段更稳定放前面）
   - 未做理由：项目级先跑起来，看真实使用频率再决定全局级的条目从哪来（显式工具 or 从项目级升格）

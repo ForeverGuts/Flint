@@ -170,10 +170,10 @@ console.log('\n③ loadFromFile 种子');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   ④ recordToolCall（打卡自动捕获的映射）
+   ④ 机器自动补记（recordToolCall 打卡映射 + recordTaskArchive/recordCompaction 确定性钩子）
    ══════════════════════════════════════════════════════════════════════════ */
 
-console.log('\n④ recordToolCall：CollectedSpan → 事件条目');
+console.log('\n④ 机器自动补记：recordToolCall / recordTaskArchive / recordCompaction');
 
 {
   const s = new EventStore();
@@ -212,6 +212,30 @@ console.log('\n④ recordToolCall：CollectedSpan → 事件条目');
     })());
 
   check('D6 落盘行数与条数一致', fs.readFileSync(f, 'utf-8').trim().split('\n').length === s.count());
+
+  // ── 确定性钩子的两个自动补记方法（与 recordToolCall 同类：机器写 / kind=system / 旁路静默） ──
+  check('D7 recordTaskArchive：kind=system，标题带项数与任务名，tags=[task,archive]，落盘',
+    (() => {
+      const s2 = new EventStore();
+      const f2 = P('ev4b.jsonl');
+      s2.recordTaskArchive([{ text: '实现功能' }, { text: '跑绿测试' }], f2);
+      const e = s2.all()[0];
+      return e.kind === 'system' && e.title === '任务清单全完成（2 项）：实现功能、跑绿测试'
+        && JSON.stringify(e.tags) === JSON.stringify(['task', 'archive'])
+        && (e.outcome ?? '').startsWith('完成清单：')
+        && fs.existsSync(f2) && fs.readFileSync(f2, 'utf-8').includes('任务清单全完成');
+    })());
+
+  check('D8 recordCompaction：kind=system，摘要快照进 context，tags=[compaction]',
+    (() => {
+      const s2 = new EventStore();
+      const f2 = P('ev4c.jsonl');
+      s2.recordCompaction('早前对话要点：用户要求 X，方案 Y 已确认', f2);
+      const e = s2.all()[0];
+      return e.kind === 'system' && e.title.includes('已压缩')
+        && (e.context ?? '').startsWith('摘要快照: ') && (e.context ?? '').includes('方案 Y')
+        && JSON.stringify(e.tags) === JSON.stringify(['compaction']) && fs.existsSync(f2);
+    })());
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -323,13 +347,30 @@ console.log('\n⑥ record_event / search_events 工具端到端');
     const s6 = await search({ limit: 1 });
     check('F14 limit 截断（最新 1 条）', s6.includes('命中 1 条') && s6.includes('权限弹窗'));
 
+    // 确定性钩子端到端：todo 工具走完整流程，归档时刻自动补记（不经模型）
+    const base = evs.count();
+    const ts = new TaskStore();
+    const reg3 = new ToolRegistry();
+    registerBuiltinTools(reg3, ts, new MemoryStore(), evs);
+    await reg3.execute('todo', { op: 'add', text: '任务甲' });
+    await reg3.execute('todo', { op: 'add', text: '任务乙' });
+    await reg3.execute('todo', { op: 'done', index: 1 });
+    check('F15 部分完成不触发归档补记（整单走完才补一条，单项过程归 tool_call 流水）',
+      evs.count() === base);
+    await reg3.execute('todo', { op: 'done', index: 2 });
+    const arch = evs.all()[evs.count() - 1];
+    check('F16 整单全完成 → 自动补一条 system 事件（标题带项数与任务名，tags 带 archive）',
+      evs.count() === base + 1 && arch.kind === 'system'
+      && arch.title.includes('2 项') && arch.title.includes('任务甲')
+      && arch.tags.includes('task') && arch.tags.includes('archive'));
+
     // 缺省单例接线：不传第三参时作用于 eventStore（runtime / 命令读同一份）。
     // 单例是进程级共享物：先记下现场，测完原样恢复（测别人的东西不留自己的脚印）。
     const savedSingleton = eventStore.all();
     const reg2 = new ToolRegistry();
     registerBuiltinTools(reg2);   // 全部走缺省单例
     await reg2.execute('record_event', { kind: 'experience', title: '单例探针' });
-    check('F15 不传 store 时作用于共享单例 eventStore', eventStore.all().some((e) => e.title === '单例探针'));
+    check('F17 不传 store 时作用于共享单例 eventStore', eventStore.all().some((e) => e.title === '单例探针'));
     const rf0 = P('restore-f.jsonl');
     fs.writeFileSync(rf0, savedSingleton.map((e) => JSON.stringify(e)).join('\n') + (savedSingleton.length ? '\n' : ''));
     eventStore.loadFromFile(rf0);
@@ -424,6 +465,13 @@ console.log('\n⑧ 源码防回退');
     cmdSrc.includes('eventStore.search') && !cmdSrc.includes('readFileSync'));
   check('H9 core-section 教模型 record_event 与 search_events（与工具面对暗号）',
     coreSectionSrc.includes('record_event') && coreSectionSrc.includes('search_events'));
+
+  // ── 确定性钩子的两处接线（自动补记不经模型，接线点唯一性由源码守护） ──
+  const runtimeSrc = fs.readFileSync(path.join(ROOT, 'src/runtime/runtime.ts'), 'utf-8');
+  check('H10 压缩自动补记接线：runtime 在 compacted.summary 存在时调 recordCompaction',
+    runtimeSrc.includes('if (compacted.summary) eventStore.recordCompaction(compacted.summary, EVENTS_FILE)'));
+  check('H11 归档自动补记接线：builtin 在归档真正消费快照的那次才调 recordTaskArchive（写失败不记，防双记）',
+    builtinSrc.includes('store.hasPendingArchive()') && builtinSrc.includes('evs.recordTaskArchive(done, EVENTS_FILE)'));
 }
 
 /* ── 清理与汇总 ── */
