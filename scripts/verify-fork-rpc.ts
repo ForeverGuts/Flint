@@ -231,6 +231,41 @@ console.log('── ⑤ 源码守护 ──');
     /export async function handleRequest/.test(rpcSrc));
 }
 
+/* ════════════ ⑥ chat 的 maxTurns 透传（大任务不再被默认预算打断） ════════════ */
+console.log('── ⑥ chat params.maxTurns：按次覆盖轮数预算 ──');
+{
+  /** 假 runtime：只记录 prompt 收到的实参（handleRequest chat 路径只碰 subscribe + prompt） */
+  const captured: Array<unknown[]> = [];
+  const rt = {
+    subscribe: (_cb: unknown) => () => {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    prompt: async (...args: any[]) => { captured.push(args); return 'ok'; },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
+
+  const r1 = await handleRequest(rt, req('chat', { message: '干活', maxTurns: 25 }), makeSink());
+  const r2 = await handleRequest(rt, req('chat', { message: '干活' }), makeSink());
+  const e1 = await handleRequest(rt, req('chat', { message: 'x', maxTurns: 0 }), makeSink());
+  const e2 = await handleRequest(rt, req('chat', { message: 'x', maxTurns: -3 }), makeSink());
+  const e3 = await handleRequest(rt, req('chat', { message: 'x', maxTurns: 2.5 }), makeSink());
+  const e4 = await handleRequest(rt, req('chat', { message: 'x', maxTurns: '很多' }), makeSink());
+
+  check('F1 params.maxTurns=25 → prompt 第 4 参收到 { maxTurns: 25 }',
+    captured[0]?.[3]?.maxTurns === 25 && captured[0]?.[0] === '干活');
+  check('F2 不传 maxTurns → prompt 第 4 参 undefined（回落自动口径）', captured[1]?.[3] === undefined);
+  check('F3 maxTurns=0 → -32602', e1.error?.code === -32602);
+  check('F4 maxTurns=-3 → -32602', e2.error?.code === -32602);
+  check('F5 maxTurns=2.5（小数）→ -32602', e3.error?.code === -32602);
+  check('F6 maxTurns="很多"（非数字）→ -32602', e4.error?.code === -32602);
+
+  // 源码守护：runtime 侧"按次覆盖优先于自动口径"的三元在位（行为侧由 verify-phase-ab 钉 loop 本体）
+  const rtSrc = fs.readFileSync(path.join(ROOT, 'src/runtime/runtime.ts'), 'utf8');
+  check('F7 runtime 轮次口径 = 按次覆盖优先，缺省回落 清单?30:5',
+    /maxTurns: turnOpts\?\.maxTurns \?\? \(taskMemory \? WITH_PLAN_MAX_TURNS : DEFAULT_MAX_TURNS\)/.test(rtSrc));
+  check('F8 WITH_PLAN_MAX_TURNS = 30（2026-09-13 放宽）',
+    /WITH_PLAN_MAX_TURNS = 30/.test(fs.readFileSync(path.join(ROOT, 'src/loop/agent-loop.ts'), 'utf8')));
+}
+
 /* ── 收尾 ── */
 fs.rmSync(tmpDir, { recursive: true, force: true });
 console.log(`\n结果：${passed} 通过 / ${failed} 失败（共 ${passed + failed} 项）`);

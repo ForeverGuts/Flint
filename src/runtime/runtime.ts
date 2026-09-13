@@ -517,6 +517,8 @@ export class Runtime {
     input: string,
     onToken?: (chunk: string) => void,
     streamingBehavior: 'steer' | 'followUp' = 'followUp',
+    /** 按次覆盖轮数预算（RPC chat params.maxTurns 透传；缺省仍走"有清单 30 / 无清单 5"的自动口径） */
+    opts?: { maxTurns?: number },
   ): Promise<string> {
     // ① 开新回合：换发 turnId + 事件序号归零，把这一次输入引发的全部事件收成一组。
     //   仅在不在流式中时换发——用户在生成期间输入的消息会走排队分支再次进入本方法，
@@ -609,7 +611,7 @@ export class Runtime {
         }
 
         // ── ② 处理一条消息（内层单循环） ──
-        const result = await this.runSingleTurn(turnText, onToken);
+        const result = await this.runSingleTurn(turnText, onToken, opts);
         finalResult = result;
         turnCount++;
 
@@ -660,6 +662,8 @@ export class Runtime {
   private async runSingleTurn(
     currentText: string,
     onToken?: (chunk: string) => void,
+    /** prompt 传下的按次轮数覆盖（undefined = 走自动口径） */
+    turnOpts?: { maxTurns?: number },
   ): Promise<string> {
     // 发射 thinking 事件（告诉 UI 开始旋转）
     this.events.emit({ type: 'thinking', phase: 'analyzing' });
@@ -758,7 +762,8 @@ export class Runtime {
     // 轮数预算：有进行中任务（taskStore 有未完成项）时放大轮数，否则用默认预算（防死循环）
     // （thinkingOn 已在上方组装前判定）
     const { finalText, usage, turnLog } = await this.agentLoop.run(toolMessages, onToken, {
-      maxTurns: taskMemory ? WITH_PLAN_MAX_TURNS : DEFAULT_MAX_TURNS,
+      // 按次覆盖优先（RPC 大任务场景）；缺省回落"有清单放宽 / 无清单收紧"的自动口径
+      maxTurns: turnOpts?.maxTurns ?? (taskMemory ? WITH_PLAN_MAX_TURNS : DEFAULT_MAX_TURNS),
       thinking: thinkingOn,
       model: this.currentModel,
       // 内层引导取件：让用户在工具执行期间插入的话进**本轮**上下文（AgentLoop ④ 段负责注入）。

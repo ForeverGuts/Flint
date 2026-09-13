@@ -89,6 +89,16 @@ export async function handleRequest(
       if (typeof message !== 'string') {
         return { error: { code: ERR.INVALID_PARAMS, message: "params.message 必须是字符串" } };
       }
+      // 可选轮数预算覆盖：大任务场景外部程序按次放大（不传走内核自动口径）。
+      // 必须是正整数——0/负数/小数/非数字一律 -32602，静默回退默认值会伪装成"传了但没用"
+      let maxTurns: number | undefined;
+      if (params.maxTurns !== undefined) {
+        const n = params.maxTurns as unknown;
+        if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) {
+          return { error: { code: ERR.INVALID_PARAMS, message: 'params.maxTurns 必须是正整数' } };
+        }
+        maxTurns = n;
+      }
       // 并发会让通知无法归属（notification 没有 id 可配对），本版直接拒绝
       if (!sink.beginChat()) {
         return { error: { code: ERR.CHAT_BUSY, message: '已有 chat 在进行中，本版不支持并发' } };
@@ -97,7 +107,7 @@ export async function handleRequest(
         // 订阅只活在这一轮 chat 内：finally 必退订，杜绝跨请求串台
         const off = runtime.subscribe((event) => sink.emit(event));
         try {
-          const reply = await runtime.prompt(message);
+          const reply = await runtime.prompt(message, undefined, undefined, maxTurns === undefined ? undefined : { maxTurns });
           return { result: reply };
         } finally {
           off();

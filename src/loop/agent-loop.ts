@@ -38,8 +38,8 @@ import type { AgentLoopOptions, AgentLoopResult, AgentLoopService } from '../cor
 
 /** 默认最大轮数（防死循环） */
 export const DEFAULT_MAX_TURNS = 5;
-/** 带 TASK.md 计划的复杂任务的最大轮数（计划给了循环"地图"，允许更长推进） */
-export const WITH_PLAN_MAX_TURNS = 15;
+/** 带 TASK.md 计划的复杂任务的最大轮数（计划给了循环"地图"，允许更长推进；2026-09-13 实测"搭一个多文件小项目"15 轮会被截断，放宽到 30） */
+export const WITH_PLAN_MAX_TURNS = 30;
 
 /** AgentLoop 依赖 */
 export interface AgentLoopDeps {
