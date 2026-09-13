@@ -27,6 +27,9 @@ import { toolsSection } from '../context/sections/tools-section.js';
 import { skillsSection } from '../context/sections/skills-section.js';
 import { loadExtensions } from '../context/extension-loader.js';
 import { taskStore } from '../todo/store.js';
+import { MEMORY_FILE, memoryStore } from '../memory/store.js';
+import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
+import type { CollectedSpan } from '../core/events.js';
 import { SpanCollectorImpl } from '../runtime/span-collector.js';
 import { runReplMode } from './repl.js';
 import { runRpcMode } from './rpc.js';
@@ -54,6 +57,10 @@ export async function main(checkResult: CheckResult): Promise<void> {
   // 之后运行期一律以 taskStore 为准、不再回读文件 —— 否则就出现"两处判定"（store 与文件），
   // 迟早漂移。清单若无未完成项（空文件 / 全勾选），loadFromFile 会删掉文件并保持空清单。
   taskStore.loadFromFile('TASK.md');
+
+  // 项目记忆 / 历史事件库种子：同 TASK.md 的"只此一次"——启动吸收，运行期以内存为准不回读。
+  memoryStore.loadFromFile(MEMORY_FILE);
+  eventStore.loadFromFile(EVENTS_FILE);
 
   // 初始化持久化会话（v2 会话树格式）
   const sessionDir = './sessions';
@@ -94,6 +101,15 @@ export async function main(checkResult: CheckResult): Promise<void> {
   // （总线的意义就是消费者互不知情，核心命令也不该反过来依赖一个可选扩展）。
   const spanCollector = new SpanCollectorImpl();
   spanCollector.attach(events);
+  // 事件库自动捕获：复用同一份 span-collector 配对代码（capacity 0 落盘型用法，与 trace-log
+  // watcher 相同——只吃 feed 返回值、不在内存留历史），把每次工具调用沉淀成 kind=tool_call 的事件。
+  // 打卡机记"过程"（trace.jsonl 全量流水），事件库记"结论与来龙去脉"；turnId 把两者关联起来。
+  // 只订阅不改流程：与 trace-log 同为旁观者，落盘失败也不反噬主流程（store 内部吞掉）。
+  const eventCollector = new SpanCollectorImpl({ capacity: 0 });
+  events.subscribe((raw) => {
+    const span: CollectedSpan | null = eventCollector.feed(raw);
+    if (span && span.name === 'tool_call') eventStore.recordToolCall(span, EVENTS_FILE);
+  });
   // 装载用户扩展（段落 + hook + watcher）—— 自动扫描 src/extensions/ 下三类目录
   const ext = await loadExtensions(events);
   // 系统提示词子系统（配置驱动 + 分层缓存友好：核心稳定层在前，工具/技能层独立）

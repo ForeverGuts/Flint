@@ -41,7 +41,7 @@ export class SystemPromptServiceImpl implements SystemPromptService {
   /**
    * 构建系统提示词（发请求前调用）。
    * 流程：hook(before_build) → 分层计算段落 → 兜底 → hook(before_request) 可改写消息数组。
-   * 分层顺序（稳定→变化）：core → tools → skills → summary。
+   * 分层顺序（稳定→变化）：core → tools → skills → memory → task → summary。
    */
   async build(ctx: SystemPromptContext): Promise<{ messages: SystemPromptMessage[] }> {
     // ① hook：构建前可改写 ctx
@@ -65,7 +65,13 @@ export class SystemPromptServiceImpl implements SystemPromptService {
       messages.push({ layer: 'core', content: this.config.fallback });
     }
 
-    // ③ 工作记忆层：任务清单（渲染自内存真相源 TaskStore；独立于对话历史，压缩碰不到）。
+    // ③ 项目记忆层：跨会话持久的项目约定/决策/坑（MemoryStore 渲染，压缩碰不到）。
+    //   放 skills 之后、task 之前：memory 在会话内基本不变（比 task 稳定），保持"越稳定越靠前"。
+    if (ctx.memory) {
+      messages.push({ layer: 'memory', content: `[项目记忆]（跨会话持久，适用于本项目的所有任务）\n${ctx.memory}` });
+    }
+
+    // ④ 工作记忆层：任务清单（渲染自内存真相源 TaskStore；独立于对话历史，压缩碰不到）。
     //   runtime 只在 hasUnchecked 时才把它传进来，所以这一层出现 = 必有未完成项。
     // 计划驱动：追加续传提示——系统发信号，core-section【工作记忆】教模型用 todo 响应，两边对暗号
     if (ctx.task) {
@@ -76,12 +82,12 @@ export class SystemPromptServiceImpl implements SystemPromptService {
       messages.push({ layer: 'task', content: `## 当前任务（工作记忆）\n${ctx.task}${resumeHint}` });
     }
 
-    // ④ 摘要层：有压缩摘要才加，放最末（变化最大，最不影响前缀）
+    // ⑤ 摘要层：有压缩摘要才加，放最末（变化最大，最不影响前缀）
     if (ctx.summary) {
       messages.push({ layer: 'summary', content: `[对话摘要] ${ctx.summary}` });
     }
 
-    // ⑤ hook：发送前可改写分层消息数组（扩展可追加 custom 层到末尾）
+    // ⑥ hook：发送前可改写分层消息数组（扩展可追加 custom 层到末尾）
     const result = await this.events.emitHook?.('before_request', { messages } as unknown);
     const override = (result as { messages?: SystemPromptMessage[] } | undefined)?.messages;
     if (override) return { messages: override };

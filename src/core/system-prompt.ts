@@ -9,7 +9,7 @@
  */
 
 /** 系统提示词层次名（用于分层缓存 + hook 定位，发送时仅 role/content 序列化） */
-export type SystemPromptLayer = 'core' | 'tools' | 'skills' | 'task' | 'summary' | 'custom';
+export type SystemPromptLayer = 'core' | 'tools' | 'skills' | 'memory' | 'task' | 'summary' | 'custom';
 
 /** 分层 system 消息（一层一条，顺序即发送顺序） */
 export interface SystemPromptMessage {
@@ -36,6 +36,11 @@ export interface SystemPromptContext {
   model: string;
   /** 会话摘要（compaction 结果，可选） */
   summary?: string | undefined;
+  /**
+   * 项目记忆（MemoryStore 渲染结果，可选）—— 跨会话持久的项目约定/决策/坑。
+   * 独立于对话历史，压缩碰不到；只在有记忆条目时注入。
+   */
+  memory?: string | undefined;
   /**
    * 工作记忆（TASK.md 内容，可选）—— 独立于对话历史的持久任务状态。
    * 压缩只压缩对话历史，不触碰 TASK.md；每次请求重新注入，压缩后任务状态仍在。

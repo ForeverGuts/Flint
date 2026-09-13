@@ -20,6 +20,7 @@ import { PERMISSION_OPTIONS, permissionTitle } from '../io/ui/permission-prompt.
 import { selectFromList } from '../io/ui/selector.js';
 import { readLine } from '../io/terminal.js';
 import { taskStore } from '../todo/store.js';
+import { memoryStore } from '../memory/store.js';
 
 /* ── 工作记忆：真相源是 `taskStore`（src/todo/store.ts） ──
    改造前这里有个模块级函数：每次请求读 TASK.md、数复选框、全勾选即删。那套是"文件即状态"。
@@ -690,6 +691,11 @@ export class Runtime {
     const taskMemory = rawTask && rawTask.length > 2000
       ? `${rawTask.slice(0, 2000)}\n...（截断）`
       : rawTask;
+    // 项目记忆：读内存真相源（memoryStore），有条目才注入；截断同 task 层——注入可截，投影不截
+    const rawMemory = memoryStore.isEmpty() ? undefined : memoryStore.render();
+    const projectMemory = rawMemory && rawMemory.length > 2000
+      ? `${rawMemory.slice(0, 2000)}\n...（截断）`
+      : rawMemory;
     const { messages: systemMessages } = await this.systemPromptService.build({
       tools: toolDescriptions,
       skills: this.skills.getAll().map((s) => s.name),
@@ -698,6 +704,7 @@ export class Runtime {
       model: this.currentModel,
       summary: compacted.summary,
       task: taskMemory,
+      memory: projectMemory,
       historyCount: history.length,
     });
 

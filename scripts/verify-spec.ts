@@ -191,7 +191,7 @@ console.log('\n④ 护栏：发给 LLM 的 Schema 逐字未变（基线是改造
         JSON.stringify(actual[name]) === JSON.stringify(baseline[name]),
         JSON.stringify(actual[name])?.slice(0, 120));
     }
-    check('4-count 工具数 7（6 个旧工具基线逐字未变 + C 方案新增的 todo）', Object.keys(actual).length === 7,
+    check('4-count 工具数 10（6 个旧工具基线逐字未变 + todo + memory/record_event/search_events）', Object.keys(actual).length === 10,
       String(Object.keys(actual).length));
   }
 }

@@ -310,6 +310,30 @@
     真需要时不必改观察者，在 `todo` 工具层补发一个便签 span 即可（工具层本就认识 runtime）
   - 优先级：低。等真的有人问"这一步任务卡了多久"再做
 
+### P9 — 记忆与经验沉淀（2026-09-13 新增）
+
+> 立项契机：用户想把"项目约定 / 决策原因 / 踩过的坑"沉淀成跨会话可用的资产。
+> 核心取舍：**注入（推）与检索（拉）是两条互补通道**——memory 小而精每次注入，
+> 事件库按需检索不常驻；两者都照抄 TaskStore 的 C 方案（内存真相源 + 文件投影/种子）。
+
+- [x] **项目级长期记忆**（2026-09-13 落地）
+  - 内容：项目约定、架构决策、踩过的坑、经验——一句话一条（`memory` 工具 op:"add"，重复条目拒绝）
+  - 落点：`cwd/.flint/memory.md`（投影 + 启动种子，无"全勾选即删"式清理——记忆不会过期）
+  - 注入：system 新增 `memory` 层，位于 skills 与 task 之间（会话内基本不变，保持"越稳定越靠前"的缓存纪律）；有条目才注入、2000 字符截断（与 task 层同口径：注入可截、投影不截）
+  - 回看：`/memory` 命令（支持关键词过滤）
+  - 验证：`verify-memory.ts` 55 项（render/fromMarkdown 40 组属性测试 + 真 Runtime 行为探针 + 分层顺序源码守护）
+- [x] **历史事件库**（2026-09-13 落地）
+  - 内容与形状：一条 = 一个有名字的事件（decision / experience / incident 叙事四段；tool_call 由打卡自动捕获），JSONL 追加落盘 `cwd/.flint/events.jsonl`，**只增不改**（修正 = 追加新条目）
+  - 工具：`record_event`（写，kind 手写不含 tool_call）/ `search_events`（读，kind/tag/keyword/limit 过滤、最新在前、缺省 10 条——拉通道的节制）
+  - 命令：`/events`（终端翻阅，kind=/tag=/q=/limit= 参数；与 search_events 共用 formatEvent 排版）
+  - 复用打卡机：main.ts 挂**第三个 SpanCollector**（capacity 0 落盘型，与 trace-log watcher 同用法），tool_call 段配对成功即 `recordToolCall` 落库，`turnId` 关联当时的执行轮次（复盘完整过程回 trace.jsonl 翻）——配对逻辑零重复
+  - 与记忆的分工：一次性步骤归 todo；跨会话一句话结论归 memory；带来龙去脉的完整事件归 record_event
+  - 验证：`verify-eventlog.ts` 65 项（追加型纪律 / 检索过滤 / 坏行跳过 / 真总线自动捕获行为证明 / 变异四轮精准变红）
+- [ ] **全局级长期记忆**（用户偏好、跨项目习惯，后续跟进）
+  - 设想：落点 `~/.flint/memory.md`（GLOBAL_DIR 已存在，`config/manager.ts`）；与项目级同一套 MemoryStore 机制，只是作用域不同——两份文件、两条注入（memory 层里分"项目"与"全局"两段，全局段更稳定放前面）
+  - 未做理由：项目级先跑起来，看真实使用频率再决定全局级的条目从哪来（显式工具 or 从项目级升格）
+  - 关联决策：DECISION_LOG `log-2026-09-13-memory-eventlog-design`
+
 ---
 
 ## 📊 依赖关系图

@@ -11,6 +11,22 @@
 
 ---
 
+<a id="log-2026-09-13-memory-eventlog"></a>
+
+## 2026-09-13 | 记忆与经验沉淀：三层账本成型，注入与检索各走各的通道
+
+**牵连系统**：新增 `src/memory/store.ts`（MemoryStore）与 `src/eventlog/store.ts`（EventStore）· `core/system-prompt.ts`（`SystemPromptLayer` 加 `memory`、`SystemPromptContext` 加 `memory`）· `context/system-prompt.ts`（memory 层注入，skills 与 task 之间）· `runtime/runtime.ts`（读 memoryStore 注入）· `tools/builtin.ts`（memory / record_event / search_events 三个工具，7→10）· `commands/builtin/memory.ts` 与 `events.ts`（新命令）· `harness/main.ts`（两个启动种子 + 第三个 SpanCollector 自动捕获）· `context/sections/core-section.ts`（【项目记忆与事件库】教学段）· `scripts/verify-memory.ts` 55 项 + `scripts/verify-eventlog.ts` 65 项。
+
+**面向的问题**：flint 此前的"记忆"全部是会话内的——对话历史、压缩摘要、任务清单三件套都跟着会话走，换会话即清零；jsonl 是存档不是可复用记忆。用户要的是跨会话资产：项目约定/决策/坑要"开局就在"，过去的行为与经验要"用到时查得到"，且后者**不必然注入上下文**。
+
+**做出的改动与关键口径**：三层账本成型——`trace.jsonl`（机器流水，人复盘）→ `events.jsonl`（叙事精选，按需拉）→ `memory.md`（索引结论，每次推）。两条通道刻意分开：memory 是**推**（小而精、有条目才注入、2000 字符截断、`memory` 层按稳定度插在 skills 与 task 之间保住缓存前缀）；事件库是**拉**（`search_events` 命中才进当轮，limit 缺省 10 防灌爆）。两个 store 都照抄 TaskStore 的 C 方案（内存真相源 + 文件投影/种子 + render/parse 互逆、40 组属性测试），差异点各自刻意：记忆无清理语义（不过期）、无 onChange（无 UI 展示面就没有订阅方）；事件库 append-only（修正=追加，源码守护钉死不出现 writeFileSync）、内存索引运行期不回读。tool_call 的自动捕获**复用 span-collector 配对**（main.ts 第三个实例，capacity 0 落盘型），`recordToolCall` 把 CollectedSpan 映射成条目并带 `turnId`——事件库与 trace.jsonl 由此互指：库存结论与指针，trace 存全量过程，配对逻辑零重复。分工口径写进 core-section：一次性步骤归 todo，跨会话一句话结论归 memory，带来龙去脉的事件归 record_event。
+
+**解决的问题**：跨会话记忆从零到一；"过去查得到"有了统一入口（模型 search_events / 人 /events）；工具调用历史不用记就有（自动捕获），叙事经验经 record_event 沉淀且四段齐全。
+
+**未来可优化**：全局级长期记忆（`~/.flint/memory.md`，P9 待跟进）；事件库条目按 tags 升格进 memory 的手工流程可以再顺手（`/events` 已能看全量）；检索只在内存索引上做，外部手改文件要重启才可见（与 todo 同一口径，正确入口是工具与命令）。
+
+---
+
 <a id="log-2026-09-13-cache-usage"></a>
 
 ## 2026-09-13 | 缓存命中率明细：同一笔账拆个明细，总量口径一字不动

@@ -20,6 +20,8 @@ import {
   toolOk, toolInvalid, toolError, toolVerifyFailed, toolNegative,
 } from './spec.js';
 import { TASK_HISTORY_FILE, TaskStore, taskStore } from '../todo/store.js';
+import { MEMORY_FILE, MemoryStore, memoryStore } from '../memory/store.js';
+import { EVENTS_FILE, EventStore, NARRATIVE_KINDS, eventStore, formatEvent } from '../eventlog/store.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    参数规则在每个工具的 spec 里，Schema 与校验都由它派生（实现见 spec.ts）
@@ -123,11 +125,18 @@ function globToRegExp(glob: string): RegExp | null {
    ═══════════════════════════════════════════════════════════════════════════════ */
 
 /**
- * 注册 7 个内置工具（Ls / Read / Write / Edit / Grep / Bash / Todo）。
+ * 注册 10 个内置工具（Ls / Read / Write / Edit / Grep / Bash / Todo / Memory / RecordEvent / SearchEvents）。
  * @param tools 工具子系统
  * @param store 任务清单真相源；缺省用进程级单例（runtime 也读同一个），测试可注入自己的实例。
+ * @param mem 项目记忆真相源（缺省单例，测试可注入）。
+ * @param evs 历史事件库（缺省单例，测试可注入）。
  */
-export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = taskStore): void {
+export function registerBuiltinTools(
+  tools: ToolProvider,
+  store: TaskStore = taskStore,
+  mem: MemoryStore = memoryStore,
+  evs: EventStore = eventStore,
+): void {
   /* ── Ls：列目录（了解结构，工具增强推理的起点） ── */
   tools.register(defineTool({
     name: 'ls',
@@ -629,6 +638,123 @@ export function registerBuiltinTools(tools: ToolProvider, store: TaskStore = tas
       } catch (e) {
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`todo 执行失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  }));
+
+  /* ── Memory：项目长期记忆（C 方案的第二次落地，真相源在 src/memory/store.ts） ──
+     与 todo 同构：工具只做增量意图，返回值带序号整份清单；投影到 .flint/memory.md
+     （系统行为不走权限弹窗），进程重启后由 main 读它当种子。
+     记忆没有复选框与"全勾选即删"——它不会过期，删除只有显式的 remove。 */
+  tools.register(defineTool({
+    name: 'memory',
+    description: '维护项目长期记忆（跨会话持久的约定/架构决策/踩过的坑，每次请求都会注入上下文）。op: add 追加一条（需 text）/ remove 删除某条（需 index）/ list 列出全部 / clear 清空。一条 = 一行，建议一句话说清"什么+为什么"；与已有条目逐字相同会被拒绝。只记真正值得跨会话保留的结论，一次性任务细节、临时状态不要记（那些归 todo）。',
+    spec: {
+      op: str('操作', '要做的操作：add（追加一条，需 text）/ remove（删除第 index 条，需 index）/ list（列出全部）/ clear（清空）'),
+      index: optPosInt('条目序号', '目标条目的序号（1 基，与返回值里的编号一致），remove 使用。缺省 1。示例: 2', 1),
+      text: optStr('记忆内容', 'add 时要记住的内容（单行）。示例: "PermissionManager 用精确匹配不是前缀匹配，autoKey 不截断"', ''),
+    },
+    handler: async (args) => {
+      try {
+        const { op, index, text } = args;
+        switch (op) {
+          case 'add': {
+            const r = mem.add(text);
+            if (r === -1) return toolInvalid(`add 需要非空的 text（要记住的内容）`);
+            if (r === -2) return toolInvalid(`相同条目已存在，不重复记录: ${text}`);
+            break;
+          }
+          case 'remove': {
+            if (!mem.remove(index)) {
+              const t = mem.count();
+              return toolInvalid(`remove 的 index=${index} 越界（当前 ${t} 条，序号 1..${t}）`);
+            }
+            break;
+          }
+          case 'list':
+            break;
+          case 'clear':
+            mem.clear();
+            break;
+          default:
+            return toolInvalid(`未知操作 op=${op}，可用的是 add / remove / list / clear`);
+        }
+
+        // 投影到 .flint/memory.md（失败不致命：内存仍是真相源，只是丢跨重启存档）
+        const warn = mem.projectToFile(MEMORY_FILE);
+        const n = mem.count();
+        if (n === 0) return toolOk(`项目记忆已清空（${MEMORY_FILE} 已移除）`);
+        const tail = warn ? `\n（注：记忆文件写入失败：${warn} —— 内存状态仍有效，但跨重启存档不完整）` : '';
+        return toolOk(`项目记忆（${n} 条，跨会话持久，每次请求注入）:\n${mem.renderNumbered()}${tail}`);
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`memory 执行失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  }));
+
+  /* ── RecordEvent：写历史事件库（src/eventlog/store.ts） ──
+     叙事条目（决策/经验/事故）四段分开写——检索的价值就在"来龙去脉齐不齐"。
+     工具调用本身由打卡自动捕获（main.ts 订阅 span），本工具只管"值得留的结论"。 */
+  tools.register(defineTool({
+    name: 'record_event',
+    description: '把一条值得留的事件存进项目历史事件库（追加型档案；平时不进上下文，需要时用 search_events 检索）。用于：重要决策（为什么这么定）、经验（怎么做成的事）、事故与坑（怎么踩的、怎么解的）。title 写得像书签便于日后检索；context/decision/reason/outcome 尽量写全——只有标题没有来龙去脉的事件等于没存。普通工具调用会被系统自动记录，不要用本工具转存。',
+    spec: {
+      kind: str('事件类型', 'decision（决策）/ experience（经验）/ incident（事故与坑）'),
+      title: str('标题', '一句话书签式概括。示例: "edit 多命中时拒绝而不是猜第一处"'),
+      context: optStr('背景', '当时的情境：什么问题、什么症状。', ''),
+      decision: optStr('决策', '做了什么决定 / 怎么解决的。', ''),
+      reason: optStr('理由', '为什么这么决定（备选方案为何不选）。', ''),
+      outcome: optStr('结果', '结果如何（验证结论 / 遗留风险）。', ''),
+      tags: optStr('标签', '逗号分隔的检索标签。示例: "ui,权限,并发"', ''),
+    },
+    handler: async (args) => {
+      try {
+        const kind = args.kind.trim();
+        if (!(NARRATIVE_KINDS as readonly string[]).includes(kind)) {
+          return toolInvalid(`kind 必须是 ${NARRATIVE_KINDS.join(' / ')} 之一（tool_call 由系统自动记录，不接受手写）`);
+        }
+        const tags = args.tags.split(/[,，]/).map((t) => t.trim()).filter(Boolean);
+        const { entry, warn } = evs.addNarrative({
+          kind: kind as (typeof NARRATIVE_KINDS)[number],
+          title: args.title,
+          context: args.context,
+          decision: args.decision,
+          reason: args.reason,
+          outcome: args.outcome,
+          tags,
+        }, EVENTS_FILE);
+        const tail = warn ? `\n（注：事件库写入失败：${warn} —— 内存索引仍有效，但这份没进磁盘档案）` : '';
+        return toolOk(`事件已存档 (${entry.id}):\n${formatEvent(entry)}\n事件库现有 ${evs.count()} 条；检索用 search_events。${tail}`);
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`record_event 执行失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  }));
+
+  /* ── SearchEvents：读历史事件库（拉通道——命中才进当轮上下文） ──
+     最新在前：最近的经验最可能相关；limit 截断防一次检索灌爆上下文。 */
+  tools.register(defineTool({
+    name: 'search_events',
+    description: '检索项目历史事件库：过去的决策/经验/事故记录，以及系统自动记录的工具调用历史。遇到"这个以前是怎么解决的 / 有没有踩过这个坑 / 当时为什么这么定"时先查这里，不要凭记忆猜。按类型/标签/关键词过滤可组合，只返回命中的条目。',
+    spec: {
+      kind: optStr('事件类型', '按类型过滤：decision / experience / incident / tool_call。缺省不过滤。示例: "incident"', ''),
+      tag: optStr('标签', '按标签精确匹配一个。缺省不过滤。示例: "ui"', ''),
+      keyword: optStr('关键词', '按关键词子串过滤（匹配标题/背景/决策/理由/结果/标签，不区分大小写）。缺省不过滤。示例: "弹窗"', ''),
+      limit: optPosInt('最大条数', '最多返回多少条（最新的在前）。缺省 10。示例: 20', 10),
+    },
+    handler: async (args) => {
+      try {
+        const hits = evs.search({ kind: args.kind, tag: args.tag, keyword: args.keyword, limit: args.limit });
+        if (hits.length === 0) {
+          return toolNegative('NO_MATCH', `无匹配事件（事件库共 ${evs.count()} 条）。可放宽 kind / tag / keyword 再试。`);
+        }
+        return toolOk(`命中 ${hits.length} 条（最新在前；事件库共 ${evs.count()} 条）:\n`
+          + hits.map((e, i) => formatEvent(e, i + 1)).join('\n───\n'));
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`search_events 执行失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   }));
