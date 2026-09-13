@@ -147,10 +147,20 @@ console.log('\n③ loadFromFile 种子');
 
   const s = new EventStore();
   s.loadFromFile(f);
-  check('C1 好行全收、坏行跳过（手改坏/写一半的行不炸索引）',
-    s.count() === 2 && s.all()[0].title === '甲' && s.all()[1].kind === 'tool_call');
+  check('C1 好行全收、坏行跳过；旧文件里的 tool_call 行**路由进流水索引**（不回写不搬家）',
+    s.count() === 1 && s.all()[0].title === '甲'
+    && s.countCalls() === 1 && s.allCalls()[0].kind === 'tool_call' && s.allCalls()[0].turnId === 't1');
   check('C2 缺 tags 字段的行归一为空数组（不炸后续检索）',
-    s.all().every((e) => Array.isArray(e.tags)));
+    s.all().every((e) => Array.isArray(e.tags)) && s.allCalls().every((e) => Array.isArray(e.tags)));
+
+  // 拆分后的检索口径与流水种子
+  const sc = new EventStore();
+  sc.loadFromFile(f);
+  sc.loadCallsFile(P('不存在的流水.jsonl'));
+  check('C5 search 缺省只查叙事库（流水是噪音，不混进无过滤结果）',
+    sc.search({}).length === 1 && sc.search({}).every((e) => e.kind !== 'tool_call'));
+  check('C6 kind=tool_call 改查流水索引（历史流水照旧能查到）',
+    sc.search({ kind: 'tool_call' }).length === 1 && sc.search({ kind: 'tool_call' })[0].title === '工具 bash 调用');
 
   const s0 = new EventStore();
   s0.loadFromFile(P('不存在的.jsonl'));
@@ -192,9 +202,11 @@ console.log('\n④ 机器自动补记：recordToolCall / recordTaskArchive / rec
   };
   s.recordToolCall(span, f);
 
-  const e = s.all()[0];
-  check('D1 kind=tool_call，标题带上工具名，turnId 从 span 带入（回查 trace.jsonl 的钩子）',
-    e.kind === 'tool_call' && e.title === '工具 bash 调用' && e.turnId === 't42');
+  check('D1 kind=tool_call 进**流水索引**（不占叙事库），标题带上工具名，turnId 从 span 带入',
+    s.count() === 0 && s.countCalls() === 1
+    && s.allCalls()[0].kind === 'tool_call' && s.allCalls()[0].title === '工具 bash 调用'
+    && s.allCalls()[0].turnId === 't42');
+  const e = s.allCalls()[0];
   check('D2 参数进 context（裁剪到 200 字符内），结果状态进 outcome',
     (e.context ?? '').startsWith('参数:') && e.context?.includes('node build.js')
     && (e.outcome ?? '').includes('status=ok') && (e.outcome ?? '').includes('512ms')
@@ -207,11 +219,16 @@ console.log('\n④ 机器自动补记：recordToolCall / recordTaskArchive / rec
   check('D5 空参数 {} → 不写 context 键（行保持紧凑）',
     (() => {
       s.recordToolCall({ ...span, spanId: 's2', input: { name: 'todo', args: {} }, output: {} }, f);
-      const last = s.all()[s.count() - 1];
+      const last = s.allCalls()[s.countCalls() - 1];
       return !('context' in last) && (last.outcome ?? '').includes('status=ok');
     })());
 
-  check('D6 落盘行数与条数一致', fs.readFileSync(f, 'utf-8').trim().split('\n').length === s.count());
+  check('D6 流水档案行数与条数一致（tool-calls.jsonl 只装流水）',
+    fs.readFileSync(f, 'utf-8').trim().split('\n').length === s.countCalls());
+
+  // 拆分守护：流水进 calls 索引后，search 缺省结果里不该出现它
+  check('D7 recordToolCall 后 search 缺省不含流水（叙事库不被淹没）',
+    s.search({}).length === 0 && s.search({ kind: 'tool_call' }).length === 2);
 
   // ── 确定性钩子的两个自动补记方法（与 recordToolCall 同类：机器写 / kind=system / 旁路静默） ──
   check('D7 recordTaskArchive：kind=system，标题带项数与任务名，tags=[task,archive]，落盘',
@@ -264,20 +281,20 @@ console.log('\n⑤ 总线自动捕获（行为）：tool_call span → 事件库
   (bus as any).emit({ type: 'prompt_start', spanId: 'p1', turnId: turn, seq: 0, at: 900 });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (bus as any).emit({ type: 'prompt_end', spanId: 'p1', at: 1000, status: 'ok' });
-  check('E1 prompt span 不进事件库（只有工具调用才记）', s.count() === 0);
+  check('E1 prompt span 不进事件库（只有工具调用才记）', s.count() === 0 && s.countCalls() === 0);
 
-  // 一段完整 tool_call span：start + end 配对成段 → 自动落库
+  // 一段完整 tool_call span：start + end 配对成段 → 自动落流水库
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (bus as any).emit({ type: 'tool_call_start', spanId: 's1', turnId: turn, seq: 3, at: 1000, name: 'grep', args: { pattern: 'TODO', path: 'src/' } });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (bus as any).emit({ type: 'tool_call_end', spanId: 's1', at: 1400, status: 'ok', name: 'grep', resultLength: 120 });
-  check('E2 完整配对的 tool_call span → 自动追加一条事件（turnId 是总线盖的章）',
-    s.count() === 1 && s.all()[0].title === '工具 grep 调用' && s.all()[0].turnId === turn
-    && (s.all()[0].context ?? '').includes('TODO'));
+  check('E2 完整配对的 tool_call span → 自动追加一条流水（turnId 是总线盖的章，叙事库不动）',
+    s.countCalls() === 1 && s.count() === 0 && s.allCalls()[0].title === '工具 grep 调用'
+    && s.allCalls()[0].turnId === turn && (s.allCalls()[0].context ?? '').includes('TODO'));
 
   // 孤儿 end（没有配对的进门）：collector 忽略，事件库不记（与 trace-log 同一规则）
   bus.emit({ type: 'tool_call_end', spanId: '孤儿', at: 1500, status: 'ok' });
-  check('E3 孤儿 end 不产生条目（配对规则零重复，直接复用 span-collector）', s.count() === 1);
+  check('E3 孤儿 end 不产生条目（配对规则零重复，直接复用 span-collector）', s.countCalls() === 1);
 
   check('E4 自动捕获真的落了盘', fs.existsSync(f) && fs.readFileSync(f, 'utf-8').includes('工具 grep 调用'));
 }
@@ -380,6 +397,49 @@ console.log('\n⑥ record_event / search_events 工具端到端');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   ⑥b pull_events 跨项目拉取（用户许可闸 + 注册表解析 + 流水不外带）
+   ══════════════════════════════════════════════════════════════════════════ */
+
+console.log('\n⑥b pull_events 跨项目拉取');
+
+{
+  // 造一个"别的项目"：叙事 + system + 一行旧 tool_call（验证流水不外带）
+  const foreignDir = path.join(tmpDir, 'foreign-project');
+  fs.mkdirSync(path.join(foreignDir, '.flint'), { recursive: true });
+  fs.writeFileSync(path.join(foreignDir, '.flint', 'events.jsonl'), [
+    JSON.stringify({ id: 'ev_f1', time: '2026-09-13T08:00:00.000Z', kind: 'incident', title: '外项目踩坑', context: '权限弹窗', tags: ['坑'] }),
+    JSON.stringify({ id: 'ev_f2', time: '2026-09-13T09:00:00.000Z', kind: 'system', title: '任务清单全完成', tags: ['task', 'archive'] }),
+    JSON.stringify({ id: 'ev_f3', time: '2026-09-13T10:00:00.000Z', kind: 'tool_call', title: '工具 write 调用', tags: ['tool', 'write'] }),
+  ].join('\n'));
+
+  const reg = new ToolRegistry();
+  registerBuiltinTools(reg, new TaskStore(), new MemoryStore(), new EventStore());
+  const pull = async (args: Record<string, unknown>): Promise<string> =>
+    (await reg.execute('pull_events', args)).content;
+
+  check('I1 pull_events 已注册且 requirePermission: true（跨项目读取必须过用户许可闸）',
+    reg.getLLMTools().some((t) => t.function.name === 'pull_events') && reg.requiresPermission('pull_events'));
+  check('I2 授权键 = 目标项目路径（"本次全部允许"的粒度是这个项目，不是所有项目）',
+    reg.permissionKey('pull_events', { project: 'C:\\a\\b' }) === 'C:/a/b');
+
+  const ok1 = await pull({ project: foreignDir });
+  check('I3 按路径拉取：[OK]、命中叙事与 system、报出来源路径',
+    ok1.startsWith('[OK]') && ok1.includes('外项目踩坑') && ok1.includes('任务清单全完成')
+    && ok1.includes('foreign-project'), ok1.split('\n')[0]);
+  check('I4 流水不跨项目：旧 events.jsonl 里的 tool_call 行被路由走，不出现在拉取结果',
+    !ok1.includes('工具 write 调用'));
+
+  check('I5 无命中 → [NO_MATCH]（有效否定）',
+    (await pull({ project: foreignDir, keyword: '不存在的词' })).startsWith('[NO_MATCH]'));
+  check('I6 kind=tool_call 拒绝（流水留在各项目本地）',
+    (await pull({ project: foreignDir, kind: 'tool_call' })).startsWith('[INVALID]'));
+  check('I7 未知短名 → [INVALID]（短名走注册表解析，解析不到如实报错）',
+    (await pull({ project: '根本不存在的项目名' })).startsWith('[INVALID]'));
+  check('I8 路径解析不要求已登记：存在但无事件库的目录 → [NO_MATCH]',
+    (await pull({ project: path.join(tmpDir, 'empty-project') })).startsWith('[NO_MATCH]'));
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    ⑦ /events 命令（kind=/tag=/q=/limit= 参数解析）
    ══════════════════════════════════════════════════════════════════════════ */
 
@@ -409,18 +469,20 @@ console.log('\n⑦ /events 命令');
   eventStore.loadFromFile(f);
 
   const all = reg!.fn('');
-  check('G2 无参数：显示最近条目（默认 20 条 > 库存 4 条则全显）、最新在前、带分隔排版',
-    all.includes('显示 4/4 条') && all.indexOf('工具 bash 调用') < all.indexOf('决策一')
+  check('G2 无参数：只显叙事+system（tool_call 行已被路由进流水索引）、最新在前、带排版',
+    all.includes('显示 3/3 条') && !all.includes('工具 bash 调用')
     && all.includes('[decision]') && all.includes('标签: ui'), all);
+  check('G2b kind=tool_call 从流水索引出（历史流水照旧能查）',
+    reg!.fn('kind=tool_call').includes('工具 bash 调用') && reg!.fn('kind=tool_call').includes('tool-calls.jsonl'));
 
   check('G3 kind= 过滤', reg!.fn('kind=incident').includes('事故二') && !reg!.fn('kind=incident').includes('决策一'));
   check('G4 tag= 过滤', reg!.fn('tag=rpc').includes('事故二') && !reg!.fn('tag=rpc').includes('经验三'));
   check('G5 q= 关键词过滤', reg!.fn('q=经验').includes('经验三') && !reg!.fn('q=经验').includes('事故二'));
   check('G6 未识别的词当关键词（q= 与裸词等价）',
     reg!.fn('经验').includes('经验三') && reg!.fn('经验').includes('q=经验'));
-  check('G7 limit= 截断', reg!.fn('limit=2').includes('显示 2/4 条'));
+  check('G7 limit= 截断', reg!.fn('limit=2').includes('显示 2/3 条'));
   check('G8 limit 非数字回退默认（不炸）',
-    reg!.fn('limit=abc').includes('显示 4/4 条'));
+    reg!.fn('limit=abc').includes('显示 3/3 条'));
   check('G9 kind= 过滤只出该类型', reg!.fn('kind=decision').includes('决策一') && !reg!.fn('kind=decision').includes('事故二'));
   const combo = reg!.fn('tag=ui q=三');
   check('G10 tag+q 组合只出交集', combo.includes('经验三') && !combo.includes('决策一'), combo);
@@ -449,10 +511,10 @@ console.log('\n⑧ 源码防回退');
 
   check('H1 main 复用 SpanCollectorImpl（capacity 0 落盘型）做自动捕获',
     /new SpanCollectorImpl\(\{ capacity: 0 \}\)/.test(mainSrc));
-  check('H2 自动捕获只认 tool_call 段 + 走 recordToolCall（配对逻辑零重复）',
-    mainSrc.includes("span.name === 'tool_call'") && mainSrc.includes('eventStore.recordToolCall'));
-  check('H3 main 启动时给事件库做一次性种子',
-    /eventStore\.loadFromFile\(EVENTS_FILE\)/.test(mainSrc));
+  check('H2 自动捕获只认 tool_call 段 + 落 CALLS_FILE 流水档案（配对逻辑零重复）',
+    mainSrc.includes("span.name === 'tool_call'") && mainSrc.includes('eventStore.recordToolCall(span, CALLS_FILE)'));
+  check('H3 main 启动时给事件库做一次性种子（叙事 + 流水两份）',
+    /eventStore\.loadFromFile\(EVENTS_FILE\)/.test(mainSrc) && mainSrc.includes('eventStore.loadCallsFile(CALLS_FILE)'));
   check('H4 builtin 注册了 record_event / search_events',
     builtinSrc.includes("name: 'record_event'") && builtinSrc.includes("name: 'search_events'"));
   check('H5 record_event 用 NARRATIVE_KINDS 校验 kind（tool_call 手写被拒）',
@@ -472,6 +534,22 @@ console.log('\n⑧ 源码防回退');
     runtimeSrc.includes('if (compacted.summary) eventStore.recordCompaction(compacted.summary, EVENTS_FILE)'));
   check('H11 归档自动补记接线：builtin 在归档真正消费快照的那次才调 recordTaskArchive（写失败不记，防双记）',
     builtinSrc.includes('store.hasPendingArchive()') && builtinSrc.includes('evs.recordTaskArchive(done, EVENTS_FILE)'));
+
+  // ── 拆分与跨项目拉取的接线（2026-09-13 深夜） ──
+  const registrySrc = fs.readFileSync(path.join(ROOT, 'src/eventlog/registry.ts'), 'utf-8');
+  check('H12 store 有独立流水落点 CALLS_FILE，recordToolCall 入 calls 索引',
+    storeSrc.includes("CALLS_FILE = '.flint/tool-calls.jsonl'")
+    && /recordToolCall[\s\S]*?this\.calls\.push/.test(storeSrc));
+  check('H13 注册表也是追加型（appendFileSync，绝不 writeFileSync），路径归一在位',
+    registrySrc.includes('appendFileSync') && !registrySrc.includes('writeFileSync')
+    && registrySrc.includes('function normalize'));
+  check('H14 main 启动时把 cwd 登记进项目注册表',
+    mainSrc.includes('projectRegistry.ensure(process.cwd())'));
+  check('H15 pull_events 的许可闸与授权键（跨项目读取必须过用户，键 = 项目路径）',
+    /name: 'pull_events'[\s\S]*?requirePermission: true/.test(builtinSrc)
+    && /name: 'pull_events'[\s\S]*?permissionKey: \(args\) => String\(args\.project/.test(builtinSrc));
+  check('H16 pull_events 复用 EventStore.loadFromFile 读目标项目（不另造读取器）',
+    /pull_events[\s\S]*?new EventStore\(\)[\s\S]*?loadFromFile\(`\$\{resolved\}\/\.flint\/events\.jsonl`\)/.test(builtinSrc));
 }
 
 /* ── 清理与汇总 ── */

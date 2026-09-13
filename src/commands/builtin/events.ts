@@ -48,10 +48,11 @@ export function activate(runtime: Runtime): void {
       limit,
     });
 
-    if (hits.length === 0) return `无匹配事件（库共 ${total} 条）。检查 kind/tag/q 过滤词。`;
+    if (hits.length === 0) return `无匹配事件（叙事库共 ${total} 条，另有 tool_call 流水 ${eventStore.countCalls()} 条）。检查 kind/tag/q 过滤词。`;
     const filterDesc = [kind && `kind=${kind}`, tag && `tag=${tag}`, keyword && `q=${keyword}`]
       .filter(Boolean).join(' ');
-    const head = `历史事件（${filterDesc ? `${filterDesc}，` : ''}显示 ${hits.length}/${total} 条，最新在前）：`;
+    const head = `历史事件（${filterDesc ? `${filterDesc}，` : ''}显示 ${hits.length}/${total} 条，最新在前`
+      + `；另有 tool_call 流水 ${eventStore.countCalls()} 条在 tool-calls.jsonl，kind=tool_call 查看）：`;
     return [head, ...hits.map((e, i) => formatEvent(e, i + 1))].join('\n\n');
   });
 }

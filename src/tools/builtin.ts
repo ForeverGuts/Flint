@@ -22,6 +22,7 @@ import {
 import { TASK_HISTORY_FILE, TaskStore, taskStore } from '../todo/store.js';
 import { MEMORY_FILE, MemoryStore, memoryStore } from '../memory/store.js';
 import { EVENTS_FILE, EventStore, NARRATIVE_KINDS, eventStore, formatEvent } from '../eventlog/store.js';
+import { projectRegistry } from '../eventlog/registry.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    参数规则在每个工具的 spec 里，Schema 与校验都由它派生（实现见 spec.ts）
@@ -762,6 +763,51 @@ export function registerBuiltinTools(
       } catch (e) {
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`search_events 执行失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  }));
+
+  /* ── PullEvents：跨项目拉取别的项目的事件库（ROADMAP P9） ──
+     用户许可闸是本工具存在的理由：跨项目读档案 = agent 能看到别的项目的决策与踩坑，
+     属于敏感面——必须过 requirePermission（TTY 弹窗授权；授权键 = 目标项目路径，
+     "本次全部允许"的粒度是"这个项目"，不是"所有项目"）。 */
+  tools.register(defineTool({
+    name: 'pull_events',
+    description: '拉取另一个项目的历史事件库（决策/经验/事故/系统里程碑），用于跨项目复用经验——"别的项目是怎么解决这类问题的"。project 传项目目录路径，或注册表里的项目短名（目录名）。跨项目读取需要用户授权，弹窗确认后才会执行。只拉叙事与关键节点，不含工具调用流水。',
+    requirePermission: true,
+    // 授权边界 = 目标项目路径：同意拉 A 项目 ≠ 同意拉任何项目
+    permissionKey: (args) => String(args.project ?? '').replace(/\\/g, '/'),
+    permissionDetail: (args) => {
+      const flat = (v: unknown): string => String(v ?? '').replace(/\s+/g, ' ').trim();
+      return `跨项目读取事件库: ${flat(args.project).slice(0, 70) || '?'}`;
+    },
+    spec: {
+      project: str('目标项目', '另一个项目的目录路径，或项目短名（注册表里的目录名，如 "flint"）。示例: "C:/work/another-project" 或 "another-project"'),
+      kind: optStr('事件类型', '按类型过滤：decision / experience / incident / system。不支持 tool_call（流水不跨项目拉取）。缺省不过滤。示例: "incident"', ''),
+      tag: optStr('标签', '按标签精确匹配一个。缺省不过滤。示例: "并发"', ''),
+      keyword: optStr('关键词', '按关键词子串过滤（标题/四段/标签，不区分大小写）。缺省不过滤。示例: "压缩"', ''),
+      limit: optPosInt('最大条数', '最多返回多少条（最新的在前）。缺省 10。示例: 20', 10),
+    },
+    handler: async (args) => {
+      try {
+        if (args.kind.trim() === 'tool_call') {
+          return toolInvalid('kind=tool_call 不支持跨项目拉取（工具流水留在各项目本地，只拉叙事与关键节点）');
+        }
+        const resolved = projectRegistry.resolve(args.project);
+        if (!resolved) {
+          return toolInvalid(`project "${args.project}" 解析不到：不是有效路径，也不在项目注册表（~/.flint/projects.jsonl）里。可让用户看注册表里登记了哪些项目`);
+        }
+        const foreign = new EventStore();
+        foreign.loadFromFile(`${resolved}/.flint/events.jsonl`);
+        const hits = foreign.search({ kind: args.kind, tag: args.tag, keyword: args.keyword, limit: args.limit });
+        if (hits.length === 0) {
+          return toolNegative('NO_MATCH', `项目 ${resolved} 无匹配事件（其事件库共 ${foreign.count()} 条）。可放宽 kind / tag / keyword 再试。`);
+        }
+        return toolOk(`来自项目 ${resolved} 的 ${hits.length} 条事件（最新在前；该项目事件库共 ${foreign.count()} 条）:\n`
+          + hits.map((e, i) => formatEvent(e, i + 1)).join('\n───\n'));
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`pull_events 执行失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   }));

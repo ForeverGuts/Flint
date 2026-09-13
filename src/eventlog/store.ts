@@ -10,10 +10,18 @@
  * 打卡机（span/collector）记的是"每次调用都有的过程"，本库存的是"值得留的结论与来龙去脉"。
  * 两者用 turnId 关联：tool_call 条目带当时那轮的 turnId，要复盘完整过程回 trace.jsonl 翻。
  *
+ * ── 两份文件（2026-09-13 拆分）──
+ *   events.jsonl      只存**叙事 + system 关键节点**——人看、检索、分享的都是它。
+ *                     条目不嵌路径（自包含），文件本身可移植：发给别人 = 拷文件。
+ *   tool-calls.jsonl  tool_call 机器流水单独落这里（append-only 同纪律），
+ *                     防流水把叙事淹没（实测 27 秒的任务就产生 24 条流水）。
+ *   启动载入按 kind 路由：旧 events.jsonl 里已存在的 tool_call 行进流水索引，
+ *   不回写、不搬家（append-only 不因重构破例）。
+ *
  * ── 数据形状 ──
  *   每条事件一行 JSON（与 sessions/*.jsonl、trace.jsonl 同一范式），字段：
  *     kind     decision / experience / incident（叙事，record_event 写）
- *              | tool_call（机器流水，span 自动捕获写）
+ *              | tool_call（机器流水，span 自动捕获写，落 tool-calls.jsonl）
  *              | system（机器里程碑，确定性钩子自动写：任务归档 / 压缩发生）
  *     title    一句话书签；context/decision/reason/outcome 叙事四段（可选，空则缺省不写键）
  *     tags     检索标签；turnId 关联当时的执行轮次
@@ -32,6 +40,9 @@ import type { CollectedSpan } from '../core/events.js';
 
 /** 事件库文件落点 —— 与 memory.md 同住 cwd/.flint/（隐藏目录，ls/grep 工具天然跳过）。 */
 export const EVENTS_FILE = '.flint/events.jsonl';
+
+/** tool_call 机器流水的独立落点（2026-09-13 与叙事拆分——叙事库不被流水淹没）。 */
+export const CALLS_FILE = '.flint/tool-calls.jsonl';
 
 /** 叙事事件的三种人类可记类型；tool_call / system 是机器自动产生的（record_event 不接受）。 */
 export const NARRATIVE_KINDS = ['decision', 'experience', 'incident'] as const;
@@ -82,15 +93,27 @@ function opt(value: string | undefined, n: number): string | undefined {
 }
 
 export class EventStore {
+  /** 叙事 + system 索引（events.jsonl 的内存像；all/count/search 的缺省口径） */
   private entries: EventEntry[] = [];
+  /** tool_call 流水索引（tool-calls.jsonl 的内存像；旧 events.jsonl 里的 tool_call 行也路由到这里） */
+  private calls: EventEntry[] = [];
 
-  /** 只读快照（防御性拷贝；存进顺序 = 时间正序，最新的在末尾）。 */
+  /** 只读快照（防御性拷贝；存进顺序 = 时间正序，最新的在末尾）。**只含叙事 + system**。 */
   all(): EventEntry[] {
     return this.entries.map((e) => ({ ...e, tags: [...e.tags] }));
   }
 
+  /** 流水快照（防御性拷贝；只含 tool_call，检索 kind=tool_call 时用）。 */
+  allCalls(): EventEntry[] {
+    return this.calls.map((e) => ({ ...e, tags: [...e.tags] }));
+  }
+
   count(): number {
     return this.entries.length;
+  }
+
+  countCalls(): number {
+    return this.calls.length;
   }
 
   /**
@@ -122,7 +145,7 @@ export class EventStore {
    * 打卡自动捕获：把一段**已收束的 tool_call span** 转成事件条目。
    * 复用的是 span-collector 的配对产物（CollectedSpan：进门/出门已合成一段、字段齐全），
    * 与 trace-log watcher 同一用法（capacity 0、只吃 feed 返回值）——配对逻辑零重复。
-   * 调用方：main.ts 订阅总线，name === 'tool_call' 的才送进来。
+   * 调用方：main.ts 订阅总线，name === 'tool_call' 的才送进来（落点 = CALLS_FILE 流水档案）。
    * 落盘失败静默（自动捕获是旁路观测，不能反噬主流程——与 trace-log 同一原则）。
    */
   recordToolCall(span: CollectedSpan, file: string): void {
@@ -140,7 +163,7 @@ export class EventStore {
       tags: ['tool', toolName],
       turnId: span.turnId,
     };
-    this.entries.push(entry);
+    this.calls.push(entry);
     this.appendLine(entry, file);
   }
 
@@ -198,13 +221,16 @@ export class EventStore {
   /**
    * 检索：按 类型 / 标签（精确匹配一个）/ 关键词（标题+四段子串、不分大小写）过滤，
    * **最新的在前**，limit 截断（缺省 10，防一次检索灌爆上下文——拉通道的节制）。
+   * 口径（2026-09-13 拆分后）：**缺省只查叙事库**（entries：叙事 + system）——流水是
+   * 噪音默认不进结果；kind=tool_call 时改查流水索引（calls）。
    */
   search(opts: { kind?: string; tag?: string; keyword?: string; limit?: number }): EventEntry[] {
     const kw = (opts.keyword ?? '').toLowerCase();
     const tag = (opts.tag ?? '').trim();
     const kind = (opts.kind ?? '').trim();
     const limit = opts.limit ?? 10;
-    const hits = [...this.entries].reverse().filter((e) => {
+    const source = kind === 'tool_call' ? this.calls : this.entries;
+    const hits = [...source].reverse().filter((e) => {
       if (kind && e.kind !== kind) return false;
       if (tag && !e.tags.includes(tag)) return false;
       if (kw) {
@@ -220,8 +246,35 @@ export class EventStore {
   /**
    * 启动种子：把 events.jsonl 全量读进内存索引（**只此一次**，运行期不回读）。
    * 坏行（手改坏的 / 写了一半的）跳过不抛——档案允许个别行损坏，索引照常工作。
+   * 拆分兼容：行内 kind=tool_call（旧文件残留）路由进流水索引，不回写不搬家。
    */
   loadFromFile(path: string): void {
+    try {
+      if (!existsSync(path)) return;
+      const items: EventEntry[] = [];
+      const legacyCalls: EventEntry[] = [];
+      for (const line of readFileSync(path, 'utf-8').split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const raw = JSON.parse(line) as EventEntry;
+          if (typeof raw?.title === 'string' && typeof raw?.kind === 'string') {
+            const fixed = { ...raw, tags: Array.isArray(raw.tags) ? raw.tags : [] };
+            (fixed.kind === 'tool_call' ? legacyCalls : items).push(fixed);
+          }
+        } catch { /* 坏行跳过 */ }
+      }
+      this.entries = items;
+      this.calls = [...legacyCalls, ...this.calls];
+    } catch {
+      /* 读取失败 → 空索引，保持现状 */
+    }
+  }
+
+  /**
+   * 流水档案种子（tool-calls.jsonl）：同 loadFromFile 的口径，行进流水索引。
+   * 与叙事种子分开两个方法——两份文件、两种性质，调用方各自显式喂。
+   */
+  loadCallsFile(path: string): void {
     try {
       if (!existsSync(path)) return;
       const items: EventEntry[] = [];
@@ -229,14 +282,14 @@ export class EventStore {
         if (!line.trim()) continue;
         try {
           const raw = JSON.parse(line) as EventEntry;
-          if (typeof raw?.title === 'string' && typeof raw?.kind === 'string') {
+          if (raw?.kind === 'tool_call' && typeof raw?.title === 'string') {
             items.push({ ...raw, tags: Array.isArray(raw.tags) ? raw.tags : [] });
           }
         } catch { /* 坏行跳过 */ }
       }
-      this.entries = items;
+      this.calls = [...this.calls, ...items];
     } catch {
-      /* 读取失败 → 空索引，保持现状 */
+      /* 读取失败 → 保持现状 */
     }
   }
 }

@@ -61,8 +61,8 @@ const PROVIDERS_PATH = 'config/providers.json';
 const KEYS_PATH = 'config/provider-keys.json';
 /** 当前激活状态（唯一真相源，不含 key）。测试可用环境变量 FLINT_CONFIG 指向临时文件 */
 const ACTIVE_PATH = process.env.FLINT_CONFIG || 'config/active-config.json';
-/** 全局配置目录（用户主目录，跨项目共享） */
-const GLOBAL_DIR = path.join(os.homedir(), '.flint');
+/** 全局配置目录（用户主目录，跨项目共享；项目注册表 projects.jsonl 也住这里） */
+export const GLOBAL_DIR = path.join(os.homedir(), '.flint');
 /** 全局配置文件 */
 const GLOBAL_PATH = path.join(GLOBAL_DIR, 'config.json');
 

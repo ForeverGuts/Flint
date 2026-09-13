@@ -28,7 +28,8 @@ import { skillsSection } from '../context/sections/skills-section.js';
 import { loadExtensions } from '../context/extension-loader.js';
 import { taskStore } from '../todo/store.js';
 import { MEMORY_FILE, memoryStore } from '../memory/store.js';
-import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
+import { CALLS_FILE, EVENTS_FILE, eventStore } from '../eventlog/store.js';
+import { projectRegistry } from '../eventlog/registry.js';
 import type { CollectedSpan } from '../core/events.js';
 import { SpanCollectorImpl } from '../runtime/span-collector.js';
 import { runReplMode } from './repl.js';
@@ -59,8 +60,15 @@ export async function main(checkResult: CheckResult): Promise<void> {
   taskStore.loadFromFile('TASK.md');
 
   // 项目记忆 / 历史事件库种子：同 TASK.md 的"只此一次"——启动吸收，运行期以内存为准不回读。
+  // events.jsonl 只存叙事+system；tool_call 流水在 tool-calls.jsonl（2026-09-13 拆分）。
+  // 旧 events.jsonl 里残留的 tool_call 行由 loadFromFile 按 kind 路由进流水索引，不回写。
   memoryStore.loadFromFile(MEMORY_FILE);
   eventStore.loadFromFile(EVENTS_FILE);
+  eventStore.loadCallsFile(CALLS_FILE);
+
+  // 项目登记（跨项目检索的电话簿）：用过 flint 的项目自动进 ~/.flint/projects.jsonl。
+  // 登记失败静默——它是旁路便利，不该挡住启动。
+  projectRegistry.ensure(process.cwd());
 
   // 初始化持久化会话（v2 会话树格式）
   const sessionDir = './sessions';
@@ -108,7 +116,7 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const eventCollector = new SpanCollectorImpl({ capacity: 0 });
   events.subscribe((raw) => {
     const span: CollectedSpan | null = eventCollector.feed(raw);
-    if (span && span.name === 'tool_call') eventStore.recordToolCall(span, EVENTS_FILE);
+    if (span && span.name === 'tool_call') eventStore.recordToolCall(span, CALLS_FILE);
   });
   // 装载用户扩展（段落 + hook + watcher）—— 自动扫描 src/extensions/ 下三类目录
   const ext = await loadExtensions(events);
