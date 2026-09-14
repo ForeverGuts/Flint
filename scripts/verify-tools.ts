@@ -347,8 +347,11 @@ console.log('\n⑦ 源码文本断言（防回退）');
   check('G10 maxBuffer 仍是 4MB', /maxBuffer: 4096 \* 1024/.test(builtinSrc));
   check('G11 grep 跳过噪音目录的清单与 ls 一致（.git/node_modules/dist）',
     /const SKIP_DIRS = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(builtinSrc));
-  check('G12 两个工具都不再 import child_process 来做搜索（bash 仍需要，grep 不需要）',
-    (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 1);
+  // 口径更新（2026-09-14，git 工具落地）：child_process 现在有**两处**正当使用 ——
+  // bash（执行任意命令，走 shell）与 git（argv 数组，**不经** shell）。grep 的"不许 shell 出去"
+  // 已由 G1 的切段断言单独钉住，所以这里只守住"没有第三处悄悄冒出来"。
+  check('G12 child_process 只有 bash 与 git 两处（grep 不 shell 由 G1 单独钉；这条防第三处冒出来）',
+    (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 2);
 }
 
 /* ── 清理与汇总 ── */

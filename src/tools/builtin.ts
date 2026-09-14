@@ -1,7 +1,7 @@
 /**
  * 内置工具注册 —— Ls / Read / Write / Edit / Grep / Bash 六个核心工具，
  * 外加清单（todo）/ 记忆（memory）/ 事件库（record_event · search_events · pull_events）/
- * 分叉点提问（ask）/ 坐标归档（archive）等系统级工具，共 13 个。
+ * 分叉点提问（ask）/ 坐标归档（archive）/ git 只读查询（git）等系统级工具，共 14 个。
  * 调用方：main.ts（组装工具子系统时调用）
  * 服务于：为 LLM 提供列目录、读文件、写文件、精准改片段、搜索内容、执行命令的能力
  *         （Ls 支撑"工具增强推理"：模型先看清项目结构再动手，不凭记忆脑补）
@@ -37,6 +37,11 @@ import {
 import {
   DEVLOG_HEADER, formatArchiveReceipt, formatStamp, renderDevlogEntry,
 } from '../project/lifecycle.js';
+import {
+  DIFF_FILE_MAX, GIT_OPS, buildGitArgs, isNoCommitsYet, isNotARepo, parseBranch, parseLog,
+  parseNumstat, parseStatus, renderBranch, renderDiff, renderLog, renderStatus, validateTarget,
+  type GitOp,
+} from '../git/git.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    参数规则在每个工具的 spec 里，Schema 与校验都由它派生（实现见 spec.ts）
@@ -1015,6 +1020,98 @@ export function registerBuiltinTools(
       } catch (e) {
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`archive 执行失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  }));
+
+  /* ── Git：只读结构化查询（ROADMAP 10.5.1） ──
+     与 bash 的分工：bash 是"万能但危险"——它能改一切，所以必须弹窗，且授权边界是**整条命令**；
+     于是模型顺手把 `git status && git commit -m x` 拼成一条，读与写就被绑在同一次授权里。
+     本工具是"窄但安全"：只跑四条只读命令，**argv 数组不经 shell**，不弹窗。
+
+     ── 为什么不需要权限弹窗 ──
+     与 ls / read / grep 同一取位：读不改变任何东西。弹窗的价值在"拦下会改东西的动作"，
+     给只读操作弹窗只会训练用户无脑放行（真正的写闸是 ROADMAP 10.5.2）。
+
+     ── 为什么 op 是白名单，而不是"传一条 git 子命令" ──
+     若参数是命令字符串，本工具立刻退化成"免弹窗的 bash"，把 bash 的整套权限设计绕过去。
+     op 只有四个取值、路径只进 `--` 之后、target 以 `-` 开头会被拒（见 validateTarget），
+     于是"模型在这里能执行什么"是被**结构**限死的，不靠提示词自觉。 */
+  tools.register(defineTool({
+    name: 'git',
+    description: '查看当前 git 仓库的**只读**信息（不会改动任何东西）。op: status 看当前分支与工作区脏了什么 / diff 看改了哪些文件、各增删多少行 / log 看最近的提交 / branch 看所有分支与跟踪关系。要 commit、push、checkout 等写操作时改用 bash。',
+    spec: {
+      op: str('操作', '要做的操作：status（当前分支 + 工作区状态）/ diff（文件级增删行数）/ log（提交历史）/ branch（分支列表）'),
+      target: optStr('差异基准', '仅 diff 用：worktree（默认，还没有 add 的改动）/ staged（已经 add 的改动）/ 某个版本引用（如 HEAD~1、main，与它比较）。示例: "staged"', 'worktree'),
+      path: optStr('限定路径', '仅 diff 用：只看某个文件或目录（仓库根相对）。默认整个仓库。示例: "src/tools"', ''),
+      limit: optPosInt('条数', '仅 log 用：取最近几条（1-50）。默认 10。示例: 20', 10),
+    },
+    handler: async (args) => {
+      try {
+        const { op, target, path: onlyPath, limit } = args;
+        const opValue = op as GitOp;
+
+        if (!GIT_OPS.includes(opValue)) {
+          return toolInvalid(`未知操作 op=${op}，可用的是 ${GIT_OPS.join(' / ')}`);
+        }
+        // target 落在 `--` **之前** = git 的选项位置，能变成 --output=文件（见 validateTarget）
+        if (opValue === 'diff') {
+          const bad = validateTarget(target);
+          if (bad !== null) return toolInvalid(bad);
+        }
+
+        const argv = buildGitArgs({ op: opValue, target, path: onlyPath, limit });
+        const { execFileSync } = await import('node:child_process');
+
+        let raw: Buffer;
+        try {
+          // encoding: 'buffer' 而非 'utf-8'：交给既有的 decodeChildOutput 做编码判别
+          raw = execFileSync('git', argv, {
+            encoding: 'buffer', timeout: 15000, maxBuffer: 4096 * 1024, windowsHide: true,
+          });
+        } catch (e) {
+          const err = e as { code?: string; status?: number; stderr?: Buffer | string };
+          if (err.code === 'ENOENT') {
+            return toolError('找不到 git 程序（PATH 里没有 git）。请先安装 git 并确保它在 PATH 上。');
+          }
+          const stderr = err.stderr === undefined
+            ? ''
+            : (Buffer.isBuffer(err.stderr) ? decodeChildOutput(err.stderr) : String(err.stderr));
+          if (isNotARepo(stderr)) {
+            return toolError(`当前目录不是 git 仓库：${process.cwd()}。本工具只查看仓库、不会替你 git init —— 要新建仓库请用 bash。`);
+          }
+          // 空仓库跑 log 以 128 退出：这不是故障，是"还没有提交"这个事实
+          if (opValue === 'log' && isNoCommitsYet(stderr)) {
+            return toolOk(renderLog([], limit));
+          }
+          return toolError(`git ${op} 执行失败（退出码 ${err.status ?? '?'}）：${stderr.trim().slice(0, 300) || '（无 stderr）'}`);
+        }
+
+        const text = decodeChildOutput(raw);
+        let body: string;
+        switch (opValue) {
+          case 'status':
+            body = renderStatus(parseStatus(text));
+            break;
+          case 'diff': {
+            const files = parseNumstat(text);
+            body = renderDiff(files.slice(0, DIFF_FILE_MAX), target, onlyPath, files.length > DIFF_FILE_MAX);
+            break;
+          }
+          case 'log':
+            body = renderLog(parseLog(text), limit);
+            break;
+          default:
+            body = renderBranch(parseBranch(text));
+        }
+
+        const shown = body.length > 4000
+          ? `${body.slice(0, 4000)}\n...（输出截断：共 ${body.length} 字符）`
+          : body;
+        return toolOk(shown);
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`git 执行失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
       }
     },
   }));

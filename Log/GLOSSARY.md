@@ -295,6 +295,17 @@ watcher 的 ctx 里刻意不给 `on`——“旁观者改流程”在类型层�
 ### Generator（生成器）
 `function*` + `yield` 构成的函数。详见 [TS/生成器与异步生成器](../TS/生成器与异步生成器.md)（注：该链接指向仓库外的个人笔记库，仓库内无此文件）。
 
+### git（只读结构化工具）
+`tools/builtin.ts` 里的**第 14 个**内置工具（2026-09-14 加，ROADMAP 10.5.1）。把 `git status / diff / log / branch` 的**文本输出**翻成结构化结果、再渲染成人话，模型不必对着 porcelain 两字母码猜。
+
+**与 `bash` 的分工是刻意的**：bash 万能但危险——它能改一切，所以必须弹窗，且**授权边界是整条命令**，模型顺手拼一条 `git status && git commit -m x`，读与写就**绑进了同一次授权**；`git` 窄但安全——**op 是白名单**（只有四个取值）+ **命令走 argv 数组、不经 shell**，因此**只读不弹窗**（与 ls / read / grep 同取位）。
+
+三条设计要点：① `target` 以 `-` 开头一律拒——它落在 `--` **之前**、是 git 的**选项位置**，`git diff --output=文件 --numstat` 能把结果写进磁盘（argv 免疫 shell 注入，但免疫不了"被当成选项"这一路）；② 一律用 `-z`——`core.quotepath=false` 只管**转义**不管**引号**，非 `-z` 时含空格的中文路径仍被双引号包住；③ 解析口径**全部来自探针实测**而非文档（`-z` 下重命名占**两段**、`branch --format` **不认** `%x1f`、空仓库跑 `log` 的 128 退出**不算故障**）。
+
+解析与渲染在 `src/git/git.ts`（**零 import 纯函数**，可脱离终端验）；起进程、解码、截断在工具层。**写操作不在**这里。
+
+参见：[decodeChildOutput](#decodechildoutput子进程输出解码) · [archive（坐标归档工具）](#archive坐标归档工具)（它的"前后区别"以本工具为事实来源） · [依赖环（Dependency Cycle）](#依赖环dependency-cycle)
+
 ### grep（递归搜索工具）
 `tools/builtin.ts` 里的第 4 个内置工具（ls / read / write / **grep** / bash / edit）。返回“路径:行号:该行内容”，`pattern` 按 **JS 正则**编译。不需权限确认（只读）。
 
