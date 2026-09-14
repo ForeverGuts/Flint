@@ -20,6 +20,22 @@
 
 参见：[Runtime](#runtime)、[Usage](#usage用量)、[Span](#span行为段)、[turnLog](#turnlog本轮中间消息切片)
 
+### archive（坐标归档工具）
+`tools/builtin.ts` 里的**第 13 个**内置工具（2026-09-14 加）。把一个**项目坐标**（`.flint/ROADMAP.md` 里存在的编号）"走完"这件事**一次写成三处**：
+
+① 追加 `.flint/DEVLOG.md`（**人读散文**，见 [DEVLOG.md](#devlogmd开发日志)）；② 往事件库记一条 `kind=system` 的**机读四段**（可 `search_events` 检索）；③ 把路线图里那个坐标标成 `已完成`（**只替换坐标表那几行，表外散文逐字不动**，落盘的是 `resolveStatuses` 算出的**权威状态**）。
+
+**散文与四段刻意不互替**：散文进不了检索、四段字段读不出语气——写两处不是重复，是**两种读者**（人要顺序读一遍就明白发生了什么，机器要跨会话捞得出来）。
+
+回执会**顺带提议下一坐标**（`nextCoord`：未开始 + 叶子 + 依赖已满足，按 `compareId` 取第一个）——把"要记得提议"变成"**躲不掉**"；提不出来时说清是**被依赖卡住**还是**已无未开始叶子**。**未命中就一字不落盘**：编号不存在 / 拿父坐标当叶子 / 路线图格式坏 → `[INVALID]`，且 DEVLOG、事件库、路线图**三处都不动**（与 `write` / `edit` 同一条原则）。它**不带 `requirePermission`**（系统行为，不必每坐标弹一次窗）、**不 import `io/`**（stdout 纯净规则）。
+
+参见：[DEVLOG.md（开发日志）](#devlogmd开发日志) · [ask（分叉点提问工具）](#ask分叉点提问工具)
+
+### ask（分叉点提问工具）
+`tools/builtin.ts` 里的**第 12 个**内置工具（2026-09-14 加）。模型自认遇到**技术选型分叉点**时调用它，**截断当前行为**、把题抛给用户拍板——治的是"模型自己脑补一个方案往下冲，用户事后才发现方向选错了"。两条路：① 用户选定 → 模型把结论落进路线图 / CHARTER / DEVLOG；② 选「保留选项，先讨论」→ 走 [grill-me](#grill-me逼问式讨论技能)，聊完**重抛**分叉点。
+
+**fail-closed 取向**（与权限弹窗的 fail-open 相反）：非 TTY 一律返回 null、**绝不自动替用户选一个候选**，让模型降级为文字提问——判据是"分叉点的全部价值就在别猜"。交互实现（`io/ui/fork-prompt.ts` 的 `createForkAsker`）**不进工具层**，改由 `main.ts` 注入 `AskFn` 接口，于是 `tools/builtin.ts` 不会拖进会写 stdout 的 `io/`（守 stdout 纯净规则）。少于 2 个候选直接 `[INVALID]`；两路收尾都往 `EventStore` 落 `kind=decision` 叙事；**不接权限系统**（不是危险操作）。
+
 ### Async Generator（异步生成器）
 `async function*` + `yield` 构成的函数，每次 `yield` 暂停执行，等待消费者调用 `next()` 后继续。本项目 LLM 流式输出用的就是它——但对外暴露的是 [EventStream](#eventstream推拉通道)（`implements AsyncIterable`，内部用 `async *[Symbol.asyncIterator]()` 把队列转发出去），不是裸生成器。
 
@@ -96,6 +112,23 @@ LLM 视图与文件内容的分界（2026-09-12 修复后成立）：文件 = ap
 测试可用 `FLINT_CONFIG` 环境变量把激活配置指向临时文件。
 
 **没有 `config/api.json` 这个文件**（旧文档里这个路径是错的）。目前只有“密钥”分了三层存在域，供应商定义与 baseUrl 仍只在项目单一域（manager.ts 里记着这条 TODO）。
+
+### CHARTER.md（目标契约文档）
+cwd 下 `.flint/` 里的**生命周期三件套**之一（另两个是 `PROJECT.md` 现状快照、`DEVLOG.md` 开发记录）。它是**立项时的完整策划案**：目标 / 范围 / 验收标准 / **明确不做什么**。
+
+三者的**修改策略刻意不同**——同容器必然打架，这是本仓"快照是函数、日志是事实"那条判据多出来的第三个维度：
+
+| 文件 | 性质 | 改需许可？ | 允许的操作 |
+|---|---|---|---|
+| `.flint/CHARTER.md` 目标 | **契约** | **是**（立项后冻结） | 显式解锁 + 追加修订记录，绝不静默覆盖 |
+| `.flint/PROJECT.md` 现状 | **快照** | 否 | 覆盖（描述的就是当下） |
+| `.flint/DEVLOG.md` 开发 | **事实** | 否 | 追加（要更正就追加"以本条为准"） |
+
+**这是全仓唯一一处"改需要许可"的东西**：`write` / `edit` 命中该路径会被 `before_tool_call` 钩子拒绝（实现在 `project/charter.ts` 的 `guardContractWrite`），唯一开门动作是 `/charter unlock`（会话级位，进程结束自动回锁）。它治的是 **goal drift** —— 目标若能被边做边改，最后交付的东西和立项时说好的那个就不是一回事。**为什么走独立通道而不接权限子系统**（权限是"弹窗放行 + 进 allowlist"，契约要的是"默认拒写"；混在一起会让一次"本次全部允许"把锁静默打开），见 DECISION_LOG 锚点 `log-2026-09-14-charter-lock`。
+
+**已知边界**：`bash` 里的重定向也能改这个文件，本闸不拦——命令串的语义解析是另一件事（ROADMAP 10.9.2）。
+
+参见：[Project Metadata（项目元数据）](#project-metadata项目元数据) · [Check](#check)
 
 ## D
 
@@ -180,6 +213,15 @@ LLM 视图与文件内容的分界（2026-09-12 修复后成立）：文件 = ap
 **上线首跑即见效**：点名 18 处漂移；并顺带查出 TESTING 第三节两处**既有**错数（`check` 写 8 实际 10——2026-09-10 加 `verify-steering.ts` 时漏了那一行；`if (failed > 0) process.exit(1)` 写 1 实际 2），而四个变体之和 5+3+7+1=16 恰好等于当时的 `.ts` 套件数，于是两处错得很安静。第二轮又靠它改正一处**叙事**错数：`verify-docs.mjs` 的"14 → 17"实为 18。
 
 参见：[ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md#log-2026-09-11-doc-number-check)（第一轮）· [2026-09-11 14:14 那块](./ARCHITECTURE_LOG.md#log-2026-09-11-autogen)（去重 + 生成区）· `scripts/verify-doc-numbers.ts`（43 项，含四组变异测试）
+
+### DEVLOG.md（开发日志）
+cwd 下 `.flint/` 里的[生命周期三件套](#chartermd目标契约文档)之一（另两个是 `CHARTER.md` 目标契约、[`PROJECT.md`](#projectmd现状快照) 现状快照）。每完成一个坐标追加一节，每节回答四个问题：**前后区别 / 意义 / 影响面 / 遗留**（外加可选的"验证证据"）。
+
+**为什么四段固定、不做自由散文**：自由散文在这类记录上很容易退化成流水账（"改了 A、改了 B、跑通了"）；四段逼着写的人回答四个**不同**的问题——改变了什么 / 为什么值得 / 牵动了谁 / 还剩什么。形状固定还有个副作用是好事：一眼能看出**哪一段被跳过了**。但**空段不写空标题**——写了 `**遗留**：` 后面跟一片空白，等于告诉读者"这里本该有内容"。
+
+**只追加**：与 `Log/` 的追加日志同一纪律——历史条目**冻死**，要更正就再追加一条"以本条为准"，绝不改写旧节。写入方是 [`archive` 工具](#archive坐标归档工具)（`project/lifecycle.ts` 的 `renderDevlogEntry` 纯函数排版，其返回值**就是文件里那一段**）。
+
+参见：[archive（坐标归档工具）](#archive坐标归档工具) · [CHARTER.md（目标契约文档）](#chartermd目标契约文档)
 
 ### docs:sync（文档同步命令）
 `npm run docs:sync`（`scripts/docs-sync.mjs`）：跑完全部验证套件拿到**实测真值**，再把它写进 `Log/` 的[生成区](#autogen-block生成区)。
@@ -273,6 +315,13 @@ watcher 的 ctx 里刻意不给 `on`——“旁观者改流程”在类型层�
 **上限与跳过规则**（全是硬编码常量，不可注入）：`.git` / `node_modules` / `dist` 与点开头目录、头部 8KB 内有 NUL 字节的二进制文件（不跳的话一个 .png 能把 50 个名额吃光）、>2MB 的超大文件、5000 个文件总量上限（防误指向盘符根目录）、50 命中上限。`include` 只认 `*` `?` `{a,b}`，不支持 `**` 与字符类 `[abc]`；编译不了时显式报 `[INVALID]`，而不是静默过滤掉一切。
 
 参见：[edit（精准编辑工具）](#edit精准编辑工具)、[decodeChildOutput](#decodechildoutput子进程输出解码)、[DECISION_LOG](./DECISION_LOG.md) 同日“grep 三选一”那条
+
+### grill-me（逼问式讨论技能）
+`skills/grill-me.md`。**逼问式讨论**技能，接的是 [ask](#ask分叉点提问工具) 的"保留选项·先讨论"这一路：模型**一次只问一个问题**、**每题附上自己的推荐答案**、能自己查代码得到答案的就**不要问**——把"讨论"约束成有推进力的追问，而不是把一堆问题一次性倒给用户。聊完**重抛**分叉点让用户拍板。
+
+原版来自 Matt Pocock（技能名 `grill-me`，本仓按其原意落地），文件里另补了一段中文接线说明：三问（**目前遭遇的问题是什么** / **需要思考的矛盾点是什么** / **抉择的对象是什么**）与四条落地要求（一次一问 · 附推荐答案 · 自己能查就别问 · 聊完重抛）。
+
+参见：[ask](#ask分叉点提问工具)、[Skill](#skill技能)、`Log/ROADMAP.md` 的 10.12.15
 
 ## H
 
@@ -439,6 +488,13 @@ Runtime 对外当然不止 `prompt()` 一个方法（见 [Runtime](#runtime)）�
 
 对比：[CLI 模式](#cli-模式)
 
+### PROJECT.md（现状快照）
+cwd 下 `.flint/` 里的[生命周期三件套](#chartermd目标契约文档)之一。内容是"**当前系统由哪些模块 / 技术点构成**"——让模型一进场就知道自己正在改的是个什么东西，不必靠 `ls` 现猜。
+
+**性质是快照**：描述的是**当下**，随代码漂移，**自由改、不需许可**（与 `CHARTER.md` 的"改需许可"相对）。**每轮由 `runtime` 直读文件、注入 system prompt 的 `project` 层**——**刻意不建 store**：它是**只读注入**，文件本身就是真相源，运行期直读即自愈，避免出现第二个"判定源"（也就不必回答 C 方案那条"谁负责通知 UI"——**没搬进内存，就不用补通知线**）。文件不存在 / 空 / 读失败一律**不注入**（不塞一句"[项目现状]（空）"占预算）；超 3000 字截断带标记。
+
+参见：[CHARTER.md（目标契约文档）](#chartermd目标契约文档) · [DEVLOG.md（开发日志）](#devlogmd开发日志)
+
 ### Project Metadata（项目元数据）
 不产生功能但定义项目如何被理解的所有文件。分为四类：Rule、Document、Config、Skill。
 
@@ -488,6 +544,11 @@ Runtime 构造选项（`types.ts`）。**11 个必注入**（无默认值，`mai
 （旧文档只列了 `mode`/`llm`/`session`/`services` 四项，漏掉九个必注入子系统。）
 
 ## S
+
+### 分段编号（Segmented ID）
+路线图坐标编号的形状：**点分路径**（形如 `10` → `10.12` → `10.12.5`），**层次靠编号表达**而不是嵌套表——Markdown 表格嵌套不了，加缩进约定又会让解析从"一张表"退化成"一棵树"，而格式门禁的价值恰在"形状简单到能逐行校验"。`src/project/roadmap.ts` 的 `normalizeId` 把它收紧为 `/^\d+(?:\.\d+)*$/`（`1.` / `1.0` / `.1` / `1..2` / `a.1` / `-1` 全拒）；`parentOf` / `childrenOf` / `isAncestor` / `descendantsOf` 由编号推关系。**比较必须逐段按数值比**（`compareId`：`10.2 < 10.12 < 10.12.5`）——若按字典序会得出 `10.12.5 < 10.2` 这种错序，而依赖列表要靠它升序去重才稳定。**父级状态由子树派生、不是写上去的字段**：全部搁置 → 搁置、全已完成/搁置 → 已完成、全未开始 → 未开始、否则进行中；显式搁置覆盖派生。父编号**必须先存在**，否则报"层次无从解析"。
+
+参见：`Log/ROADMAP.md` 的 10.12.14（编号规律 `10.<组>.<序>` 一直如此，本仓第一次把它**当层次用**）
 
 ### SessionStorage
 会话存储接口。**唯一真身在 `core/storage.ts`**：三个必需方法（`appendMessage(role, content, extra?)`、`getMessages()`、`clear()`）+ 三个**可选成员**（`getAllStored?` / `forkTo?` / `getDir?`，即 entry 树能力）。三个实现：[JsonlSessionStorage](#jsonlsessionstorage)（**默认**，落盘，三个可选成员全有）、[InMemorySession](#inmemorysession)、[MockSession](#mocksession)（测试替身，后两个都没有可选成员）。
@@ -719,6 +780,10 @@ params: { sessionId, update } }`，`update.sessionUpdate` 是判别式，决定�
 thinking 开启时跨轮历史不能回传结构化数据（`thinkingBlocks` 永不落盘，带 `tool_calls` 的历史轮没有配对块，`resolveAnthropicThinking` 安全阀会强制关 thinking）。降级是**转写不是过滤**：tool 结果转成 `[工具 X 结果] …` 的 user 文本（孤儿 tool 消息丢了 `tool_call_id` 两条协议都不认）、纯工具调用的空 assistant 轮剔除（空内容消息同样不合法）。信息保住、只丢结构。完整的取舍与骨架见 [ARCHITECTURE.md](./ARCHITECTURE.md) 第二节决策 7。
 
 参见：[ARCHITECTURE.md](./ARCHITECTURE.md#四已知架构债) 第 9 条 · [DECISION_LOG.md](./DECISION_LOG.md) 2026-09-12 那条
+
+### 依赖环（Dependency Cycle）
+
+路线图坐标的 `依赖` 列成环（如 `1.1 → 1.2 → 1.1`）。它在**格式上合法**（五列齐全、枚举正确、依赖指向存在的编号），故 `parseRoadmap` 不因它报错；但它是**死锁**——环上坐标永远等不到依赖完成，`nextCoord` 会静默返回 null，而"还剩 N 个未开始坐标"**同时成立**，读的人（含模型自己）容易理解成"活干完了"。故由 `src/project/roadmap.ts` 的 `findCycles`（DFS 三色找回边）算出，并由 [`archive` 工具](#archive坐标归档工具) 的回执**单列【依赖环】**点名（与"被依赖卡住"分开说——后者等前面做完自然通，前者再等也不会通）。代表路径归一成**编号最小者打头 + 首尾闭合**，故输入行序不影响结果；**自环**算一元环、**指向表外的依赖不算环**（那是格式错误）。见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-14-cycle-detection)。
 
 ## U
 

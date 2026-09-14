@@ -4,12 +4,12 @@
  * 服务于：抽象系统提示词的动态构建，隔离具体实现（context/system-prompt.ts）
  *
  * 缓存友好设计：build 返回**分层 system 消息数组**，按稳定度排序
- * （core → tools → skills → summary），越稳定越靠前，越变化越靠后。
+ * （core → tools → skills → project → memory → task → summary），越稳定越靠前，越变化越靠后。
  * 这样某层变化（如摘要更新）只使该层之后的缓存失效，稳定前缀命中率高。
  */
 
 /** 系统提示词层次名（用于分层缓存 + hook 定位，发送时仅 role/content 序列化） */
-export type SystemPromptLayer = 'core' | 'tools' | 'skills' | 'memory' | 'task' | 'summary' | 'custom';
+export type SystemPromptLayer = 'core' | 'tools' | 'skills' | 'project' | 'memory' | 'task' | 'summary' | 'custom';
 
 /** 分层 system 消息（一层一条，顺序即发送顺序） */
 export interface SystemPromptMessage {
@@ -37,6 +37,12 @@ export interface SystemPromptContext {
   /** 会话摘要（compaction 结果，可选） */
   summary?: string | undefined;
   /**
+   * 项目现状快照（`.flint/PROJECT.md` 内容，可选）—— "当前系统由哪些模块 / 技术点构成"。
+   * 随代码漂移（每完成一个坐标同步一次），故比 core 易变、比 task 稳定；
+   * 没有文件时不注入该层（模型照旧自己 ls/read，不是错误状态）。
+   */
+  project?: string | undefined;
+  /**
    * 项目记忆（MemoryStore 渲染结果，可选）—— 跨会话持久的项目约定/决策/坑。
    * 独立于对话历史，压缩碰不到；只在有记忆条目时注入。
    */
@@ -63,8 +69,9 @@ export interface SystemPromptConfig {
   skills: SectionFn[];
   /**
    * 兜底提示词（无段落/构建失败时用）。
-   * TODO(长文档预留)：未来在 core 层之后、tools 层之前插入"稳定参考文档"层
-   *（如项目 README/约定），它同样稳定，放进稳定前缀区不影响现有前缀。
+   * 注：曾在此预留一个 TODO（"未来插入稳定参考文档层，如项目 README/约定"）——
+   * 2026-09-14 已落地为 **project 层**（`.flint/PROJECT.md` 现状快照，见 SystemPromptContext.project），
+   * 位置在 skills 之后、memory 之前：它随代码漂移（每坐标一次），比 memory 易变、比 task 稳定。
    */
   fallback: string;
 }
@@ -74,7 +81,7 @@ export interface SystemPromptService {
   /**
    * 构建系统提示词（发请求前调用）。
    * 流程：hook(before_build) → 分层计算段落 → 兜底 → hook(before_request) 可改写消息数组。
-   * @returns 分层 system 消息数组（core → tools → skills → summary）
+   * @returns 分层 system 消息数组（顺序见文件头注释）
    */
   build(ctx: SystemPromptContext): Promise<SystemPromptResult>;
 }

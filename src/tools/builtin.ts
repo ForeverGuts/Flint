@@ -1,5 +1,7 @@
 /**
- * 内置工具注册 —— Ls / Read / Write / Edit / Grep / Bash 六个核心工具。
+ * 内置工具注册 —— Ls / Read / Write / Edit / Grep / Bash 六个核心工具，
+ * 外加清单（todo）/ 记忆（memory）/ 事件库（record_event · search_events · pull_events）/
+ * 分叉点提问（ask）/ 坐标归档（archive）等系统级工具，共 13 个。
  * 调用方：main.ts（组装工具子系统时调用）
  * 服务于：为 LLM 提供列目录、读文件、写文件、精准改片段、搜索内容、执行命令的能力
  *         （Ls 支撑"工具增强推理"：模型先看清项目结构再动手，不凭记忆脑补）
@@ -23,6 +25,18 @@ import { TASK_HISTORY_FILE, TaskStore, taskStore } from '../todo/store.js';
 import { MEMORY_FILE, MemoryStore, memoryStore } from '../memory/store.js';
 import { EVENTS_FILE, EventStore, NARRATIVE_KINDS, eventStore, formatEvent } from '../eventlog/store.js';
 import { projectRegistry } from '../eventlog/registry.js';
+import {
+  NO_INTERACTION, buildChoices, buildForkTitle, classifyChoice, formatForkResult, parseCandidates,
+  type AskFn,
+} from '../project/fork.js';
+import { DEVLOG_FILE } from '../project/charter.js';
+import {
+  ROADMAP_FILE, findCycles, isParent, nextCoord, parentOf, parseRoadmap, resolveStatuses, setStatus,
+  spliceCoordTable, unmetDeps, type Coord,
+} from '../project/roadmap.js';
+import {
+  DEVLOG_HEADER, formatArchiveReceipt, formatStamp, renderDevlogEntry,
+} from '../project/lifecycle.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    参数规则在每个工具的 spec 里，Schema 与校验都由它派生（实现见 spec.ts）
@@ -126,17 +140,23 @@ function globToRegExp(glob: string): RegExp | null {
    ═══════════════════════════════════════════════════════════════════════════════ */
 
 /**
- * 注册 10 个内置工具（Ls / Read / Write / Edit / Grep / Bash / Todo / Memory / RecordEvent / SearchEvents）。
+ * 注册 13 个内置工具（Ls / Read / Write / Edit / Grep / Bash / Todo / Memory / RecordEvent /
+ * SearchEvents / PullEvents / Ask / Archive）。
  * @param tools 工具子系统
  * @param store 任务清单真相源；缺省用进程级单例（runtime 也读同一个），测试可注入自己的实例。
  * @param mem 项目记忆真相源（缺省单例，测试可注入）。
  * @param evs 历史事件库（缺省单例，测试可注入）。
+ * @param askFn 分叉点提问实现。**缺省是"永远答问不了"**（`NO_INTERACTION`）——工具层刻意不
+ *   import 任何 io 模块（那会把 UI 层拖进 RPC 启动路径，而 io 层允许写 stdout）。真正的
+ *   交互实现由 main.ts 在 TTY 侧注入；测试与 RPC 走缺省值，行为是"降级为文字提问"，
+ *   而不是"静默替用户选一个"（fail-closed，语义见 src/project/fork.ts 文件头）。
  */
 export function registerBuiltinTools(
   tools: ToolProvider,
   store: TaskStore = taskStore,
   mem: MemoryStore = memoryStore,
   evs: EventStore = eventStore,
+  askFn: AskFn = NO_INTERACTION,
 ): void {
   /* ── Ls：列目录（了解结构，工具增强推理的起点） ── */
   tools.register(defineTool({
@@ -808,6 +828,193 @@ export function registerBuiltinTools(
       } catch (e) {
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`pull_events 执行失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  }));
+
+  /* ── Ask：分叉点提问（截断当前行为，等用户拍板） ──
+     与权限弹窗的**根本区别**：权限回答"这次调用要不要跑"（是/否，放行也不改变方向）；
+     本工具回答"这个设计该选哪条路"（**会改变后面所有代码的形态**）。故两者不共用通道
+     （同 C11 判据：混进同一个授权键空间，一次"本次全部允许"会把提问也静默打开）。
+
+     两条刻意与权限闸相反的地方：
+     ① **fail-closed**：没有可交互终端时一个选项都不选（权限闸那里是自动放行）。
+        替用户在 A/B 之间选一个，比不提供这个功能更糟——详见 src/project/fork.ts 文件头。
+     ② **拍板即留痕**：用户选了哪条路是**事实**，由本工具确定性地写进事件库
+        （kind=decision），不依赖模型记得去 record_event。而"决定该写进路线图哪一行、
+        怎么措辞"是**判断**，留给模型按回话指令做——程序做不了判断，就别假装能做。 */
+  tools.register(defineTool({
+    name: 'ask',
+    description: '遇到技术选型分叉点（有几个都可行、各有实质取舍、选错要返工的方案）时，向用户提问并停下来等答复。options 用 | 分隔候选方案，每项可写 "标签: 说明"。用户可当场拍板；也可选择"先讨论"——那时不要继续往下做，先按 grill-me 技能的方式（一次一问、每题附推荐答案）把问题与矛盾点聊清楚，再把分叉点抛回给用户。不要拿能自己判断的小事打扰用户。',
+    spec: {
+      question: str('问题', '要用户拍板的那一个问题，一句话。示例: "会话存储用哪种方案？"'),
+      options: str('候选方案', '两个以上候选，用 | 分隔；每项可写 "标签: 说明"。示例: "A 单文件: 最简单|B 每会话一文件: 抗并发|C SQLite: 可查询"'),
+      context: optStr('背景', '为什么在这里卡住、各方案的关键取舍（一句话）。示例: "要支持并发写入，且不想为它引入运行时依赖"', ''),
+    },
+    handler: async (args) => {
+      const candidates = parseCandidates(args.options);
+      // 一个候选 = 没有分叉，那不该来问用户（要么它自己定，要么这是"通知"不是"提问"）
+      if (candidates.length < 2) {
+        return toolInvalid(`options 至少要有两个候选方案（用 | 分隔），当前只解析出 ${candidates.length} 个：「${args.options}」`
+          + `\n若这根本不是分叉点，就别调用本工具，直接按你自己的判断做并说明理由。`);
+      }
+
+      const picked = await askFn(buildForkTitle(args.question, args.context), buildChoices(candidates));
+      const outcome = classifyChoice(picked, candidates);
+
+      // 决定留痕（确定性）。写失败不致命（内存索引仍在），但要在回话里说一声——
+      // 静默丢一次用户决策，比丢一次工具流水严重得多。
+      let warn: string | null = null;
+      if (outcome.kind !== 'unavailable') {
+        const decided = outcome.kind === 'decide';
+        const label = decided ? outcome.candidate.label : '（先讨论，未拍板）';
+        const r = evs.addNarrative({
+          kind: 'decision',
+          title: `${decided ? '[分叉点]' : '[分叉点·待讨论]'} ${args.question.trim()} → ${label}`,
+          context: args.context.trim() || `候选方案：${candidates.map((c) => c.label).join(' / ')}`,
+          decision: decided
+            ? `用户选定：${outcome.candidate.label}${outcome.candidate.description ? `（${outcome.candidate.description}）` : ''}`
+            : '用户选择先讨论，暂不拍板',
+          reason: decided ? args.context.trim() : '需要先把问题 / 矛盾点 / 抉择对象聊清楚',
+          outcome: decided ? '待落地（见路线图 / DEVLOG）' : '讨论后再定（届时重抛分叉点）',
+          tags: decided ? ['分叉点', '技术选型'] : ['分叉点', '待讨论'],
+        }, EVENTS_FILE);
+        warn = r.warn ?? null;
+      }
+
+      const body = formatForkResult(args.question, args.context, candidates, outcome);
+      return toolOk(warn ? `${body}\n（注：事件库写入失败：${warn} —— 决定本身仍然有效，只是这份没进磁盘档案）` : body);
+    },
+  }));
+
+  /* ── Archive：坐标归档（ROADMAP 10.12.6 + 10.12.8 + 10.12.11 三件事的同一个落点） ──
+     一个坐标"走完"这件事必须写成两处，因为有两种读者：
+       · `.flint/DEVLOG.md` —— 人读散文（前后区别 / 意义 / 影响面 / 遗留），只追加；
+       · 事件库 —— 机读四段（可检索、可跨会话翻）。
+     两者**刻意不互替**：散文进不了检索，四段字段读不出语气。这就是 10.12.8「归档双写」。
+
+     顺带推进路线图状态位 + 提议下一坐标（10.12.11）：这三件事**同源于"归档这一刻"**，
+     拆开做必然出现"日志写了、状态忘了改"的断链——而那正是协议此前只能靠模型记性的地方。
+     把"记得改状态""记得提下一步"交给工具，是因为两者都是**输入的函数**（编号序 + 依赖关系），
+     程序算得出来，就不该让人记。
+
+     ── 为什么不用权限弹窗 ──
+     与 todo / memory 同一取位：这是**系统行为**，记的是"已经发生的事"，不是"要改动项目内容"。
+     每收一个坐标弹一次窗，只会训练用户无脑放行。也刻意**不碰 CHARTER**：那把锁保护的是
+     目标（契约），路线图是**现状**，本来就该随进展漂移（三件套的修改策略三分）。
+
+     ── 为什么"未命中就一字不落盘" ──
+     与 write / edit 同一条设计原则（拿不准时拒绝、不留半成品）：编号写错、路线图本身格式坏、
+     把父坐标当叶子归档——这三种都是**模型搞错了对象**，此时写一份 DEVLOG 与一条事件，
+     只会在档案里留下一节对不上任何坐标的记录，比拒绝一次的代价大得多。 */
+  tools.register(defineTool({
+    name: 'archive',
+    description: '把一个**项目坐标**归档（.flint/ROADMAP.md 里存在的编号走完时用）。一次做三件事：把"前后区别 / 意义 / 影响面 / 遗留"追加进 .flint/DEVLOG.md（只追加）、记一条 system 事件、把路线图里那个坐标标成 已完成，并顺带告诉你下一坐标是哪条。前后区别必须基于 git diff 或验证结果，不许凭记忆。只用于项目级坐标，普通任务与 todo 步骤不要用它。',
+    spec: {
+      coord: str('坐标编号', '要归档的坐标编号（分段编号，如 10.12.6）。必须已存在于 .flint/ROADMAP.md，且不能是父坐标（父坐标的状态由子坐标派生）'),
+      changes: str('前后区别', '这一步改动了什么（前后对比）。必须基于 git diff 或验证结果，不许凭记忆。示例: "新增 lifecycle.ts 与 archive 工具，路线图状态不再靠手改"'),
+      meaning: str('意义', '这一步的价值——改变了什么，而不只是做了什么。示例: "把『记得改状态』从模型自觉变成程序必做"'),
+      impact: str('影响面', '牵动了哪些模块 / 文件 / 谁会受影响。示例: "tools 子系统工具数 +1；core-section 归档段改写"'),
+      leftover: optStr('遗留', '还没做完或已知的坑；没有就留空。示例: "10.12.9 仍依赖 10.5.1 的 git 工具"', ''),
+      evidence: optStr('验证证据', '跑出来的验证结果；没有就留空。示例: "36 套 1660 项 0 失败、tsc --noEmit EXIT=0"', ''),
+    },
+    handler: async (args) => {
+      try {
+        const { coord, changes, meaning, impact, leftover, evidence } = args;
+        const { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync } = await import('node:fs');
+        const { dirname } = await import('node:path');
+
+        // ① 路线图：有就读+解析。**有错、没这个编号、或它是个父坐标 → 拒绝且一字不落盘**
+        let coords: Coord[] | null = null;
+        let roadmapMd = '';
+        let title = coord;
+        if (existsSync(ROADMAP_FILE)) {
+          roadmapMd = readFileSync(ROADMAP_FILE, 'utf-8');
+          const parsed = parseRoadmap(roadmapMd);
+          if (parsed.errors.length > 0) {
+            return toolInvalid(`路线图格式有错，先按门禁要求修好再归档（一字未落盘）：\n${parsed.errors.join('\n')}`);
+          }
+          const hit = parsed.coords.find((c) => c.id === coord);
+          if (hit === undefined) {
+            return toolInvalid(`路线图里没有编号 ${coord}（一字未落盘）。表内现有编号：`
+              + `${parsed.coords.map((c) => c.id).join(' / ')}`);
+          }
+          if (isParent(coord, parsed.coords)) {
+            return toolInvalid(`编号 ${coord} 是**父坐标**（它只是容器，状态由子坐标派生，写上去也会被覆盖）。`
+              + `请归档具体的叶子坐标：${parsed.coords.filter((c) => parentOf(c.id) === coord).map((c) => c.id).join(' / ')}`);
+          }
+          title = hit.title;
+          coords = parsed.coords;
+        }
+
+        // ② 双写之一：DEVLOG（人读散文，只追加）。它**就是**这次归档的产物，
+        //    写不进去就是没归档成功 → 直接 [ERROR]，且此时还没有任何东西落盘。
+        try {
+          mkdirSync(dirname(DEVLOG_FILE), { recursive: true });
+          const head = existsSync(DEVLOG_FILE) ? '' : DEVLOG_HEADER;
+          const entry = renderDevlogEntry({
+            coord, title, at: formatStamp(new Date()),
+            changes, meaning, impact, leftover, evidence,
+          });
+          appendFileSync(DEVLOG_FILE, `${head}${entry}`, 'utf-8');
+        } catch (e) {
+          return toolError(`开发日志写入失败: ${e instanceof Error ? e.message : String(e)}`);
+        }
+
+        // ③ 路线图状态推进：**只换表那几行**，表外散文一行不碰。
+        //    写前先 resolveStatuses —— 落盘的是权威状态（父行占位值也一并换成派生值）。
+        const warnings: string[] = [];
+        if (coords !== null) {
+          try {
+            coords = resolveStatuses(setStatus(coords, coord, '已完成'));
+            writeFileSync(ROADMAP_FILE, spliceCoordTable(roadmapMd, coords), 'utf-8');
+          } catch (e) {
+            warnings.push(`路线图写入失败：${e instanceof Error ? e.message : String(e)} —— 日志已写，状态未推进`);
+          }
+        }
+
+        // ④ 双写之二：事件库（机读四段）。写失败不致命（与 todo/memory 同一口径），
+        //    但必须在回执里说一声——静默丢一次归档，档案就少了一块且没人知道。
+        const tail = [leftover.trim() && `遗留：${leftover.trim()}`, evidence.trim() && `验证证据：${evidence.trim()}`]
+          .filter((s): s is string => Boolean(s)).join('；');
+        const r = evs.addNarrative({
+          kind: 'system',
+          title: `[归档] ${coord} ${title}`,
+          context: `前后区别：${changes}`,
+          decision: `意义：${meaning}`,
+          reason: `影响面：${impact}`,
+          ...(tail ? { outcome: tail } : {}),
+          tags: ['archive', coord],
+        }, EVENTS_FILE);
+
+        // ⑤ 回执：顺带把"下一坐标"算出来（纯依赖 + 编号序，是输入的函数，不是判断）
+        const cs = coords;
+        const next = cs === null ? null : nextCoord(cs);
+        const blocked = cs === null ? [] : cs
+          .filter((c) => !isParent(c.id, cs) && c.status === '未开始')
+          .map((c) => ({ id: c.id, missing: unmetDeps(cs, c.id) }))
+          .filter((b) => b.missing.length > 0)
+          .slice(0, 3);
+        const remainingLeaves = cs === null ? 0
+          : cs.filter((c) => !isParent(c.id, cs) && c.status !== '已完成' && c.status !== '搁置').length;
+        // 依赖环：与"被依赖卡住"同为"提不出下一坐标"的原因，但性质不同——环再等也不会通，
+        // 得人去改表。故单独算出来交给回执点名（findCycles 纯函数，零 import）
+        const cycles = cs === null ? [] : findCycles(cs);
+
+        const body = formatArchiveReceipt({
+          coord, title,
+          devlogPath: DEVLOG_FILE,
+          roadmapPath: cs === null ? null : ROADMAP_FILE,
+          eventWarn: r.warn ?? null,
+          next: next === null ? null : { id: next.id, title: next.title },
+          blocked,
+          cycles,
+          remainingLeaves,
+        });
+        return toolOk(warnings.length > 0 ? `${body}\n（注：${warnings.join('；')}）` : body);
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`archive 执行失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   }));

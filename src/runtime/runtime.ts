@@ -21,6 +21,7 @@ import { selectFromList } from '../io/ui/selector.js';
 import { readLine } from '../io/terminal.js';
 import { taskStore } from '../todo/store.js';
 import { memoryStore } from '../memory/store.js';
+import { readProjectSnapshot } from '../project/snapshot.js';
 import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
 
 /* ── 工作记忆：真相源是 `taskStore`（src/todo/store.ts） ──
@@ -689,7 +690,7 @@ export class Runtime {
       `  - ${t.function.name}: ${t.function.description}（参数: ${JSON.stringify(t.function.parameters)}）`
     ).join('\n');
 
-    // 系统提示词：分层构建（稳定前缀缓存友好：core → tools → skills → task → summary）
+    // 系统提示词：分层构建（稳定前缀缓存友好：core → tools → skills → project → memory → task → summary）
     // 每层独立 system 消息，越稳定越靠前；摘要来自 compaction 独立返回（不混入 history）
     // 工作记忆：读**内存真相源**（taskStore）——它独立于对话历史，压缩碰不到，每次请求重新渲染注入。
     // 只在"还有未完成项"时注入：空清单 / 全完成 = 无进行中计划，不注入、不放大预算、不开 auto thinking
@@ -699,6 +700,11 @@ export class Runtime {
     const taskMemory = rawTask && rawTask.length > 2000
       ? `${rawTask.slice(0, 2000)}\n...（截断）`
       : rawTask;
+    // 项目现状快照（`.flint/PROJECT.md`）：**每轮现读**。这里与 task/memory 两层的取法相反，
+    // 理由是状态来源不同——那两层有内存真相源（store），回读文件会变成"两处判定"；现状快照
+    // **没有 store**，文件就是唯一真相源，所以读的是同一处。附带好处是自愈：模型改完即生效。
+    // 完整取舍见 src/project/snapshot.ts 文件头（它是 ROADMAP P10.12.5 的注入侧）。
+    const projectSnapshot = readProjectSnapshot();
     // 项目记忆：读内存真相源（memoryStore），有条目才注入；截断同 task 层——注入可截，投影不截
     const rawMemory = memoryStore.isEmpty() ? undefined : memoryStore.render();
     const projectMemory = rawMemory && rawMemory.length > 2000
@@ -711,6 +717,7 @@ export class Runtime {
       skillDeps: Object.fromEntries(this.skills.getAll().map((s) => [s.name, s.depends ?? []])),
       model: this.currentModel,
       summary: compacted.summary,
+      project: projectSnapshot,
       task: taskMemory,
       memory: projectMemory,
       historyCount: history.length,

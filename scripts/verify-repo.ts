@@ -104,6 +104,12 @@ console.log('── ② 真 JsonlSessionRepo（临时目录跑真文件）──
   check('R12 create 补后缀 → abc.jsonl', b.fileName === 'abc.jsonl', b.fileName);
   const c = await repo.create('x.jsonl');
   check('R13 create 已带后缀 → 原样', c.fileName === 'x.jsonl', c.fileName);
+  // 排序按 mtimeMs 降序（jsonl-repo.list），但三个文件常在同一毫秒建成 → 平局，
+  // 名次由 readdir 顺序决定（NTFS 下近字母序）→ R15 会间歇性翻面。这里显式把 mtime
+  // 拉开（session < abc < x），让"按 updatedAt 倒序"这件事被真正验证，而不是和文件系统赛跑。
+  fs.utimesSync(path.join(tmpDir, a.fileName), new Date(1000), new Date(1000));
+  fs.utimesSync(path.join(tmpDir, 'abc.jsonl'), new Date(2000), new Date(2000));
+  fs.utimesSync(path.join(tmpDir, 'x.jsonl'), new Date(3000), new Date(3000));
   const list = await repo.list();
   check('R14 list 看到三个会话', list.length === 3, `实得 ${list.length}`);
   check('R15 list 按 updatedAt 倒序（最新在前）',

@@ -42,10 +42,12 @@
 │                   + JsonlSessionRepo —— 会话仓库层（目录级 list/open/create/remove，core/session-repo 契约；
 │                     删除两层守卫：文件名白名单拒穿越 + Runtime 拒删当前活跃会话）
 │ tools/            ToolRegistry + spec.ts（参数规格：一份定义派生 Schema / 运行时校验 / 入参类型）
-│                   + 10 个内置工具（ls / read / write / edit / grep / bash / todo / memory / record_event / search_events）
+│                   + 13 个内置工具（ls / read / write / edit / grep / bash / todo / memory / record_event / search_events / pull_events / ask / archive）
 │ todo/             TaskStore —— 任务清单的内存真相源（render/parse 互逆 + TASK.md 投影/种子）
 │ memory/           MemoryStore —— 项目记忆的内存真相源（render/parse 互逆 + .flint/memory.md 投影/种子）
 │ eventlog/         EventStore —— 历史事件库（.flint/events.jsonl 追加档案 + 检索；tool_call span 自动捕获）
+│ project/          项目生命周期协议（charter.ts 目标契约写保护闸 · roadmap.ts 路线图表契约 + 分段编号与状态派生
+│                   · lifecycle.ts DEVLOG 排版与归档回执 · snapshot.ts PROJECT.md 只读注入）· fork.ts 分叉点提问
 │ permission/       PermissionManager
 │ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
 │ commands/         CommandServiceImpl + 12 个内置命令（含新增 /memory /events）

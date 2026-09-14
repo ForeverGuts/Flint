@@ -372,7 +372,7 @@ console.log('\n⑦ 源码防回退');
   const builtinSrc = fs.readFileSync(path.join(ROOT, 'src/tools/builtin.ts'), 'utf-8');
 
   check('G1 SystemPromptLayer 含 memory（类型层承认这一层存在）',
-    corePromptSrc.includes("'core' | 'tools' | 'skills' | 'memory' | 'task' | 'summary' | 'custom'"));
+    corePromptSrc.includes("'core' | 'tools' | 'skills' | 'project' | 'memory' | 'task' | 'summary' | 'custom'"));
   check('G2 SystemPromptContext 有 memory 字段（runtime → build 的通道）',
     /memory\?: string \| undefined/.test(corePromptSrc));
 

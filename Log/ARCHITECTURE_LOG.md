@@ -11,6 +11,37 @@
 
 ---
 
+<a id="log-2026-09-14-lifecycle-archive"></a>
+
+## 2026-09-14 | 生命周期归档闭环：system prompt 新增 `project` 层，`archive` 工具把"归档 → 提议下一坐标"收成一个动作
+
+**牵连系统 / 层次**：`core/system-prompt.ts` + `context/system-prompt.ts`（`SystemPromptLayer` 新增 `project`、分层顺序扩到七层）· `runtime/runtime.ts`（每轮读快照并注入）· `src/project/`（新增 `lifecycle.ts` / `snapshot.ts`，`roadmap.ts` 补文件级操作）· `tools/builtin.ts`（第 13 个内置工具 `archive`，12→13）· `context/sections/core-section.ts`（DoD 四件套 + PROJECT.md 注入说明）· `scripts/verify-lifecycle.ts` 97 项。
+
+**面向的问题**：
+- 系统提示词里**没有"当前系统长什么样"的承载位**：模型进了别人的项目，只能靠 `ls` / 读文件现猜自己在改什么东西
+- 生命周期协议的四阶段闭环里，"归档 → 提议下一坐标"**只写在提示词里**——模型记得就问、忘了就断链（同批 ROADMAP 诊断的"触发缺失"）
+- 归档要写两处（人读散文 + 机读四段），此前**没有任何一个动作**同时保证两者都写
+
+**做出的改动与关键口径**：
+- **system prompt 新增 `project` 层**，分层顺序扩为 `core → tools → skills → project → memory → task → summary`。位置按既有判据（越稳定越靠前）：PROJECT.md 比 `memory`（跨会话结论）稳定、比 `task`（当轮清单）易变，故夹在两者之间
+- 新增 `project/snapshot.ts`：`.flint/PROJECT.md` 的**只读注入侧**。**刻意不建 store**（不照抄 TaskStore 的 C 方案）——它是只读注入，文件本身就是真相源，运行期直读即自愈；建一层内存副本只会多出"何时该重读"的问题（也就是那条铁律"谁负责通知 UI"），**没搬进内存就不用回答**。缺 / 空 / 读失败一律 `undefined`（整层不注入，不塞空话）
+- 新增 `project/lifecycle.ts`（**零 import 纯函数**）：DEVLOG 一节排版 `renderDevlogEntry`（四段固定形状、空段不写空标题、多行压单行、末尾含空行当节间隔——**返回值就是文件里那一段**）+ 归档回执 `formatArchiveReceipt`。`roadmap.ts` 补文件级操作 `findCoordTable` / `spliceCoordTable`（只替换表那几行）/ `setStatus` / `unmetDeps` / `nextCoord`，模块仍零 import
+- 新增第 13 个内置工具 **`archive`**：一次做完 ① DEVLOG 追加 ② `kind=system` 机读事件 ③ 路线图状态推进（写回的是 `resolveStatuses` 的**派生后权威状态**），并**顺带算出下一坐标**。不带 `requirePermission`（系统行为）、不 import `io/`（stdout 纯净规则）；**未命中就一字不落盘**
+- 提示词补 **DoD 四件套**（代码 + 验证证据 + 文档同步 + 叙事归档，**缺一件不许标完成**）与"PROJECT.md 每轮注入、随代码漂移、自由改、不需许可"
+
+**解决的问题**：
+- 模型进场即知系统现状，不必现猜；且因为"文件即真相源"，改动立刻生效、无需失效逻辑
+- "归档"这个动作**自带下一步**：提议由程序算（依赖关系 + 编号序，是输入的函数、不是判断），把"要记得提议"变成"躲不掉"
+- 双写由同一个动作保证；散文与四段**刻意不互替**——两种读者（人要顺序读一遍、机器要跨会话捞得出来）
+- 状态推进**只动坐标表**、表外散文逐字不动；父行不再手写状态，根治"父任务进行中、子任务全已完成"这类自相矛盾
+
+**未来可优化**：
+- 归档靠模型显式调工具触发，尚无"坐标一做完就提醒归档"的机器闸（DoD 只进了提示词）
+- PROJECT.md 的内容形状不校验（刻意——它是自由散文）；若日后要"现状与代码对得上"的机器核对，是独立议题
+- 分层顺序目前只由 `context/system-prompt.ts` 的实现顺序表达，**类型层面没有顺序约束**，靠 verify 断言钉住
+
+---
+
 <a id="log-2026-09-13-memory-eventlog"></a>
 
 ## 2026-09-13 | 记忆与经验沉淀：三层账本成型，注入与检索各走各的通道

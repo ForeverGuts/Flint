@@ -30,6 +30,8 @@ import { taskStore } from '../todo/store.js';
 import { MEMORY_FILE, memoryStore } from '../memory/store.js';
 import { CALLS_FILE, EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { projectRegistry } from '../eventlog/registry.js';
+import { charterLock, guardContractWrite } from '../project/charter.js';
+import { createForkAsker } from '../io/ui/fork-prompt.js';
 import type { CollectedSpan } from '../core/events.js';
 import { SpanCollectorImpl } from '../runtime/span-collector.js';
 import { runReplMode } from './repl.js';
@@ -118,6 +120,21 @@ export async function main(checkResult: CheckResult): Promise<void> {
     const span: CollectedSpan | null = eventCollector.feed(raw);
     if (span && span.name === 'tool_call') eventStore.recordToolCall(span, CALLS_FILE);
   });
+  // 项目契约闸（ROADMAP P10.12）：目标文档 .flint/CHARTER.md 立项后冻结，改它必须用户显式解锁。
+  // 刻意**不**接权限子系统（决策 C11）：权限的语义是"弹窗放行 + 进 allowlist"，契约要的是
+  // "默认拒写"——若塞进同一个授权键空间，用户对 write 点一次"本次全部允许"就把锁静默打开了。
+  // 故本闸只认 charterLock 自己的状态位（唯一开门动作是 /charter unlock）。
+  // 注册时机在装载扩展**之前**：emitHook 取"最后一个非 undefined"结果，核心钩子先入列，
+  // 扩展返回 undefined 时不会覆盖它的 deny。
+  events.on('before_tool_call', (event) => {
+    const e = event as { name?: unknown; args?: unknown };
+    return guardContractWrite(
+      typeof e.name === 'string' ? e.name : '',
+      e.args,
+      charterLock.isUnlocked(),
+    );
+  });
+
   // 装载用户扩展（段落 + hook + watcher）—— 自动扫描 src/extensions/ 下三类目录
   const ext = await loadExtensions(events);
   // 系统提示词子系统（配置驱动 + 分层缓存友好：核心稳定层在前，工具/技能层独立）
@@ -162,7 +179,14 @@ export async function main(checkResult: CheckResult): Promise<void> {
 
   // 构造后统一注册能力（命令 + 工具）——时序一致
   await registerBuiltinCommands(runtime);   // 装命令（动态 import 需 await）
-  registerBuiltinTools(tools);               // 装工具（直接用本地变量，不绕 runtime.tools）
+  // 装工具（直接用本地变量，不绕 runtime.tools）。第 5 个参数是**分叉点提问**的实现：
+  // 工具层刻意不 import io 模块（会把 UI 层拖进 RPC 启动路径），故由这里注入。
+  // 传 runtime.select 而不是裸 selectFromList：TTY 下它走 TreeUI 的组件树，与 spinner /
+  // 任务面板同一套布局，不会被面板刷新盖掉（同 2026-09-13 权限弹窗那次修复的判据）。
+  // 非 TTY 时 createForkAsker 自己会先拦下（fail-closed），不会落到 selectFromList 的
+  // "返回第一项"上——那等于替用户选了技术方案。
+  registerBuiltinTools(tools, taskStore, memoryStore, eventStore,
+    createForkAsker((items, title) => runtime.select(items, title)));
   // 输入预处理器（runtime.onInput）当前不挂任何实现：原先挂的 demoInputHandler 会静默
   // 吞掉 "@@" 开头的输入，属未文档化的演示行为；能力保留给 Hook 系统
 
