@@ -48,7 +48,7 @@
 │ eventlog/         EventStore —— 历史事件库（.flint/events.jsonl 追加档案 + 检索；tool_call span 自动捕获）
 │ project/          项目生命周期协议（charter.ts 目标契约写保护闸 · roadmap.ts 路线图表契约 + 分段编号与状态派生
 │                   · lifecycle.ts DEVLOG 排版与归档回执 · snapshot.ts PROJECT.md 只读注入）· fork.ts 分叉点提问
-│ git/              git 只读结构化（git.ts：op 白名单 + argv 不经 shell + status/diff/log/branch 四路解析渲染）
+│ git/              git 只读结构化（git.ts：op 白名单 + argv 不经 shell + 8 个 op 的解析渲染）· route.ts bash 裸 git 只读命令的路由（**不是闸**）
 │ permission/       PermissionManager
 │ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
 │ commands/         CommandServiceImpl + 12 个内置命令（含新增 /memory /events）

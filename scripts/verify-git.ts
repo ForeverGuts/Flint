@@ -24,6 +24,8 @@
  *   ⑭ 拒绝路径 —— 未知 op / 危险 target / blame 缺 path / 非法行范围 → [INVALID]，
  *      且**一个 git 进程都没起**
  *   ⑮ 源码守护 + 提示词交叉 —— 纯模块零 import、不弹窗、走 execFileSync、格式常量不许混用占位符
+ *   ⑯ 路由 —— bash 里的**裸** git 只读命令 → git 工具（ROADMAP 10.5.6）：纯函数逐形状、
+ *      钩子适配器 fail-open 四态、真 PromptEventEmitter 总线行为、源码守护（契约闸排在路由之前）
  *
  * 运行：node node_modules/tsx/dist/cli.mjs scripts/verify-git.ts
  * 退出码：failed > 0 → 1
@@ -47,8 +49,11 @@ import {
   parseBranch, parseLog, parseNumstat, parseRemote, parseShow, parseStatus, parseTag, redactUrl,
   renderBlame, renderBranch, renderDiff, renderFileSummary, renderLog, renderRemote, renderShow,
   renderStatus, renderTag, statusCodeLabel, summarizeFiles, tagTypeLabel, validateLineRange,
-  validateTarget,
+  validateTarget, type GitOp,
 } from '../src/git/git.js';
+import { routeBashGitRead, routeGitRead } from '../src/git/route.js';
+import { PromptEventEmitter } from '../src/runtime/events.js';
+import { decodeDeny } from '../src/loop/tool-hooks.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -880,6 +885,110 @@ check('J9 远端 URL 一定经过 redactUrl —— 打码发生在**解析层**�
   /\bredactUrl\(/.test(stripComments(gitSrc)));
 check('J10 blame 的"必填 path"校验落在工具 handler（spec 表达不了条件必填，别指望 spec 兜住）',
   builtinSrc.includes('blame 必须指定 path') && builtinSrc.includes('validateLineRange('));
+
+/* ── ⑯ 路由：bash 里的裸 git 只读命令 → git 工具（ROADMAP 10.5.6）── */
+console.log('── ⑯ 路由：bash 里的 git 只读命令 → git 工具 ──');
+
+/** 把路由结果压成可读串，断言里比字符串最直观 */
+const fmtRoute = (r: unknown): string => (r === null ? 'null' : JSON.stringify(r));
+
+/**
+ * 七个"裸 op"——判据的正面清单。
+ * 从 GIT_OPS 里排除 blame 是**刻意的**：裸 blame 不是合法 git 命令（它必须带文件），
+ * 所以 blame 单独走 R3/R4 两条，不混在"裸形式全命中"这条里。
+ */
+const BARE_OPS: GitOp[] = ['status', 'diff', 'log', 'branch', 'show', 'remote', 'tag'];
+
+check('R1 七个裸 op 全部命中，且 op 与子命令一致',
+  BARE_OPS.every((op) => fmtRoute(routeGitRead(`git ${op}`)) === fmtRoute({ op })),
+  BARE_OPS.map((op) => `${op}:${fmtRoute(routeGitRead(`git ${op}`))}`).join(' '));
+
+check('R2 多余空白归一（"  git   status  " 仍路由到 status）',
+  fmtRoute(routeGitRead('  git   status  ')) === fmtRoute({ op: 'status' }));
+
+check('R3 blame 带单个路径 → 路由到 blame + path',
+  fmtRoute(routeGitRead('git blame src/a.ts')) === fmtRoute({ op: 'blame', path: 'src/a.ts' }));
+
+check('R4 裸 blame / blame 带选项 → 不路由（裸 blame 本就不是合法 git 命令）',
+  routeGitRead('git blame') === null && routeGitRead('git blame -L 10 f.ts') === null);
+
+check('R5 **逃生口**：带参数就不路由（要原始文本必须显式加参数，而不是默认行为）',
+  routeGitRead('git status --short') === null && routeGitRead('git log -n 5') === null);
+
+check('R6 shell 元字符一律不路由（复合 / 管道 / 重定向 / 顺序 / 反斜杠路径）',
+  routeGitRead('cd src && git status') === null
+  && routeGitRead('git status | head') === null
+  && routeGitRead('git status > out.txt') === null
+  && routeGitRead('git status;rm -rf /') === null
+  && routeGitRead('git blame src\\a.ts') === null);
+
+check('R7 写操作的裸形式不路由（commit / push / checkout / stash 都不在 op 枚举里）',
+  routeGitRead('git commit') === null && routeGitRead('git push') === null
+  && routeGitRead('git checkout') === null && routeGitRead('git stash') === null);
+
+check('R8 三 token 的写形式也不路由（git tag v1 / git branch -d x）——窄判据的附带保护',
+  routeGitRead('git tag v1') === null && routeGitRead('git branch -d x') === null);
+
+check('R9 未知子命令 / 非 git / 非裸 git → 不路由',
+  routeGitRead('git foo') === null && routeGitRead('node -v') === null
+  && routeGitRead('/usr/bin/git status') === null);
+
+check('R10 空串 / 全空白 / 只有 git / 大小写 / 多余 token → 不路由',
+  routeGitRead('') === null && routeGitRead('   ') === null && routeGitRead('git') === null
+  && routeGitRead('GIT status') === null && routeGitRead('git status extra') === null);
+
+const bStatus = routeBashGitRead('bash', { command: 'git status' });
+const rStatus = bStatus?.reason ?? '';
+check('R11 bash + 裸 git status → deny，且指路到 git(op="status")',
+  bStatus?.action === 'deny' && rStatus.includes('git(op="status")'));
+check('R12 bash + git blame <path> → 指路里带上 path',
+  (routeBashGitRead('bash', { command: 'git blame src/a.ts' })?.reason ?? '').includes('path="src/a.ts"'));
+check('R13 拒绝文案说清"命令没有被执行"（模型据此知道要重发，而不是以为已经跑过）',
+  rStatus.includes('没有被执行'));
+check('R14 拒绝文案给出"要原始文本"的显式出口（否则模型被堵死，只能干看着）',
+  rStatus.includes('--short'));
+check('R15 bash + 写操作 → 不拦（git commit 走 bash 是正当路径，与 10.5.2 的写闸各管一摊）',
+  routeBashGitRead('bash', { command: 'git commit -m x' }) === undefined
+  && routeBashGitRead('bash', { command: 'git push' }) === undefined);
+check('R16 只拦 bash（git 工具自身、write 等一律不碰）',
+  routeBashGitRead('git', { op: 'status' }) === undefined
+  && routeBashGitRead('write', { path: 'src/a.ts' }) === undefined);
+check('R17 参数形状不对一律 fail-open（null / 字符串 / command 非字符串 / 缺 command）',
+  routeBashGitRead('bash', null) === undefined && routeBashGitRead('bash', 'x') === undefined
+  && routeBashGitRead('bash', { command: 42 }) === undefined
+  && routeBashGitRead('bash', {}) === undefined);
+
+// 复刻 main.ts 那段接线的**路由那一半**（同形不同实例）。契约闸的行为由 verify-charter.ts ④ 段
+// 单独证明——本段只问"路由在真总线上真的拦得住"，避免把两套断言耦在一起。
+const routeBus = new PromptEventEmitter();
+routeBus.on('before_tool_call', (event) => {
+  const e = event as { name?: unknown; args?: unknown };
+  return routeBashGitRead(typeof e.name === 'string' ? e.name : '', e.args);
+});
+const busStatus = decodeDeny(await routeBus.emitHook('before_tool_call', { name: 'bash', args: { command: 'git log' } }));
+check('R18 真 PromptEventEmitter 总线上，路由的 deny 真被 decodeDeny 解出来',
+  busStatus.deny && busStatus.reason.includes('git(op="log")'), JSON.stringify(busStatus));
+check('R19 同一总线上写操作照旧放行（路由不误伤 bash 的正当用途）',
+  decodeDeny(await routeBus.emitHook('before_tool_call', { name: 'bash', args: { command: 'git commit -m x' } })).deny === false);
+check('R20 同一总线上 git 工具自身不被拦（路由只认 bash）',
+  (await routeBus.emitHook('before_tool_call', { name: 'git', args: { op: 'status' } })) === undefined);
+
+const routeSrc = fs.readFileSync(path.join(ROOT, 'src/git/route.ts'), 'utf8');
+// 先抹注释再查：本仓已第六次踩"源码文本断言被自己的说明文字判红"（route.ts 头注里举了 shell 元字符）
+const routeCode = stripComments(routeSrc);
+const mainCode = stripComments(fs.readFileSync(path.join(ROOT, 'src/harness/main.ts'), 'utf8'));
+check('R21 route.ts 零 I/O（不碰 fs / 不起子进程 —— 判定能脱离终端验）',
+  !/node:(fs|child_process)/.test(routeCode) && !/\bexecFileSync\b/.test(routeCode));
+check('R22 route.ts 复用 GIT_OPS 作唯一枚举源（不另抄一份 op 表，否则两处迟早分家）',
+  /GIT_OPS/.test(routeCode)
+  && !/'status'\s*,\s*'diff'\s*,\s*'log'/.test(routeCode));
+check('R23 main.ts 真接了路由（不是只写了个纯函数没人调）', mainCode.includes('routeBashGitRead('));
+// 顺序断言：两处都只以"函数名+"出现（import 行不带括号，不会误命中）
+check('R24 契约闸排在路由**之前**（安全闸优先于引导闸）',
+  mainCode.indexOf('guardContractWrite(') >= 0
+  && mainCode.indexOf('guardContractWrite(') < mainCode.indexOf('routeBashGitRead('));
+check('R25 git 工具描述与硬路由指向同一件事（软提示说"不要用 bash 跑 git 只读"）',
+  /不要用 bash 去跑 git status/.test(gitToolSrc), gitToolSrc.slice(0, 60));
 
 console.log('');
 console.log(`结果：${passed} 通过 / ${failed} 失败（共 ${passed + failed} 项）`);

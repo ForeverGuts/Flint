@@ -31,6 +31,7 @@ import { MEMORY_FILE, memoryStore } from '../memory/store.js';
 import { CALLS_FILE, EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { projectRegistry } from '../eventlog/registry.js';
 import { charterLock, guardContractWrite } from '../project/charter.js';
+import { routeBashGitRead } from '../git/route.js';
 import { createForkAsker } from '../io/ui/fork-prompt.js';
 import type { CollectedSpan } from '../core/events.js';
 import { SpanCollectorImpl } from '../runtime/span-collector.js';
@@ -131,11 +132,16 @@ export async function main(checkResult: CheckResult): Promise<void> {
   // 扩展返回 undefined 时不会覆盖它的 deny。
   events.on('before_tool_call', (event) => {
     const e = event as { name?: unknown; args?: unknown };
-    return guardContractWrite(
-      typeof e.name === 'string' ? e.name : '',
-      e.args,
-      charterLock.isUnlocked(),
-    );
+    const toolName = typeof e.name === 'string' ? e.name : '';
+    // ① 安全闸：契约锁。完备性要求高（漏一次 = 目标被偷改），故排在前面、命中即返回。
+    const contract = guardContractWrite(toolName, e.args, charterLock.isUnlocked());
+    if (contract) return contract;
+    // ② 引导闸（**路由器**，不是闸）：bash 里的裸 git 只读命令 → 零弹窗的结构化 git 工具。
+    //    判据刻意窄（只认裸形式），漏掉只是"照旧走 bash"，因此没有完备性负担，可与①同栖一个钩子。
+    //    两者共用"拦在权限弹窗之前"这个位置：被路由的调用不会让用户看到弹窗（ROADMAP 10.5.6）。
+    //    为什么不靠描述文字引导：模型选通道看的是描述，而描述是**软约束**（强度 = 模型听不听话），
+    //    这条线由程序在工具调用处判定，不依赖模型自觉。详见 src/git/route.ts 头注。
+    return routeBashGitRead(toolName, e.args);
   });
 
   // 装载用户扩展（段落 + hook + watcher）—— 自动扫描 src/extensions/ 下三类目录

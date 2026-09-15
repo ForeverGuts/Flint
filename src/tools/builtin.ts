@@ -1134,7 +1134,7 @@ export function registerBuiltinTools(
      `tag` 只能看、不能打（打标签是写操作）。 */
   tools.register(defineTool({
     name: 'git',
-    description: '查看当前 git 仓库的**只读**信息（不会改动任何东西）。op: status 看当前分支与工作区脏了什么 / diff 看改了哪些文件、各增删多少行 / log 看最近的提交 / branch 看所有分支与跟踪关系 / show 看某一次提交改了什么 / blame 看某个文件每一行是谁写的 / remote 看远端配置 / tag 看标签列表。要 commit、push、checkout、tag 等写操作时改用 bash。',
+    description: '查看当前 git 仓库的**只读**信息（不会改动任何东西）。op: status 看当前分支与工作区脏了什么 / diff 看改了哪些文件、各增删多少行 / log 看最近的提交 / branch 看所有分支与跟踪关系 / show 看某一次提交改了什么 / blame 看某个文件每一行是谁写的 / remote 看远端配置 / tag 看标签列表。查这些一律用本工具，**不要用 bash 去跑 git status / git log 之类**（bash 会弹权限窗、且只回原始文本；裸命令会被程序拦下来转到这里）；要 commit、push、checkout、tag 等写操作时才改用 bash。',
     spec: {
       op: str('操作', '要做的操作：status（当前分支 + 工作区状态）/ diff（文件级增删行数）/ log（提交历史）/ branch（分支列表）/ show（某次提交的元信息与文件级改动）/ blame（逐行归属）/ remote（远端列表）/ tag（标签列表）'),
       target: optStr('版本引用', 'diff 用：差异基准，`staged` 看已 add 的改动、留空看还没 add 的改动、也可写某个 ref（如 HEAD~1）。show 用：要看哪一次提交（留空 = HEAD）。blame 用：从哪个版本开始追责（留空 = 当前工作区）。示例: "HEAD~1"', ''),
