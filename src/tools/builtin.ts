@@ -29,7 +29,9 @@ import {
   NO_INTERACTION, buildChoices, buildForkTitle, classifyChoice, formatForkResult, parseCandidates,
   type AskFn,
 } from '../project/fork.js';
-import { DEVLOG_FILE } from '../project/charter.js';
+import {
+  CHARTER_FILE, CHARTER_REJECTED_FILE, DEVLOG_FILE, charterLock, contractDrifted,
+} from '../project/charter.js';
 import {
   ROADMAP_FILE, findCycles, isParent, nextCoord, parentOf, parseRoadmap, resolveStatuses, setStatus,
   spliceCoordTable, unmetDeps, type Coord,
@@ -565,11 +567,87 @@ export function registerBuiltinTools(
       return why ? `${why}: ${cmd}` : cmd;
     },
     handler: async (args) => {
-      try {
-        // description 只服务于权限弹窗（permissionDetail 拿的是原始 args），handler 不取它；
-        // 但它必须在 spec 里声明，否则模型传了就会被 parse 判成未知参数
-        const { command: cmd } = args;
+      // description 只服务于权限弹窗（permissionDetail 拿的是原始 args），handler 不取它；
+      // 但它必须在 spec 里声明，否则模型传了就会被 parse 判成未知参数
+      const cmd = typeof args.command === 'string' ? args.command : '';
 
+      // ── 契约锁 L2：事后**效果**闸（规则与理由见 project/charter.ts 的「第二处入口」头注）──
+      // L1 挂在 before_tool_call 钩子上，判据是**字面文件名**；它漏拼出来的路径
+      // （`cat .f*/CHARTER.md`、`node build.js` 里写它）。这里按**效果**兜底：
+      // 跑之前记下契约文件长什么样，跑完再比对，锁定期间变了就回滚。
+      // 锁开着（/charter unlock）时整段空转 —— 一次 fs 都不碰。
+      const charterLocked = !charterLock.isUnlocked();
+      const { existsSync, readFileSync, writeFileSync, unlinkSync } = await import('node:fs');
+      const { resolve } = await import('node:path');
+      const charterAbs = resolve(process.cwd(), CHARTER_FILE);
+      const readCharter = (): string | null => {
+        try { return existsSync(charterAbs) ? readFileSync(charterAbs, 'utf-8') : null; }
+        catch { return null; }   // 读不到就按"没有"算，不因为读不了它而掀翻整条命令
+      };
+      const charterBefore = charterLocked ? readCharter() : null;
+
+      /** 命令跑完后调一次：锁定期间契约变了 → 回滚 + 记账 + 返回要报的错；没变返回 null */
+      const contractAfterRun = (): string | null => {
+        if (!charterLocked) return null;
+        const after = readCharter();
+        if (!contractDrifted(charterBefore, after)) return null;
+
+        // ① 先把被顶掉的那一版**存下来**，再回滚 —— 顺序是承重的。
+        //    回滚是破坏性动作：绝大多数情形被顶掉的是模型违规写的内容（丢了活该），
+        //    但极小概率是用户本人在编辑器里改的（时间窗口 = 这条命令的执行时长）。
+        //    先存档，回滚才从"不可逆"变成"可逆"。
+        let savedNote: string;
+        try {
+          if (after === null) {
+            savedNote = '（这次命令把该文件删掉了，已按执行前的版本恢复）';
+          } else {
+            writeFileSync(resolve(process.cwd(), CHARTER_REJECTED_FILE), after, 'utf-8');
+            savedNote = `被回滚的那一版原样存在 ${CHARTER_REJECTED_FILE}（要看或要比对随时读它）`;
+          }
+        } catch (e) {
+          savedNote = `⚠ 存档失败（${e instanceof Error ? e.message : String(e)}）—— 被回滚的内容没能留下来`;
+        }
+
+        // ② 回滚
+        let restoreNote = '';
+        try {
+          // 跑之前不存在 → 删掉这次新建出来的；否则写回原文
+          if (charterBefore === null) unlinkSync(charterAbs);
+          else writeFileSync(charterAbs, charterBefore, 'utf-8');
+        } catch (e) {
+          restoreNote = `\n  ⚠ 回滚**失败**（${e instanceof Error ? e.message : String(e)}）—— 请手动检查这个文件。`;
+        }
+
+        // ③ 记账进事件库（追加型事实层）：回滚是本工具干的，必须留痕。
+        //    注意 check 的是长度上限 —— addNarrative 的字段有 400 字上限，
+        //    所以全文靠上面的旁挂文件，这里只留一段摘要 + 指路。
+        //    记账失败不改变"回滚已经发生"这个事实，所以吞掉异常。
+        try {
+          evs.addNarrative({
+            kind: 'system',
+            title: '[契约锁] bash 改动了 CHARTER.md，已回滚',
+            context: `命令：${cmd}`,
+            decision: '锁定状态下目标文档（契约）不得改动 —— 已还原到本次命令执行前的版本',
+            reason: 'bash 能绕过 write/edit 直接改盘，故在效果侧补一道事后闸',
+            outcome: after === null
+              ? '（文件被删除，已恢复为执行前的版本）'
+              : `全文见 ${CHARTER_REJECTED_FILE}；开头是：${after.slice(0, 120)}`,
+            tags: ['charter', 'rollback'],
+          }, EVENTS_FILE);
+        } catch { /* 记账失败不影响回滚结论 */ }
+
+        return '[契约锁] .flint/CHARTER.md 在本次命令执行期间被改动，已回滚到执行前的版本。'
+          + `${restoreNote}\n`
+          + `  命令：${cmd}\n`
+          + '  为什么：bash 是唯一能绕过 write/edit 直接改盘的工具，所以这里按**效果**兜底 ——\n'
+          + '  不看命令怎么写，只要锁定期间这个文件的内容变了就会被还原（本会话尚未 /charter unlock）。\n'
+          + `  ${savedNote}\n`
+          + '  事件库里也记了一条（search_events 搜 charter 可见）。\n'
+          + '  若这是用户本人在编辑器里的改动：请先 /charter unlock 再改。\n'
+          + '  若你是想绕开契约锁改目标文档：不要重试，先向用户说明要改什么、为什么。';
+      };
+
+      try {
         const { execSync } = await import('node:child_process');
 
         const raw = execSync(cmd, {
@@ -580,6 +658,10 @@ export function registerBuiltinTools(
         });
 
         const trimmed = decodeChildOutput(raw).trim();
+
+        // 早退分支（含"无输出"）之前先过效果闸：改盘是副作用，与命令输出无关
+        const violation = contractAfterRun();
+        if (violation !== null) return toolError(violation);
 
         if (!trimmed) {
           return toolOk(`命令执行成功（无输出）: ${cmd.slice(0, 100)}`);
@@ -595,6 +677,9 @@ export function registerBuiltinTools(
 
         return toolOk(`命令执行成功 (${lineCount} 行输出，${trimmed.length} 字符):\n${shown}`);
       } catch (e) {
+        // 命令失败也可能已经把文件改了（`echo x > CHARTER.md && false`），所以这条路径也要过闸
+        const violation = contractAfterRun();
+        if (violation !== null) return toolError(violation);
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         const msg = e instanceof Error ? e.message.slice(0, 500) : String(e);
         return toolError(`命令执行失败: ${msg}`);

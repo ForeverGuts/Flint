@@ -124,6 +124,9 @@ export async function main(checkResult: CheckResult): Promise<void> {
   // 刻意**不**接权限子系统（决策 C11）：权限的语义是"弹窗放行 + 进 allowlist"，契约要的是
   // "默认拒写"——若塞进同一个授权键空间，用户对 write 点一次"本次全部允许"就把锁静默打开了。
   // 故本闸只认 charterLock 自己的状态位（唯一开门动作是 /charter unlock）。
+  // 覆盖三层调用：write/edit 按**目标路径**精确比对；bash 按**命令串里的字面文件名**拦
+  // （2026-09-14 补，ROADMAP 10.9.2 第一步）——bash 的**效果侧**兜底在 bash 工具自己身上，
+  // 因为钩子的 after_tool_call 是只读观察、改不了工具结果（见 charter.ts 的「第二处入口」）。
   // 注册时机在装载扩展**之前**：emitHook 取"最后一个非 undefined"结果，核心钩子先入列，
   // 扩展返回 undefined 时不会覆盖它的 deny。
   events.on('before_tool_call', (event) => {

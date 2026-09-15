@@ -126,7 +126,9 @@ cwd 下 `.flint/` 里的**生命周期三件套**之一（另两个是 `PROJECT.
 
 **这是全仓唯一一处"改需要许可"的东西**：`write` / `edit` 命中该路径会被 `before_tool_call` 钩子拒绝（实现在 `project/charter.ts` 的 `guardContractWrite`），唯一开门动作是 `/charter unlock`（会话级位，进程结束自动回锁）。它治的是 **goal drift** —— 目标若能被边做边改，最后交付的东西和立项时说好的那个就不是一回事。**为什么走独立通道而不接权限子系统**（权限是"弹窗放行 + 进 allowlist"，契约要的是"默认拒写"；混在一起会让一次"本次全部允许"把锁静默打开），见 DECISION_LOG 锚点 `log-2026-09-14-charter-lock`。
 
-**已知边界**：`bash` 里的重定向也能改这个文件，本闸不拦——命令串的语义解析是另一件事（ROADMAP 10.9.2）。
+**bash 这条通道怎么堵**（2026-09-15，ROADMAP 10.9.2 第一步）：`bash` 能绕过 `write` / `edit` 直接改盘，而它的参数是一串**文本**、没有"目标路径"可以精确比对。故分两层——**L1 事前字面闸**（`mentionsContract`：命令串里出现 `charter.md` 这个名字就拒，不分读还是写，判据刻意粗）**+ L2 事后效果闸**（`contractDrifted`：跑完比对文件内容，锁定期间变了就回滚）。L1 拦不住的绕法（通配符拼路径、跑脚本去改）由 L2 兜住；回滚前先把被顶掉的那一版存进旁挂文件 `.flint/CHARTER.rejected.md`，使回滚**可逆**。完整理由见 DECISION_LOG 锚点 `log-2026-09-15-charter-bash-hole`。
+
+**仍未做**：真正的"危险命令拦截"（命令串黑名单 + 二次确认）尚缺，且"二次确认"被 **C7** 挡着——`decodeDeny` 只有"放行/拒绝"两态。
 
 参见：[Project Metadata（项目元数据）](#project-metadata项目元数据) · [Check](#check)
 
