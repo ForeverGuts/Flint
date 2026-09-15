@@ -40,8 +40,10 @@ import {
   DEVLOG_HEADER, formatArchiveReceipt, formatStamp, renderDevlogEntry,
 } from '../project/lifecycle.js';
 import {
-  DIFF_FILE_MAX, GIT_OPS, buildGitArgs, isNoCommitsYet, isNotARepo, parseBranch, parseLog,
-  parseNumstat, parseStatus, renderBranch, renderDiff, renderLog, renderStatus, validateTarget,
+  BLAME_LINE_MAX, DIFF_FILE_MAX, GIT_OPS, buildGitArgs, isNoCommitsYet, isNoSuchPath, isNotARepo,
+  parseBlame, parseBranch, parseLog, parseNumstat, parseRemote, parseShow, parseStatus, parseTag,
+  renderBlame, renderBranch, renderDiff, renderLog, renderRemote, renderShow, renderStatus,
+  renderTag, validateLineRange, validateTarget,
   type GitOp,
 } from '../git/git.js';
 
@@ -1112,7 +1114,7 @@ export function registerBuiltinTools(
   /* ── Git：只读结构化查询（ROADMAP 10.5.1） ──
      与 bash 的分工：bash 是"万能但危险"——它能改一切，所以必须弹窗，且授权边界是**整条命令**；
      于是模型顺手把 `git status && git commit -m x` 拼成一条，读与写就被绑在同一次授权里。
-     本工具是"窄但安全"：只跑四条只读命令，**argv 数组不经 shell**，不弹窗。
+     本工具是"窄但安全"：只跑八条只读命令，**argv 数组不经 shell**，不弹窗。
 
      ── 为什么不需要权限弹窗 ──
      与 ls / read / grep 同一取位：读不改变任何东西。弹窗的价值在"拦下会改东西的动作"，
@@ -1120,32 +1122,50 @@ export function registerBuiltinTools(
 
      ── 为什么 op 是白名单，而不是"传一条 git 子命令" ──
      若参数是命令字符串，本工具立刻退化成"免弹窗的 bash"，把 bash 的整套权限设计绕过去。
-     op 只有四个取值、路径只进 `--` 之后、target 以 `-` 开头会被拒（见 validateTarget），
-     于是"模型在这里能执行什么"是被**结构**限死的，不靠提示词自觉。 */
+     op 只有八个取值、路径只进 `--` 之后、target 以 `-` 开头会被拒（见 validateTarget），
+     于是"模型在这里能执行什么"是被**结构**限死的，不靠提示词自觉。
+
+     ── 2026-09-15 补厚覆盖面（show / blame / remote / tag） ──
+     加它们的判据是**只读 + 高频**：这四件事此前都只能走 bash 的弹窗通道，而"看一眼"本不该问。
+     每一条的边界都刻意收在"参数形状可枚举"这一侧：`show` 只给提交元信息 + 文件级增删行数
+     （**不给 diff 正文**——那是让模型接管一屏文本，属另一个 op 的事）；`blame` 的 `lines` 只收
+     纯数字范围，**不把 `-L` 的完整语法交出去**（否则这个 op 就开始退化成"半条命名的 git 命令"）；
+     `remote` 的 URL **一律打码**（那是唯一一处"看着只读、却可能把凭据读进模型上下文"的口子）；
+     `tag` 只能看、不能打（打标签是写操作）。 */
   tools.register(defineTool({
     name: 'git',
-    description: '查看当前 git 仓库的**只读**信息（不会改动任何东西）。op: status 看当前分支与工作区脏了什么 / diff 看改了哪些文件、各增删多少行 / log 看最近的提交 / branch 看所有分支与跟踪关系。要 commit、push、checkout 等写操作时改用 bash。',
+    description: '查看当前 git 仓库的**只读**信息（不会改动任何东西）。op: status 看当前分支与工作区脏了什么 / diff 看改了哪些文件、各增删多少行 / log 看最近的提交 / branch 看所有分支与跟踪关系 / show 看某一次提交改了什么 / blame 看某个文件每一行是谁写的 / remote 看远端配置 / tag 看标签列表。要 commit、push、checkout、tag 等写操作时改用 bash。',
     spec: {
-      op: str('操作', '要做的操作：status（当前分支 + 工作区状态）/ diff（文件级增删行数）/ log（提交历史）/ branch（分支列表）'),
-      target: optStr('差异基准', '仅 diff 用：worktree（默认，还没有 add 的改动）/ staged（已经 add 的改动）/ 某个版本引用（如 HEAD~1、main，与它比较）。示例: "staged"', 'worktree'),
-      path: optStr('限定路径', '仅 diff 用：只看某个文件或目录（仓库根相对）。默认整个仓库。示例: "src/tools"', ''),
+      op: str('操作', '要做的操作：status（当前分支 + 工作区状态）/ diff（文件级增删行数）/ log（提交历史）/ branch（分支列表）/ show（某次提交的元信息与文件级改动）/ blame（逐行归属）/ remote（远端列表）/ tag（标签列表）'),
+      target: optStr('版本引用', 'diff 用：差异基准，`staged` 看已 add 的改动、留空看还没 add 的改动、也可写某个 ref（如 HEAD~1）。show 用：要看哪一次提交（留空 = HEAD）。blame 用：从哪个版本开始追责（留空 = 当前工作区）。示例: "HEAD~1"', ''),
+      path: optStr('限定路径', 'diff / show 用：只看某个文件或目录（仓库根相对），留空 = 全仓库。blame 用：**必填**，要追责的那个文件。示例: "src/tools"', ''),
+      lines: optStr('行范围', '仅 blame 用：只追某几行。写单个行号（"10"，**只追这一行**）或「起,止」（"10,20"）。留空 = 整份文件。示例: "10,20"', ''),
       limit: optPosInt('条数', '仅 log 用：取最近几条（1-50）。默认 10。示例: 20', 10),
     },
     handler: async (args) => {
       try {
-        const { op, target, path: onlyPath, limit } = args;
+        const { op, target, path: onlyPath, lines, limit } = args;
         const opValue = op as GitOp;
 
         if (!GIT_OPS.includes(opValue)) {
           return toolInvalid(`未知操作 op=${op}，可用的是 ${GIT_OPS.join(' / ')}`);
         }
-        // target 落在 `--` **之前** = git 的选项位置，能变成 --output=文件（见 validateTarget）
-        if (opValue === 'diff') {
+        // target 落在 `--` **之前** = git 的选项位置，能变成 --output=文件（见 validateTarget）。
+        // diff / show / blame 三个 op 的 target 都在那个位置，共过同一道闸。
+        if (opValue === 'diff' || opValue === 'show' || opValue === 'blame') {
           const bad = validateTarget(target);
           if (bad !== null) return toolInvalid(bad);
         }
+        if (opValue === 'blame') {
+          // spec 表达不了"仅当 op=blame 时 path 必填"，所以这条落在 handler 里
+          if (onlyPath.trim() === '') {
+            return toolInvalid('blame 必须指定 path —— 逐行追责得先有个文件（示例: "src/tools/builtin.ts"，路径是仓库根相对）。');
+          }
+          const bad = validateLineRange(lines);
+          if (bad !== null) return toolInvalid(bad);
+        }
 
-        const argv = buildGitArgs({ op: opValue, target, path: onlyPath, limit });
+        const argv = buildGitArgs({ op: opValue, target, path: onlyPath, lines, limit });
         const { execFileSync } = await import('node:child_process');
 
         let raw: Buffer;
@@ -1169,6 +1189,19 @@ export function registerBuiltinTools(
           if (opValue === 'log' && isNoCommitsYet(stderr)) {
             return toolOk(renderLog([], limit));
           }
+          // blame 一个没跟踪过的路径：不是环境故障，而是"它还没有历史" —— 把这一点讲清楚，
+          // 否则模型只看到一句 `fatal: no such path`，容易去翻 git 怎么重装
+          if (opValue === 'blame' && isNoSuchPath(stderr)) {
+            return toolError(`追不了 ${onlyPath} 的责任：git 说这个路径在指定版本里不存在。`
+              + '常见原因：文件还没有被 git 跟踪（新文件要先 add / commit 才有历史），'
+              + `或者路径写错了（路径是**仓库根相对**）。原始信息：${stderr.trim().slice(0, 160)}`);
+          }
+          // show 的 128 有两种含义：仓库还是空的，或者这个 ref 不存在 —— 两种都得说
+          if (opValue === 'show' && isNoCommitsYet(stderr)) {
+            return toolError(`看不了这次提交（${target.trim() === '' ? 'HEAD' : target.trim()}）：`
+              + '仓库还没有任何提交，或者这个版本引用不存在。'
+              + `原始信息：${stderr.trim().slice(0, 160)}`);
+          }
           return toolError(`git ${op} 执行失败（退出码 ${err.status ?? '?'}）：${stderr.trim().slice(0, 300) || '（无 stderr）'}`);
         }
 
@@ -1186,8 +1219,31 @@ export function registerBuiltinTools(
           case 'log':
             body = renderLog(parseLog(text), limit);
             break;
-          default:
+          case 'branch':
             body = renderBranch(parseBranch(text));
+            break;
+          case 'show': {
+            const parsed = parseShow(text);
+            if (parsed === null) {
+              // 形状不对（空输出 / 被用户配置染色 / 格式变了）—— 报出来而不是编一条空记录
+              body = `[提交] 拿不到这次提交的结构化信息（git 的输出形状不符合预期）。原始输出开头：${text.slice(0, 200)}`;
+            } else {
+              const files = parsed.files.slice(0, DIFF_FILE_MAX);
+              body = renderShow({ ...parsed, files }, onlyPath, parsed.files.length > DIFF_FILE_MAX);
+            }
+            break;
+          }
+          case 'blame': {
+            const all = parseBlame(text);
+            const shown = all.slice(0, BLAME_LINE_MAX);
+            body = renderBlame(onlyPath, shown, all.length, shown.length);
+            break;
+          }
+          case 'remote':
+            body = renderRemote(parseRemote(text));
+            break;
+          default:
+            body = renderTag(parseTag(text));
         }
 
         const shown = body.length > 4000
