@@ -34,6 +34,9 @@ import {
 } from '../project/charter.js';
 import { describePostcheck, postcheckRegistry } from '../project/postcheck.js';
 import {
+  GITIGNORE_FILE, GITIGNORE_MAX_BYTES, isIgnoredByGitignore, parseGitignore, type IgnoreRule,
+} from '../project/gitignore.js';
+import {
   ROADMAP_FILE, findCycles, isParent, nextCoord, parentOf, parseRoadmap, resolveStatuses, setStatus,
   spliceCoordTable, unmetDeps, type Coord,
 } from '../project/roadmap.js';
@@ -154,6 +157,28 @@ async function withPostcheck(base: string): Promise<string> {
   return note === null ? base : `${base}\n\n${note}`;
 }
 
+/**
+ * 读**搜索根**那一层的 `.gitignore` 并编译成跳过规则 —— 跳过表 = 内置默认 ∪ `.gitignore`
+ * （ROADMAP 10.7.3；这里刻意不碰 ls/grep 里那份硬编码清单，两侧合起来才是完整的表）。
+ *
+ * 三条刻意的选择：
+ *   ① **宽容到"任何异常都返回空表"** —— 文件不存在、不可读、超长，统统当作"没有规则"，
+ *      于是工具行为与加这个功能之前**逐字一致**（路线图 C10 原话："无文件保持现状"）。
+ *      这不是偷懒：`.gitignore` 是用户资产，它写得再怪也不该让 ls / grep 报错失败。
+ *   ② **只读搜索根这一层**，不递归子目录、也不向上找仓根（理由见 gitignore.ts 文件头界线 ③）。
+ *      代价是 `ls src` 时根目录的规则不会叠加过去 —— 差的方向是"少忽略"，只多噪音。
+ *   ③ **显式点名的路径不看规则**（界线 ④）：`ls build` 照旧列内容，因为路径是用户说出来的。
+ */
+async function loadIgnoreRules(baseDir: string): Promise<IgnoreRule[]> {
+  try {
+    const { readFileSync } = await import('node:fs');
+    const raw = readFileSync(`${baseDir}/${GITIGNORE_FILE}`, 'utf-8');
+    return raw.length > GITIGNORE_MAX_BYTES ? [] : parseGitignore(raw);
+  } catch {
+    return [];
+  }
+}
+
 /** 展开 glob 里的 {a,b}，支持多组嵌套（递归） */
 function expandBraces(glob: string): string[] {
   const m = glob.match(/\{([^{}]*)\}/);
@@ -217,7 +242,7 @@ export function registerBuiltinTools(
   /* ── Ls：列目录（了解结构，工具增强推理的起点） ── */
   tools.register(defineTool({
     name: 'ls',
-    description: '列出目录内容，了解项目/目录结构（动手前先看清结构）。目录项以 / 结尾。默认只列当前层，depth 可递归。跳过 .git/node_modules/dist 等噪音目录。',
+    description: '列出目录内容，了解项目/目录结构（动手前先看清结构）。目录项以 / 结尾。默认只列当前层，depth 可递归。跳过 .git/node_modules/dist 与项目 .gitignore 里列出的路径。',
     spec: {
       path: optStr('目录路径', '目录路径，默认当前目录。示例: "src/" 或 "C:/Users/name/project"', '.'),
       depth: optPosInt('递归深度', '递归深度（1=仅当前层）。默认 1。示例: 2 列出两层', 1),
@@ -238,9 +263,13 @@ export function registerBuiltinTools(
 
         // 递归列目录（目录名带 / 后缀；跳过噪音目录；限制条目数防膨胀）
         const SKIP = new Set(['.git', 'node_modules', 'dist']);
+        const ignoreRules = await loadIgnoreRules(resolvedPath);
         const MAX_ENTRIES = 200;
         const lines: string[] = [];
-        const walk = (dir: string, level: number): void => {
+        // rel = 相对**搜索根**的路径。gitignore 的每条规则都是相对它自己所在那一层写的，
+        // 所以"锚定"与"任意深度"两种语义都得靠这条相对路径才判得对（见 gitignore.ts）。
+        // 显式点名的路径本身不参与判定：`ls build` 照旧列内容 —— 用户把路径说出来了，别替他藏。
+        const walk = (dir: string, level: number, rel: string): void => {
           if (level > depth || lines.length >= MAX_ENTRIES) return;
           let items;
           try {
@@ -255,13 +284,15 @@ export function registerBuiltinTools(
           for (const item of items) {
             if (lines.length >= MAX_ENTRIES) return;
             if (item.name.startsWith('.') || SKIP.has(item.name)) continue;
-            const prefix = '  '.repeat(level - 1);
             const isDir = item.isDirectory();
+            const childRel = rel ? `${rel}/${item.name}` : item.name;
+            if (isIgnoredByGitignore(childRel, isDir, ignoreRules)) continue;
+            const prefix = '  '.repeat(level - 1);
             lines.push(`${prefix}- ${item.name}${isDir ? '/' : ''}`);
-            if (isDir) walk(`${dir}/${item.name}`, level + 1);
+            if (isDir) walk(`${dir}/${item.name}`, level + 1, childRel);
           }
         };
-        walk(resolvedPath, 1);
+        walk(resolvedPath, 1, '');
 
         if (lines.length === 0) {
           return toolNegative('EMPTY', `目录为空或全部被过滤: ${resolvedPath}`);
@@ -483,7 +514,7 @@ export function registerBuiltinTools(
   /* ── Grep：搜索文件内容 ── */
   tools.register(defineTool({
     name: 'grep',
-    description: '在文件中递归搜索文本或正则模式，返回"路径:行号:该行内容"。纯 Node 实现、跨平台（Windows 无需装 grep 或 rg）。跳过 .git/node_modules/dist、二进制文件与超大文件。pattern 按 JS 正则编译。',
+    description: '在文件中递归搜索文本或正则模式，返回"路径:行号:该行内容"。纯 Node 实现、跨平台（Windows 无需装 grep 或 rg）。跳过 .git/node_modules/dist、项目 .gitignore 里列出的路径、二进制文件与超大文件。pattern 按 JS 正则编译。',
     spec: {
       pattern: str('搜索模式', '搜索模式，支持正则表达式。特殊字符请转义。示例: "function\\s+\\w+" 或 "TODO|FIXME" 或 "console\\.log"'),
       path: optStr('搜索路径', '搜索路径，文件或目录。默认当前目录。示例: "src/" 或 "C:/Users/name/project"', '.'),
@@ -516,6 +547,10 @@ export function registerBuiltinTools(
         if (!existsSync(resolvedPath)) return toolNegative('NOT_FOUND', `路径不存在: ${resolvedPath}`);
 
         const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist']);
+        // 搜索根本身是文件时，用户已经把路径点名了 —— 那时不读 .gitignore、也不套任何规则
+        //（gitignore.ts 界线 ④：别人说出来的路径，别替他藏）
+        const searchIsDir = statSync(resolvedPath).isDirectory();
+        const ignoreRules: IgnoreRule[] = searchIsDir ? await loadIgnoreRules(resolvedPath) : [];
         const MAX_FILE_BYTES = 2 * 1024 * 1024;   // 超大文件跳过：读进来只为搜一遍不值得
         const MAX_MATCHES = 50;                   // 与改前的 head -50 同量级，防输出膨胀
         const MAX_FILES = 5000;                   // 防误指向盘符根目录时走到天荒地老
@@ -548,7 +583,10 @@ export function registerBuiltinTools(
           }
         };
 
-        const walk = (dir: string): void => {
+        // rel = 相对**搜索根**的路径，理由同 ls 的 walk：gitignore 的规则相对它所在的那一层，
+        // 锚定与"任意深度"两种语义都靠它才判得对。目录被命中就整棵子树不再往下走，
+        // 于是"父目录被排除后，里面的文件救不回来"这条 git 语义在这里天然成立。
+        const walk = (dir: string, rel: string): void => {
           if (hitCap || scanned >= MAX_FILES) return;
           let items;
           try {
@@ -561,13 +599,15 @@ export function registerBuiltinTools(
             if (hitCap) return;
             if (item.name.startsWith('.') || SKIP_DIRS.has(item.name)) continue;
             const full = `${dir}/${item.name}`;
-            if (item.isDirectory()) { walk(full); continue; }
+            const childRel = rel ? `${rel}/${item.name}` : item.name;
+            if (isIgnoredByGitignore(childRel, item.isDirectory(), ignoreRules)) continue;
+            if (item.isDirectory()) { walk(full, childRel); continue; }
             if (includeRe && !includeRe.test(item.name)) continue;
             scanFile(full);
           }
         };
 
-        if (statSync(resolvedPath).isDirectory()) walk(resolvedPath);
+        if (searchIsDir) walk(resolvedPath, '');
         else scanFile(resolvedPath);
 
         // "扫了 N 个文件"必须回给模型：0 命中时它需要区分"扫了 300 个文件确实没有"

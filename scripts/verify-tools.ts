@@ -345,8 +345,15 @@ console.log('\n⑦ 源码文本断言（防回退）');
   check('G9 timeout 仍是 30000（缺口已记进 TESTING.md：超时路径无法快速触发，本套不测）',
     /timeout: 30000/.test(builtinSrc));
   check('G10 maxBuffer 仍是 4MB', /maxBuffer: 4096 \* 1024/.test(builtinSrc));
-  check('G11 grep 跳过噪音目录的清单与 ls 一致（.git/node_modules/dist）',
-    /const SKIP_DIRS = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(builtinSrc));
+  // 口径更新（2026-09-15，ROADMAP 10.7.3 `.gitignore` 感知；必有这一步写在 **⚠C10**：
+  // "属必然要改的既有断言，不算破坏设计"）。跳过表不再是"只有硬编码清单"，而是
+  // **内置默认 ∪ `.gitignore`**。内置默认必须一直在 —— 哪怕用户在自己的 .gitignore 里
+  // 把它们放回来，`.git` / `node_modules` / `dist` 也不进结果（安全底线不交给人手填空话）。
+  // 所以这条从"只有清单"改成"清单 ∪ 规则"两半都钉。（两侧**一致**这件事由
+  // `verify-gitignore.ts` 的 D5 单独钉，这里不重复。）
+  check('G11 grep 的跳过表 = 内置默认（.git/node_modules/dist）∪ .gitignore（两半都在，缺一不可）',
+    /const SKIP_DIRS = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(builtinSrc)
+    && /isIgnoredByGitignore\(childRel, item\.isDirectory\(\), ignoreRules\)/.test(builtinSrc));
   // 口径更新（2026-09-14，git 工具落地；2026-09-15，改完自检落地）：child_process 现在有
   // **三处**正当使用 —— bash（执行任意命令，走 shell）、git（argv 数组，**不经** shell）、
   // 改完自检（跑项目登记的那一条命令，走 shell；ROADMAP 10.6.2）。grep 的"不许 shell 出去"
