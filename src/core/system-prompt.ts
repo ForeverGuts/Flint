@@ -43,6 +43,12 @@ export interface SystemPromptContext {
    */
   project?: string | undefined;
   /**
+   * 项目命令表（package.json 的 scripts 渲染结果，可选）—— "这个项目有哪些命令"。
+   * 与 project 快照**同一层**（都答"这个项目长什么样"），没有则不注入。
+   * 它是**展示**不是门禁：只回答"跑什么"，不授权自动执行（授权只来自 .flint/postcheck.json）。
+   */
+  commands?: string | undefined;
+  /**
    * 项目记忆（MemoryStore 渲染结果，可选）—— 跨会话持久的项目约定/决策/坑。
    * 独立于对话历史，压缩碰不到；只在有记忆条目时注入。
    */

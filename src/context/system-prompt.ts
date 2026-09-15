@@ -71,11 +71,17 @@ export class SystemPromptServiceImpl implements SystemPromptService {
     //   所以模型一改它就立刻生效（自愈），不需要任何"谁通知 runtime"的线。
     //   没有这个文件则整层缺席（模型照旧用 ls/read 自己看，不是错误状态）。
     //   位置：比 memory 易变（随代码漂移，每坐标一次）、比 task 稳定，故夹在 skills 与 memory 之间。
-    if (ctx.project) {
-      messages.push({
-        layer: 'project',
-        content: `[项目现状]（.flint/PROJECT.md —— 当前系统由哪些模块 / 技术点构成；随代码漂移，过时就更新它）\n${ctx.project}`,
-      });
+    //    同层的第二半：**项目命令表**（10.6.1，package.json 的 scripts 发现而来）。
+    //    与现状快照合在同一条消息里 —— 两者都是"这个项目长什么样"，且**都没有内存真相源**
+    //    （现状快照每轮现读文件、命令表启动读一次进注册表），分开成两条只会多一条消息、层序不变。
+    //    任一半缺席就只出另一半；两半都无 → 整层缺席（维持"没有就不注入"的纪律）。
+    if (ctx.project || ctx.commands) {
+      const parts: string[] = [];
+      if (ctx.project) {
+        parts.push(`[项目现状]（.flint/PROJECT.md —— 当前系统由哪些模块 / 技术点构成；随代码漂移，过时就更新它）\n${ctx.project}`);
+      }
+      if (ctx.commands) parts.push(ctx.commands);
+      messages.push({ layer: 'project', content: parts.join('\n\n') });
     }
 
     // ④ 项目记忆层：跨会话持久的项目约定/决策/坑（MemoryStore 渲染，压缩碰不到）。

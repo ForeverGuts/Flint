@@ -33,6 +33,11 @@ import { projectRegistry } from '../eventlog/registry.js';
 import { charterLock, guardContractWrite } from '../project/charter.js';
 import { routeBashGitRead } from '../git/route.js';
 import { POSTCHECK_FILE, parsePostcheckConfig, postcheckRegistry } from '../project/postcheck.js';
+import {
+  PACKAGE_JSON_FILE,
+  commandRegistry,
+  parsePackageScripts,
+} from '../project/commands.js';
 import { createForkAsker } from '../io/ui/fork-prompt.js';
 import type { CollectedSpan } from '../core/events.js';
 import { SpanCollectorImpl } from '../runtime/span-collector.js';
@@ -80,10 +85,18 @@ export async function main(checkResult: CheckResult): Promise<void> {
   // 立即生效就等于把那次弹窗变成摆设）。读一次进内存，这条路就断了。
   // 宽容读：不存在 / 读失败 / 内容不合法 → 一律不启用（与 .flint/PROJECT.md 同一口径）。
   try {
+    // 命令表先播种：登记表里的 {"use":"名字"} 要在它里面查（10.6.1 的发现半边）。
+    // 同样**只在启动读一次** —— package.json 是模型可写文件，运行期重读等于让它改一行
+    // scripts 就改写注入内容、并让 use 指向另一条命令（自我授权路径的同源论证）。
+    const commands = existsSync(PACKAGE_JSON_FILE)
+      ? parsePackageScripts(readFileSync(PACKAGE_JSON_FILE, 'utf-8'))
+      : [];
+    commandRegistry.set(commands);
     postcheckRegistry.set(existsSync(POSTCHECK_FILE)
-      ? parsePostcheckConfig(readFileSync(POSTCHECK_FILE, 'utf-8'))
+      ? parsePostcheckConfig(readFileSync(POSTCHECK_FILE, 'utf-8'), commands)
       : null);
   } catch {
+    commandRegistry.clear();
     postcheckRegistry.set(null);
   }
 

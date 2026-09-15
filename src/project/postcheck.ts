@@ -23,6 +23,14 @@
  *   生效就让那一次弹窗失去意义）。读一次、进内存，运行期改文件不生效，这条路就断了。
  *   跨会话的残留由「写它必须过权限弹窗」兜着（写在已知边界里，不假装没有）。
  *
+ * 【登记表可以**引用**命令名（10.6.1）】`{"use":"test"}` 与 `{"command":"npm run test"}` 二选一：
+ *   前者按名字去**项目命令注册表**（`src/project/commands.ts`，从 package.json 的 scripts 发现）
+ *   里查，查到后解析成那条命令的 `run`。**授权来源不变** —— 仍然是人手写的这份文件（声明即授权），
+ *   变的只是命令**本体**不用抄一遍：package.json 里改了实现，登记表不必跟着改。
+ *   两个都写 / 都没写 / 引用了注册表里没有的名字 → **一律 null**（含糊 = 没声明好 = 不启用，
+ *   与下面 parsePostcheckConfig 的严格判据同一条理由）。
+ *   反向的那条不成立：**只发现、没登记 = 什么都不跑**（发现 ≠ 授权，见 commands.ts 文件头）。
+ *
  * 本文件**零 import**（无 node:fs / node:child_process）：解析与渲染是纯函数，可脱离终端验。
  *   读配置在 harness/main.ts（宽容读，读失败一律不启用），起进程在 tools/builtin.ts。
  *
@@ -71,8 +79,15 @@ export interface PostcheckConfig {
  * 判据的理由 —— 这张表是用户手写的白名单，而「声明即授权」的另一面就是
  * **没声明好 = 没授权**：猜一半去跑，比干脆不跑危险得多。
  * 宽容之处只有两处：允许 command 前后有空白（trim 掉）、允许带额外字段（忽略）。
+ *
+ * 第二参数 = 项目命令注册表（`{"use":"名字"}` 的查找范围，由 harness 启动时播种）。
+ *   刻意不 import commands.ts 的类型：本文件保持零 import，这里只要求"有 name 与 run 两个字段"。
+ *   不传（或传空表）时 `use` 一律解析失败 —— 没有注册表就无所谓引用。
  */
-export function parsePostcheckConfig(text: unknown): PostcheckConfig | null {
+export function parsePostcheckConfig(
+  text: unknown,
+  commands: readonly { name: string; run: string }[] = [],
+): PostcheckConfig | null {
   if (typeof text !== 'string' || text.trim() === '') return null;
   let raw: unknown;
   try {
@@ -83,8 +98,22 @@ export function parsePostcheckConfig(text: unknown): PostcheckConfig | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
 
-  const command = obj.command;
-  if (typeof command !== 'string' || command.trim() === '') return null;
+  // command 与 use **二选一**：都写 = 不知道该听谁的（含糊即不启用），都不写 = 没声明
+  const rawCommand = obj.command;
+  const rawUse = obj.use;
+  if (rawCommand !== undefined && rawUse !== undefined) return null;
+
+  let command: string;
+  if (rawUse !== undefined) {
+    if (typeof rawUse !== 'string' || rawUse.trim() === '') return null;
+    const name = rawUse.trim();
+    const hit = commands.find((c) => c.name === name);
+    if (!hit || typeof hit.run !== 'string' || hit.run.trim() === '') return null;
+    command = hit.run.trim();
+  } else {
+    if (typeof rawCommand !== 'string' || rawCommand.trim() === '') return null;
+    command = rawCommand.trim();
+  }
 
   let timeoutMs = DEFAULT_POSTCHECK_TIMEOUT_MS;
   if (obj.timeoutMs !== undefined) {
@@ -94,7 +123,7 @@ export function parsePostcheckConfig(text: unknown): PostcheckConfig | null {
     timeoutMs = t;
   }
 
-  return { command: command.trim(), timeoutMs };
+  return { command, timeoutMs };
 }
 
 /** 一次自检执行的观测量 —— 由工具层（builtin.ts）从 spawnSync 结果投影出来 */

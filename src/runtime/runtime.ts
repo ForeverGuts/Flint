@@ -22,6 +22,7 @@ import { readLine } from '../io/terminal.js';
 import { taskStore } from '../todo/store.js';
 import { memoryStore } from '../memory/store.js';
 import { readProjectSnapshot } from '../project/snapshot.js';
+import { commandRegistry, renderCommandsSection } from '../project/commands.js';
 import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
 
 /* ── 工作记忆：真相源是 `taskStore`（src/todo/store.ts） ──
@@ -705,6 +706,10 @@ export class Runtime {
     // **没有 store**，文件就是唯一真相源，所以读的是同一处。附带好处是自愈：模型改完即生效。
     // 完整取舍见 src/project/snapshot.ts 文件头（它是 ROADMAP P10.12.5 的注入侧）。
     const projectSnapshot = readProjectSnapshot();
+    // 项目命令表（10.6.1）：**不每轮现读 package.json** —— 启动时播种进 commandRegistry 后
+    // 运行期不再回读（理由见 commands.ts 文件头「发现 ≠ 授权」：package.json 是模型可写文件）。
+    // 每轮只做一次渲染（空表 → 空串 → 半段缺席，与现状快照缺席同一纪律）。
+    const commandsSection = renderCommandsSection(commandRegistry.get());
     // 项目记忆：读内存真相源（memoryStore），有条目才注入；截断同 task 层——注入可截，投影不截
     const rawMemory = memoryStore.isEmpty() ? undefined : memoryStore.render();
     const projectMemory = rawMemory && rawMemory.length > 2000
@@ -718,6 +723,7 @@ export class Runtime {
       model: this.currentModel,
       summary: compacted.summary,
       project: projectSnapshot,
+      commands: commandsSection === '' ? undefined : commandsSection,
       task: taskMemory,
       memory: projectMemory,
       historyCount: history.length,
