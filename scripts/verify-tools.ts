@@ -347,11 +347,13 @@ console.log('\n⑦ 源码文本断言（防回退）');
   check('G10 maxBuffer 仍是 4MB', /maxBuffer: 4096 \* 1024/.test(builtinSrc));
   check('G11 grep 跳过噪音目录的清单与 ls 一致（.git/node_modules/dist）',
     /const SKIP_DIRS = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(builtinSrc));
-  // 口径更新（2026-09-14，git 工具落地）：child_process 现在有**两处**正当使用 ——
-  // bash（执行任意命令，走 shell）与 git（argv 数组，**不经** shell）。grep 的"不许 shell 出去"
-  // 已由 G1 的切段断言单独钉住，所以这里只守住"没有第三处悄悄冒出来"。
-  check('G12 child_process 只有 bash 与 git 两处（grep 不 shell 由 G1 单独钉；这条防第三处冒出来）',
-    (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 2);
+  // 口径更新（2026-09-14，git 工具落地；2026-09-15，改完自检落地）：child_process 现在有
+  // **三处**正当使用 —— bash（执行任意命令，走 shell）、git（argv 数组，**不经** shell）、
+  // 改完自检（跑项目登记的那一条命令，走 shell；ROADMAP 10.6.2）。grep 的"不许 shell 出去"
+  // 已由 G1 的切段断言单独钉住，所以这里只守住"没有第四处悄悄冒出来"。
+  // 这条**会随正当用途增加而红**，那是刻意的：每次加一处都必须回来把理由写在这里。
+  check('G12 child_process 只有 bash / git / 自检三处（grep 不 shell 由 G1 单独钉；这条防第四处冒出来）',
+    (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 3);
 }
 
 /* ── 清理与汇总 ── */

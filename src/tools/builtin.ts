@@ -32,6 +32,7 @@ import {
 import {
   CHARTER_FILE, CHARTER_REJECTED_FILE, DEVLOG_FILE, charterLock, contractDrifted,
 } from '../project/charter.js';
+import { describePostcheck, postcheckRegistry } from '../project/postcheck.js';
 import {
   ROADMAP_FILE, findCycles, isParent, nextCoord, parentOf, parseRoadmap, resolveStatuses, setStatus,
   spliceCoordTable, unmetDeps, type Coord,
@@ -105,6 +106,52 @@ function decodeChildOutput(raw: Buffer): string {
       return raw.toString('utf-8');
     }
   }
+}
+
+/**
+ * 改完自检（ROADMAP 10.6.2）：登记表里有命令就同步跑一条，返回要追加到工具结果末尾的那段话。
+ * 返回 null = 没登记（默认态）→ 调用方一字不追加，工具结果与没接这功能时**逐字一致**。
+ *
+ * 为什么用 spawnSync 而不是 execSync：execSync 非零退出会抛，只能靠 catch 认「失败」；
+ * 而这里失败**是要读的数据**（退出码 + stdout/stderr 一起进摘要），不是异常。
+ * 为什么这条路走 shell：命令是用户在登记表里手写的一整句（`npm run typecheck` 这种），
+ * 本来就含空格与参数——与 git 工具「参数即数据、必须绕开 shell」的场景正好相反。
+ * 编码交给 decodeChildOutput：Windows 上 cmd.exe 自己的报错是 GBK，按 utf-8 硬解会乱码。
+ */
+async function runPostcheck(): Promise<string | null> {
+  const config = postcheckRegistry.get();
+  if (!config) return null;
+
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(config.command, {
+    shell: true,
+    cwd: process.cwd(),
+    timeout: config.timeoutMs,
+    encoding: 'buffer',
+    maxBuffer: 8 * 1024 * 1024,
+    windowsHide: true,
+  });
+
+  const asText = (v: unknown): string => (Buffer.isBuffer(v) ? decodeChildOutput(v) : '');
+  // error.code 的三种取值与处置见 postcheck.ts 的 PostcheckRun 注释（超时 / 超缓冲 / 起不来）
+  const err = r.error as (Error & { code?: string }) | undefined;
+
+  return describePostcheck({
+    command: config.command,
+    timeoutMs: config.timeoutMs,
+    status: r.status,
+    signal: r.signal,
+    stdout: asText(r.stdout),
+    stderr: asText(r.stderr),
+    // exactOptionalPropertyTypes：可选成员无值时不能传 undefined，得整个键不出现
+    ...(err ? { errorCode: err.code ?? 'SPAWN_FAILED', errorMessage: err.message.slice(0, 200) } : {}),
+  });
+}
+
+/** 把自检结论追加到工具结果正文末尾；没登记就原样返回 base */
+async function withPostcheck(base: string): Promise<string> {
+  const note = await runPostcheck();
+  return note === null ? base : `${base}\n\n${note}`;
 }
 
 /** 展开 glob 里的 {a,b}，支持多组嵌套（递归） */
@@ -300,7 +347,11 @@ export function registerBuiltinTools(
         }
 
         const lineCount = content.split('\n').length;
-        return toolOk(`写入成功: ${resolvedPath} (${content.length} 字符, ${lineCount} 行)`);
+        // 落盘成功 → 跑一次项目自检，把结论附在**同一份**结果里（模型下一轮必然看到）。
+        // 状态仍是 ok：工具干的事（落盘）确实成功了，自检是**附加情报**而不是工具的成败 ——
+        // 若改成 verify_failed，会连"连续失败保护"一起误触发，把一次成功写入报成失败。
+        return toolOk(await withPostcheck(
+          `写入成功: ${resolvedPath} (${content.length} 字符, ${lineCount} 行)`));
       } catch (e) {
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`写入失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -418,9 +469,10 @@ export function registerBuiltinTools(
         const before = work.split('\n').length;
         const after = updated.split('\n').length;
         const delta = after - before;
-        return toolOk(`已替换 ${replaceAll ? hits.length : 1} 处: ${resolvedPath} `
+        // 同 write：落盘成功才跑自检，结论附在同一份结果里（状态保持 ok，理由见 write 分支）
+        return toolOk(await withPostcheck(`已替换 ${replaceAll ? hits.length : 1} 处: ${resolvedPath} `
           + `(${before} → ${after} 行${delta === 0 ? '' : `, ${delta > 0 ? '+' : ''}${delta}`}, `
-          + `${original.length} → ${updated.length} 字符${allCrlf ? ', CRLF 已保持' : ''}${hasBom ? ', BOM 已保持' : ''})`);
+          + `${original.length} → ${updated.length} 字符${allCrlf ? ', CRLF 已保持' : ''}${hasBom ? ', BOM 已保持' : ''})`));
       } catch (e) {
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`替换失败: ${e instanceof Error ? e.message : String(e)}`);

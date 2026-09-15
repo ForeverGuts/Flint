@@ -8,7 +8,7 @@
 import { Runtime } from '../runtime/runtime.js';
 import { Mode } from '../types.js';
 import type { CheckResult, SessionStorage } from '../types.js';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { closeTerminal } from '../io/terminal.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import { JsonlSessionRepo } from '../session/jsonl-repo.js';
@@ -32,6 +32,7 @@ import { CALLS_FILE, EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { projectRegistry } from '../eventlog/registry.js';
 import { charterLock, guardContractWrite } from '../project/charter.js';
 import { routeBashGitRead } from '../git/route.js';
+import { POSTCHECK_FILE, parsePostcheckConfig, postcheckRegistry } from '../project/postcheck.js';
 import { createForkAsker } from '../io/ui/fork-prompt.js';
 import type { CollectedSpan } from '../core/events.js';
 import { SpanCollectorImpl } from '../runtime/span-collector.js';
@@ -72,6 +73,19 @@ export async function main(checkResult: CheckResult): Promise<void> {
   // 项目登记（跨项目检索的电话簿）：用过 flint 的项目自动进 ~/.flint/projects.jsonl。
   // 登记失败静默——它是旁路便利，不该挡住启动。
   projectRegistry.ensure(process.cwd());
+
+  // 改完自检（ROADMAP 10.6.2）：登记表**只在启动时读这一次**，运行期以内存为准、不再回读。
+  // 「只读一次」是承重的，不是顺手：否则模型写一份 .flint/postcheck.json 把 command 换成
+  // 任意命令，同会话内立刻生效 = 一条免弹窗执行的路（写这文件要走 write 的权限弹窗，但
+  // 立即生效就等于把那次弹窗变成摆设）。读一次进内存，这条路就断了。
+  // 宽容读：不存在 / 读失败 / 内容不合法 → 一律不启用（与 .flint/PROJECT.md 同一口径）。
+  try {
+    postcheckRegistry.set(existsSync(POSTCHECK_FILE)
+      ? parsePostcheckConfig(readFileSync(POSTCHECK_FILE, 'utf-8'))
+      : null);
+  } catch {
+    postcheckRegistry.set(null);
+  }
 
   // 初始化持久化会话（v2 会话树格式）
   const sessionDir = './sessions';

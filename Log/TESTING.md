@@ -1,6 +1,6 @@
 # 🧪 测试策略
 
-> 现状：**不用任何测试框架**。<!-- BEGIN AUTOGEN:test-summary -->37 套零依赖验证脚本、合计 **1923 项**断言<!-- END AUTOGEN:test-summary -->，`npm run verify` 一条命令串跑；另有 1 个真实链路冒烟脚本。
+> 现状：**不用任何测试框架**。<!-- BEGIN AUTOGEN:test-summary -->38 套零依赖验证脚本、合计 **2006 项**断言<!-- END AUTOGEN:test-summary -->，`npm run verify` 一条命令串跑；另有 1 个真实链路冒烟脚本。
 > 本文档描述"实际是怎么测的"，不是"打算怎么测"。（旧版写的"测试框架未选型"已过期多年。）
 
 ---
@@ -17,7 +17,7 @@
 
 ## 二、验证脚本清单
 
-全部在 `scripts/` 下，<!-- BEGIN AUTOGEN:test-counts -->**项数合计 1923**（其中 36 套是 `.ts` 走 tsx、1 套 `.mjs` 直跑）<!-- END AUTOGEN:test-counts -->。其中 `verify-edit.ts`、`verify-permission.ts` 与 `verify-tools.ts` 均为 2026-09-04 新增，`verify-spec.ts` 为 2026-09-06 新增，`verify-steering.ts` 为 2026-09-10 新增，`verify-doc-numbers.ts` 与 `verify-todo.ts` 为 2026-09-11 新增，`verify-repo.ts`、`verify-fork-summary.ts`、`verify-skill-watch.ts`、`verify-history-structured.ts`、`verify-skill-deps.ts`、`verify-compaction-usage.ts`、`verify-tool-result.ts` 与 `verify-fork-rpc.ts` 为 2026-09-12 新增，`verify-cache-usage.ts` 为 2026-09-13 新增，`verify-charter.ts` 与 `verify-roadmap.ts`、`verify-fork.ts`、`verify-lifecycle.ts` 为 2026-09-14 新增：
+全部在 `scripts/` 下，<!-- BEGIN AUTOGEN:test-counts -->**项数合计 2006**（其中 37 套是 `.ts` 走 tsx、1 套 `.mjs` 直跑）<!-- END AUTOGEN:test-counts -->。其中 `verify-edit.ts`、`verify-permission.ts` 与 `verify-tools.ts` 均为 2026-09-04 新增，`verify-spec.ts` 为 2026-09-06 新增，`verify-steering.ts` 为 2026-09-10 新增，`verify-doc-numbers.ts` 与 `verify-todo.ts` 为 2026-09-11 新增，`verify-repo.ts`、`verify-fork-summary.ts`、`verify-skill-watch.ts`、`verify-history-structured.ts`、`verify-skill-deps.ts`、`verify-compaction-usage.ts`、`verify-tool-result.ts` 与 `verify-fork-rpc.ts` 为 2026-09-12 新增，`verify-cache-usage.ts` 为 2026-09-13 新增，`verify-charter.ts` 与 `verify-roadmap.ts`、`verify-fork.ts`、`verify-lifecycle.ts` 为 2026-09-14 新增，`verify-postcheck.ts` 为 2026-09-15 新增（改完自检，ROADMAP 10.6.2）：
 
 | 脚本 | 项数 | 验什么 | 手法 |
 |------|-----:|--------|------|
@@ -57,6 +57,7 @@
 | `verify-fork.ts` | 82 | 分叉点提问机制（2026-09-14，`ask` 工具 + 讨论协议）：本项目第一个"**会改变后续所有代码形态**"的交互能力，故验证密度高于同类。① 契约常量（三条讨论问题**逐字**等于用户原话、哨兵值不与候选撞车、技能名）；② 候选解析逐形状（三种分隔符 / 半角与全角冒号 / **只按第一个冒号拆** / 空项与空标签丢弃 / 序号连续 0 基）；③ 选项构造（候选在前、「先讨论」**永远在最后**、**标题必须单行**——带 `\n` 会把选择器固定行数算错→漂移）；④ 分类（null→问不了、哨兵→讨论、序号→拍板、**序号 0 也认得出**（`if (!v)` 会漏）、**认不出的值一律按没做选择**——不猜）；⑤ 回话三态各自把"下一步做什么"写死（拍板态给落地三件事、讨论态给三条问题与收口语、问不了态要求改用文字提问）；⑥ 与提示词及技能文件交叉比对；⑦ **行为**：真 `ToolRegistry` 跑 `ask`——拍板与待讨论**都确定性写进事件库**（`kind=decision`）、缺省实现答"问不了"且**不写事件库**、单候选/零候选 `[INVALID]` 且**不弹窗**、事件库写失败时回话带提示（不静默丢一次用户决策）；⑧ **承重**：`createForkAsker` 在非 TTY 下**选择器一次都不许被调用**——调了就等于替用户在 A/B 之间选了，比不提供这个功能还糟；⑨ 源码守护（工具层不 import io、缺省提问是安全的那一侧、**先判终端再调选择器**、main 注入 `runtime.select`） | ①②③④⑤ 段纯函数直接喂；⑦ 段真 `ToolRegistry` + `registerBuiltinTools`（不打桩）+ `process.chdir` 临时目录（事件库是相对路径 `.flint/events.jsonl`）+ **探针 asker** 记录每次提问的标题与选项值（顺带证明"一个候选时不弹窗"）；⑧ 段用**计数探针选择器**——非 TTY 时计数必须停在 0；⑨ 段源码断言含**顺序断言**（`isTty` 判定必须出现在调用选择器之前） |
 | `verify-lifecycle.ts` | 109 | 项目生命周期协议（2026-09-14，P10.12 第二至四步：DEVLOG 双写 + 状态推进 + 提议下一坐标 + 现状快照注入）：① 契约常量（`.flint/` 三个落点、DEVLOG 文件头）；② DEVLOG 排版（标题行形状、三段必填逐字带标签、可选段空则整行不写、多行压单行、**末尾含空行当节间隔**）；③ 表切片（定位坐标表不吃表外散文、无表原样返回、只换表那几行、切片后重新解析零错）；④ 状态推进（`setStatus` 不改入参、落盘的是 `resolveStatuses` 权威值、**显式搁置压过派生**、幂等）；⑤ 提议下一坐标与依赖环（未开始 + 叶子 + 依赖已满足、按编号序、父坐标不提议、依赖看**派生**状态、`unmetDeps` 给出未完成依赖；`findCycles` 认环并归一成**一条闭合代表路径**、自环算一元环、指向表外不算环、成环的表**格式上仍合法**）；⑥ 现状快照（空串与纯空白 → undefined 即不注入空话、超上限截断带标记、文件不存在 → undefined）；⑦ **行为**（真 `ToolRegistry` 跑 `archive`：DEVLOG 追加 + 事件库落 kind=system 四段 + 路线图**表外散文一字未动** + 回执**顺带提议下一坐标**与剩余叶子数 + 二次归档文件头不重复 + 无路线图仍归档 + 表有环时回执点名【依赖环】且区分"卡在环里"与"已做完"）；⑧ **拒绝路径**（编号不存在 / 归档父坐标 / 路线图格式坏 / 缺必填段 → `[INVALID]` 且**一字不落盘**）；⑨ 源码守护（roadmap/lifecycle **零 import** 纯模块、archive 不带 `requirePermission`、工具层不 import io、runtime 不调 `console.log`、每轮读快照）；⑩ 与提示词交叉比对（archive 工具名 / DoD 四件套 / PROJECT.md 每轮注入 / 只追加纪律 / project 层排 skills 之后） | ①②③④⑤⑥ 段纯函数直接喂（roadmap / lifecycle / snapshot 全零依赖，用例在内存里造表文本）；⑦⑧ 段真 `ToolRegistry` + `registerBuiltinTools`（不打桩）+ `process.chdir` 临时目录（落点是相对路径 `.flint/...`）+ 真 `EventStore`；⑨⑩ 段源码文本断言 |
 | `verify-git.ts` | 203 | git 只读结构化工具（2026-09-14，ROADMAP 10.5.1；2026-09-15 补厚到 8 个 op、并加 bash 路由）：把 `git status/diff/log/branch/show/blame/remote/tag` 的**文本**翻成结构，让模型不必对着 porcelain 两字母码猜，也让"看一眼仓库状态"不必再走 bash 的权限弹窗。① 命令构造（`-z` NUL 分隔、`--numstat`、`--untracked-files=all`、**token 数组不经 shell**、`core.quotepath=false` 与 `color.ui=false` 两个前缀）；② 安全闸（`target` 落在 `--` **之前**= git 的**选项位置**，`--output=文件` 能把结果写进磁盘，故以 `-` 开头一律拒）；③ status 解析（**喂探针实测字节**：两段式重命名的旧路径在下一段、`-z` 下中文路径裸出无引号、detached / unborn / 旧版 `Initial commit on` 三种头行）；④ XY 码译码（`AA`/`DD` 也算冲突，别读成"新增"）；⑤ numstat（数字 / 二进制 `-` / 重命名单字段 `a => b`，汇总**自己算**不抄 git 的英文摘要行）；⑥ log（US/RS 分隔，subject 含 `|` 与 tab 也不破）；⑦ branch（**US 作分隔**；2026-09-14 初版据两个探针写成"字面 `\|`"是**错的**——`\|` 在 refname 里合法，会整行串位，2026-09-15 复测后改用 `%1f`）；⑧⑨⑩⑪⑫ **第二批四个 op**（`show` / `blame` / `remote` / `tag` 的解析与渲染，含 **URL 凭据打码**、`blame` 日期要带时区偏移、`lines` 白名单与**单数字展开成 `N,N`**）；⑬ **行为**（真仓库端到端跑**八个 op** + **未跟踪的新文件不进 diff** 且工具主动提示这一点 + 非仓库目录报 `[ERROR]` 并说明不会替用户 `init` + 空仓库 log 的 128 退出不算故障 + 子目录里跑路径仍是**仓库根相对**）；⑭ 拒绝路径（未知 op / 危险 target / `show`·`blame` 的 ref 同过一闸 / `blame` 缺 path / 非法行范围 / 未知参数 / `limit=0` / 缺 `op`）；⑮ 源码守护（纯模块零 import、只读不弹窗、走 `execFileSync` 而非 `execSync`、`%x1f` 不许回流）与提示词交叉；⑯ **路由**（ROADMAP 10.5.6）——bash 里的**裸** git 只读命令 → git 工具：纯函数逐形状（七个裸 op 命中、`blame` 带单个路径、带参数与 shell 元字符一律放过）、钩子适配器 fail-open 四态、真总线行为、源码守护 | ①–⑦ 段纯函数直接喂**探针实测夹具**——三个探针脚本（`WorkBuddy_Test/probe-git{,2,3}.mjs`）对真仓库取证，连 `\u001f` 分隔符、两段式重命名、`## HEAD (no branch)` 都是照抄实测而非照文档推；⑧⑨ 段真 git（`mkdtempSync` + `git init` + `symbolic-ref` 锁分支名 + `commit.gpgsign=false` 防用户配置干扰 + `process.chdir`）；**本机没 git 时 ⑬ 段走 31 条占位断言**保住项数恒定（并在输出里醒目说明），免得项数随环境浮动；⑯ 段造**真 `PromptEventEmitter` 总线**复刻 main.ts 的路由那半（同形不同实例），验"路由的 deny 真被 `decodeDeny` 解出来"，并用**源码顺序断言**钉住"契约闸排在路由**之前**"（安全闸优先于引导闸）；变异三轮各自精准变红（关掉元字符拦截 → 1 红、放宽 token 数 → 3 红、deny 改 allow → 2 红） |
+| `verify-postcheck.ts` | 83 | 改完自检（2026-09-15，ROADMAP 10.6.2）：write / edit 成功落盘后跑一条**项目自己登记**的命令，把结论追加到**同一份工具结果**里，模型下一轮必然看到——路线图原话"闭环全靠提示词"，这条把闭环做成结构。① 配置解析逐形状（缺 command / 类型错 / 超时越界 / 非 JSON / 非对象一律**不启用**：「声明即授权」的另一面就是"没声明好 = 没授权"）；② 输出摘要（stdout 先 stderr 后、掐头留尾、**尾 3 行**留给"共 N 个错误"这类结论、硬截断成 30 行、CRLF 归一、连续空行丢弃）；③ 结论渲染六态（通过 / 未通过含退出码与摘要 / 超时 / 输出超缓冲 / 起不来 / 被信号中止），失败与超时都**明说"改动已落盘"**（否则模型会以为写入失败、原样重写一遍）；④ 内存单例 set / get / clear；⑤ 源码守护（纯模块零 import、`main.ts` **只读一次**、write 与 edit **两个** handler 都接、追加以空行分隔、起进程带 timeout）；⑥ 行为（真起子进程四种结局 + 真 `write` 工具端到端，含"没登记时正文与接此功能前**逐字一致**"与"复位后立刻回到不追加"） | ①–④ 纯函数直接喂形状，不碰终端；⑥ 段在 `mkdtempSync` 临时目录里造**真的检查脚本**（通过 / 失败吐 40 行 / 睡 2 秒），用真 `ToolRegistry` 跑 write 与 edit、断言**追加后的原文**；"真跑到了子进程"不用输出证明而用**副作用**证明（脚本自己写标记文件，避免"通过"那一路本就不显示输出）；临时目录清理**带重试**——Windows 上 `spawnSync` 的超时只杀 shell、孙进程会把目录锁住（2026-09-15 探针实测，见 `postcheck.ts` 头注「已知边界」）；变异三轮各自精准变红（关掉截断 → 4 红、追加分隔改空串 → 2 红、放宽超时区间 → 2 红） |
 | `verify-docs.mjs` | 21 | `Log/` 下全部 markdown 的**锚点死链**（同文件 + 跨文件）+ **显式锚点卫生**（同一文件内不重复 / 命名守 `log-<日期>-<短名>` / 非空）+ 入站锚点契约 | 按 GitHub slug 规则算标题锚点，并收集 `<a id="…"></a>` 显式锚点，两者都认再比对引用 |
 
 
@@ -79,10 +80,10 @@
 | 名字 | 签名 | 哪几套 |
 |------|------|--------|
 | `assert` | `(name, cond, detail = '')` | c1 / c2 / c3 / startup / usage（5 套） |
-| `check` | `(name, cond, detail?)` | events / phase-ab / session / docs / edit / permission / tools / spec / steering / doc-numbers / extensions / todo / rpc-stream / hooks / repo / fork-summary / skill-watch / history-structured / skill-deps / compaction-usage / tool-result / fork-rpc / cache-usage / memory / eventlog / charter / roadmap / fork / lifecycle / git（30 套）——extensions 那套参数名不同，是 `(desc, ok, extra?)` |
+| `check` | `(name, cond, detail?)` | events / phase-ab / session / docs / edit / permission / tools / spec / steering / doc-numbers / extensions / todo / rpc-stream / hooks / repo / fork-summary / skill-watch / history-structured / skill-deps / compaction-usage / tool-result / fork-rpc / cache-usage / memory / eventlog / charter / roadmap / fork / lifecycle / git / postcheck（31 套）——extensions 那套参数名不同，是 `(desc, ok, extra?)` |
 | `ok` | `(name, cond)` | input / ui（2 套） |
 
-**退出码行为一致、写法有四种变体**：`setTimeout(() => process.exit(failed > 0 ? 1 : 0), 100)`（7 套，留给异步句柄收尾：doc-numbers 之外还有 verify-cache-usage）、`process.exit(failed === 0 ? 0 : 1)`（3 套）、`process.exit(failed > 0 ? 1 : 0)`（22 套：input / session / docs / edit / permission / tools / spec / todo / rpc-stream / hooks / repo / fork-summary / skill-watch / history-structured / fork-rpc / memory / eventlog / charter / roadmap / fork / lifecycle / git）、`if (failed > 0) process.exit(1)`（5 套：phase-ab / steering / doc-numbers / skill-deps / tool-result）。**37 套都会在有断言失败时返回非零**，所以串跑靠退出码判定是安全的。
+**退出码行为一致、写法有四种变体**：`setTimeout(() => process.exit(failed > 0 ? 1 : 0), 100)`（7 套，留给异步句柄收尾：doc-numbers 之外还有 verify-cache-usage）、`process.exit(failed === 0 ? 0 : 1)`（3 套）、`process.exit(failed > 0 ? 1 : 0)`（23 套：input / session / docs / edit / permission / tools / spec / todo / rpc-stream / hooks / repo / fork-summary / skill-watch / history-structured / fork-rpc / memory / eventlog / charter / roadmap / fork / lifecycle / git / postcheck）、`if (failed > 0) process.exit(1)`（5 套：phase-ab / steering / doc-numbers / skill-deps / tool-result）。**38 套都会在有断言失败时返回非零**，所以串跑靠退出码判定是安全的。
 
 > 上表这两个分布（函数名 5/30/2、退出码 7/3/22/5，且四者之和 = 套件总数）**现在由机器核对**——`scripts/check-doc-numbers.mjs` 第四节会扫 `scripts/` 数出真值再比。加这条的起因就是本轮在这里**查出两处既有错数**：`check` 写 8 实际 10（2026-09-10 新增 `verify-steering.ts` 时漏了更新这一行）、`if (failed > 0) process.exit(1)` 写 1 实际 2；而四个变体之和 5+3+7+1=16 恰好等于当时的 `.ts` 套件数，于是两处错得很安静。
 
@@ -114,7 +115,7 @@
 
 ## 四、怎么跑
 
-全量 37 套，一条命令：
+全量 38 套，一条命令：
 
 ```
 npm run verify
@@ -128,7 +129,7 @@ Windows PowerShell 下 `npm` 会被执行策略挡住（报 `无法加载文件 
 node scripts/run-verify.mjs
 ```
 
-单套。`.ts` 的 36 套**必须**直连 node 走 tsx——`npx tsx` 同样被执行策略挡住：
+单套。`.ts` 的 37 套**必须**直连 node 走 tsx——`npx tsx` 同样被执行策略挡住：
 
 ```
 node node_modules/tsx/dist/cli.mjs scripts/verify-events.ts
@@ -160,7 +161,7 @@ node node_modules/tsx/dist/cli.mjs scripts/verify-events.ts
 
 ## 七、缺口（已知未做，别误以为已覆盖）
 
-- **无覆盖率统计**：1923 项覆盖了什么、漏了什么，只能人工判断。已知的漏：compaction / commands 两个子系统没有专套（只被其他脚本间接碰到；rpc 子系统自 2026-09-11 起有 `verify-rpc-stream.ts`，但它验的是**映射与传输纪律**，不含权限请求 / 文件读写等 ACP 全量契约）；tools 子系统自 2026-09-04 起有四个工具有**功能**专套（`verify-edit.ts` 覆盖 edit，`verify-tools.ts` 覆盖 grep 与 bash，2026-09-11 新增 `verify-todo.ts` 覆盖 todo，2026-09-13 起另有 `verify-memory.ts` 与 `verify-eventlog.ts` 覆盖 memory / record_event / search_events / pull_events 记忆事件四件套，2026-09-14 起另有 `verify-git.ts` 覆盖 git 的只读查询（2026-09-15 扩到八个 op、并覆盖 bash→git 的**路由闸**）——解析与行为两面都钉），**ls / read / write 三个仍无功能断言**（2026-09-06 新增的 `verify-spec.ts` 不算：它④ 段钉的是六个工具**发给模型的 Schema 逐字未变**、⑥ 段只借 grep 验 `parse` 的接线，两者都不问 ls / read / write 干活干得对不对）；permission 子系统同日起也有专套（`verify-permission.ts`），但它验的是**授权面**（键的边界、匹配规则、`clear()` 接线），write / edit / bash 在那套里只被问到“键是什么、文案是什么”，不问它们干活干得对不对——那一面由 `verify-edit.ts` 与 `verify-tools.ts` 补；extensions/hooks 自 2026-09-11 起有 `verify-hooks.ts`，但它验的是**工具生命周期两个发射点**，`before_build` / `before_request` 两个既有发射点仍只被 `verify-extensions.ts` 间接碰到
+- **无覆盖率统计**：2006 项覆盖了什么、漏了什么，只能人工判断。已知的漏：compaction / commands 两个子系统没有专套（只被其他脚本间接碰到；rpc 子系统自 2026-09-11 起有 `verify-rpc-stream.ts`，但它验的是**映射与传输纪律**，不含权限请求 / 文件读写等 ACP 全量契约）；tools 子系统自 2026-09-04 起有四个工具有**功能**专套（`verify-edit.ts` 覆盖 edit，`verify-tools.ts` 覆盖 grep 与 bash，2026-09-11 新增 `verify-todo.ts` 覆盖 todo，2026-09-13 起另有 `verify-memory.ts` 与 `verify-eventlog.ts` 覆盖 memory / record_event / search_events / pull_events 记忆事件四件套，2026-09-14 起另有 `verify-git.ts` 覆盖 git 的只读查询（2026-09-15 扩到八个 op、并覆盖 bash→git 的**路由闸**）——解析与行为两面都钉），**ls / read / write 三个仍无功能断言**（2026-09-06 新增的 `verify-spec.ts` 不算：它④ 段钉的是六个工具**发给模型的 Schema 逐字未变**、⑥ 段只借 grep 验 `parse` 的接线，两者都不问 ls / read / write 干活干得对不对）；permission 子系统同日起也有专套（`verify-permission.ts`），但它验的是**授权面**（键的边界、匹配规则、`clear()` 接线），write / edit / bash 在那套里只被问到“键是什么、文案是什么”，不问它们干活干得对不对——那一面由 `verify-edit.ts` 与 `verify-tools.ts` 补；extensions/hooks 自 2026-09-11 起有 `verify-hooks.ts`，但它验的是**工具生命周期两个发射点**，`before_build` / `before_request` 两个既有发射点仍只被 `verify-extensions.ts` 间接碰到；改完自检自 2026-09-15 起有 `verify-postcheck.ts`，但它覆盖的是 `write` / `edit` 的**结果面**（改完那一刻模型眼前有没有那句结论），**工具本体**写没写对仍归 `verify-edit.ts` 与 `verify-tools.ts`
 - **`bash` 的 30 秒超时路径无断言**：`timeout: 30000` 是硬编码的，触发一次就得真等 30 秒，串跑里塞不下。`verify-tools.ts` ⑦ 段只钉住这个值还在（G9），不验超时行为本身。为一项断言把 timeout 改成可注入，收益不抵改生产代码形状的风险（2026-09-04 定为不做）
 - **无 CI**：仓库里没有任何 CI 配置。`npm run verify` 的退出码已经能直接交给 CI，但**还没人接**，仍是手工跑，忘了跑就没有防线。2026-09-04 查到一条会**改变方案**的事实：远端 `origin` 是 **Gitee**（`gitee.com/LittleLittleRed/first_-ts_-agent`），而 Gitee 不执行 `.github/workflows`——所以“加个 GitHub Actions 工作流”这个最省事的方案在本仓库会产出一份**永不执行的死配置**；Gitee 自家的 Gitee Go 配置在 `.workflow/` 且需单独开通，账号是否已开通无法从仓库内核实
 - 断言函数名三种并存、退出码写法四种变体（见第三节）
