@@ -340,11 +340,19 @@ console.log('\n⑦ 源码文本断言（防回退）');
   check('G5 grep 的失败路径报 error（toolError），不再有"搜索失败或无匹配"这种混合前缀',
     !builtinSrc.includes('搜索失败或无匹配') && /return toolError\(`搜索失败:/.test(builtinSrc));
   check('G6 bash 不再内联硬编码单一编码', !/const encoding = process\.platform === 'win32' \? 'gbk' : 'utf-8';\n\s*const output = new TextDecoder\(encoding/.test(builtinSrc));
-  check('G7 bash 改走 decodeChildOutput', /decodeChildOutput\(raw\)/.test(builtinSrc));
+  // 2026-09-16（ROADMAP 10.6.6）更新：bash 把起进程交给 process/runner.ts 之后变量不再叫 raw。
+  // 顺手收紧成"两处都过解码器"—— 改前这条正则实际匹配到的是 **grep 段**的同名变量，
+  // 也就是说它早就不在钉 bash 了（断言还绿，目标已经漂了）。
+  check('G7 bash 的 stdout / stderr 都过 decodeChildOutput（Windows 上 cmd.exe 报错是 GBK）',
+    /decodeChildOutput\(r\.stdout\)/.test(builtinSrc) && /decodeChildOutput\(r\.stderr\)/.test(builtinSrc));
   check('G8 windowsHide: true 仍在（删了会在 Windows 上弹黑框）', /windowsHide: true/.test(builtinSrc));
-  check('G9 timeout 仍是 30000（缺口已记进 TESTING.md：超时路径无法快速触发，本套不测）',
-    /timeout: 30000/.test(builtinSrc));
-  check('G10 maxBuffer 仍是 4MB', /maxBuffer: 4096 \* 1024/.test(builtinSrc));
+  // 2026-09-16（ROADMAP 10.6.6）：两个数从内联字面量提成常量（bash 不再是唯一用它的地方），
+  // **值没动**。那次一并关掉了 G9 原先记的缺口 —— 超时路径现在**真能测**了：
+  // 改前起进程的是同步 API，要触发超时只能真等满 30 秒；换成异步执行器后可以用小上限触发，
+  // 见新增的 scripts/verify-proctree.ts（真起三跳子进程，超时后确认孙进程没能写标记文件）。
+  check('G9 bash 的超时仍是 30 秒（提成 BASH_TIMEOUT_MS，值不变）',
+    /const BASH_TIMEOUT_MS = 30000;/.test(builtinSrc));
+  check('G10 bash 的 maxBuffer 仍是 4MB', /const BASH_MAX_BUFFER = 4096 \* 1024;/.test(builtinSrc));
   // 口径更新（2026-09-15，ROADMAP 10.7.3 `.gitignore` 感知；必有这一步写在 **⚠C10**：
   // "属必然要改的既有断言，不算破坏设计"）。跳过表不再是"只有硬编码清单"，而是
   // **内置默认 ∪ `.gitignore`**。内置默认必须一直在 —— 哪怕用户在自己的 .gitignore 里
@@ -354,13 +362,18 @@ console.log('\n⑦ 源码文本断言（防回退）');
   check('G11 grep 的跳过表 = 内置默认（.git/node_modules/dist）∪ .gitignore（两半都在，缺一不可）',
     /const SKIP_DIRS = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(builtinSrc)
     && /isIgnoredByGitignore\(childRel, item\.isDirectory\(\), ignoreRules\)/.test(builtinSrc));
-  // 口径更新（2026-09-14，git 工具落地；2026-09-15，改完自检落地）：child_process 现在有
-  // **三处**正当使用 —— bash（执行任意命令，走 shell）、git（argv 数组，**不经** shell）、
-  // 改完自检（跑项目登记的那一条命令，走 shell；ROADMAP 10.6.2）。grep 的"不许 shell 出去"
-  // 已由 G1 的切段断言单独钉住，所以这里只守住"没有第四处悄悄冒出来"。
+  // 口径更新（2026-09-14 git 工具；2026-09-15 改完自检；**2026-09-16 ROADMAP 10.6.6**）：
+  // 起进程这件事**收拢**了 —— bash 与自检原先各自直连 child_process，现在都改走
+  // process/runner.ts（异步 spawn + 超时**按进程树**杀）。builtin.ts 里只剩 git 一处。
+  // 判据因此从"在 builtin 里数到三"变成"点两个模块的名字"：多出第三个模块，就说明又有
+  // 人绕开了受控执行器 —— 而"各自直连、各自只杀 shell"正是 10.6.6 要根治的老毛病。
   // 这条**会随正当用途增加而红**，那是刻意的：每次加一处都必须回来把理由写在这里。
-  check('G12 child_process 只有 bash / git / 自检三处（grep 不 shell 由 G1 单独钉；这条防第四处冒出来）',
-    (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 3);
+  const runnerSrc = fs.readFileSync(path.join(ROOT, 'src/process/runner.ts'), 'utf-8');
+  check('G12 起子进程只有两个模块：builtin.ts（git，argv 不经 shell）与 process/runner.ts（bash 与自检共用）',
+    (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 1
+    && (runnerSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 1);
+  check('G12b builtin.ts 里不再直接 spawnSync / execSync（那等于退回"只杀 shell、孙进程照跑"）',
+    !/\b(spawnSync|execSync)\(/.test(builtinSrc));
 }
 
 /* ── 清理与汇总 ── */

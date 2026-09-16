@@ -56,6 +56,9 @@ import {
   renderTag, validateLineRange, validateTarget,
   type GitOp,
 } from '../git/git.js';
+// 起子进程的两处（bash / 自检）都走统一执行器 —— 它管住的是**整棵进程树**（ROADMAP 10.6.6）
+import { describeTreeKill } from '../process/proctree.js';
+import { childFailureCode, runChildInTree } from '../process/runner.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    参数规则在每个工具的 spec 里，Schema 与校验都由它派生（实现见 spec.ts）
@@ -117,12 +120,34 @@ function decodeChildOutput(raw: Buffer): string {
   }
 }
 
+/* ── 子进程的两个上限（值与 ROADMAP 10.6.6 迁移前逐字一致：换执行机制不改配额） ──
+   bash：30 秒 / 4MB；自检：8MB。自检的**时间**上限来自登记表（timeoutMs / totalTimeoutMs），
+   不走这里的常量。 */
+const BASH_TIMEOUT_MS = 30000;
+const BASH_MAX_BUFFER = 4096 * 1024;
+const POSTCHECK_MAX_BUFFER = 8 * 1024 * 1024;
+
+/** bash 的输出摘要上限（字符）。截断标记里的数字一律按**截断前**的原文算。 */
+const BASH_OUTPUT_CLIP = 4000;
+
+/** 把命令输出压到 4000 字符以内；超了就如实写清"共多少字符多少行" */
+function clipOutput(text: string): string {
+  if (text.length <= BASH_OUTPUT_CLIP) return text;
+  const lines = text.split('\n').length;
+  return `${text.slice(0, BASH_OUTPUT_CLIP)}`
+    + `\n...（输出截断：共 ${text.length} 字符、${lines} 行，此处只显示前 ${BASH_OUTPUT_CLIP} 字符）`;
+}
+
 /**
  * 改完自检（ROADMAP 10.6.2）：登记表里有命令就同步跑一条，返回要追加到工具结果末尾的那段话。
  * 返回 null = 没登记（默认态）→ 调用方一字不追加，工具结果与没接这功能时**逐字一致**。
  *
- * 为什么用 spawnSync 而不是 execSync：execSync 非零退出会抛，只能靠 catch 认「失败」；
- * 而这里失败**是要读的数据**（退出码 + stdout/stderr 一起进摘要），不是异常。
+ * 走**统一的整树执行器**（`process/runner.ts`，ROADMAP 10.6.6）：这里失败**是要读的数据**
+ * （退出码 + stdout/stderr 一起进摘要），不是异常，所以不能用"抛错即失败"的 execSync；
+ * 而 spawnSync 虽能把失败当数据读，它的 timeout 却只杀 shell —— 探针实测：`npm`→`node`→
+ * 测试 runner 这条链上后几跳照跑完（见 process/proctree.ts 头注）。自检又是**自动**触发的、
+ * 一次会话里反复触发，残留会叠加，所以它是 10.6.6 要一起改的两处之一。
+ *
  * 为什么这条路走 shell：命令是用户在登记表里手写的一整句（`npm run typecheck` 这种），
  * 本来就含空格与参数——与 git 工具「参数即数据、必须绕开 shell」的场景正好相反。
  * 编码交给 decodeChildOutput：Windows 上 cmd.exe 自己的报错是 GBK，按 utf-8 硬解会乱码。
@@ -130,9 +155,6 @@ function decodeChildOutput(raw: Buffer): string {
 async function runPostcheckRaw(): Promise<PostcheckRun[]> {
   const config = postcheckRegistry.get();
   if (!config) return [];
-
-  const { spawnSync } = await import('node:child_process');
-  const asText = (v: unknown): string => (Buffer.isBuffer(v) ? decodeChildOutput(v) : '');
 
   const runs: PostcheckRun[] = [];
   const startedAt = Date.now();
@@ -155,26 +177,26 @@ async function runPostcheckRaw(): Promise<PostcheckRun[]> {
 
     // 这条的额度 = 单条上限与剩余额度取小：不让最后一条把总闸撞穿
     const budget = Math.min(config.timeoutMs, left);
-    const r = spawnSync(command, {
-      shell: true,
+    const r = await runChildInTree({
+      command,
+      timeoutMs: budget,
+      maxBuffer: POSTCHECK_MAX_BUFFER,
       cwd: process.cwd(),
-      timeout: budget,
-      encoding: 'buffer',
-      maxBuffer: 8 * 1024 * 1024,
-      windowsHide: true,
     });
 
-    // error.code 的三种取值与处置见 postcheck.ts 的 PostcheckRun 注释（超时 / 超缓冲 / 起不来）
-    const err = r.error as (Error & { code?: string }) | undefined;
+    // 三种非正常结束（超时 / 超缓冲 / 起不来）折成 postcheck 契约里的 errorCode，
+    // 与换执行器之前**逐字一致** —— 换的是手段，不该顺带改掉对外可观测的判定口径。
+    const failure = childFailureCode(r);
     runs.push({
       command,
       timeoutMs: budget,
       status: r.status,
       signal: r.signal,
-      stdout: asText(r.stdout),
-      stderr: asText(r.stderr),
+      stdout: decodeChildOutput(r.stdout),
+      stderr: decodeChildOutput(r.stderr),
       // exactOptionalPropertyTypes：可选成员无值时不能传 undefined，得整个键不出现
-      ...(err ? { errorCode: err.code ?? 'SPAWN_FAILED', errorMessage: err.message.slice(0, 200) } : {}),
+      ...(failure === null ? {} : { errorCode: failure }),
+      ...(r.spawnError === null ? {} : { errorMessage: r.spawnError.message }),
     });
   }
 
@@ -796,43 +818,58 @@ export function registerBuiltinTools(
           + '  若你是想绕开契约锁改目标文档：不要重试，先向用户说明要改什么、为什么。';
       };
 
-      try {
-        const { execSync } = await import('node:child_process');
+      const r = await runChildInTree({
+        command: cmd,
+        timeoutMs: BASH_TIMEOUT_MS,
+        maxBuffer: BASH_MAX_BUFFER,
+        cwd: process.cwd(),
+      });
 
-        const raw = execSync(cmd, {
-          encoding: 'buffer',
-          timeout: 30000,
-          maxBuffer: 4096 * 1024,
-          windowsHide: true,
-        });
+      const failure = childFailureCode(r);
+      const outText = decodeChildOutput(r.stdout).trim();
+      const errText = decodeChildOutput(r.stderr).trim();
 
-        const trimmed = decodeChildOutput(raw).trim();
+      // 早退分支（含"无输出"）之前先过效果闸：改盘是副作用，与命令输出无关。
+      // 失败路径同样要过 —— `echo x > CHARTER.md && false` 正是"命令失败但盘已改"。
+      const violation = contractAfterRun();
+      if (violation !== null) return toolError(violation);
 
-        // 早退分支（含"无输出"）之前先过效果闸：改盘是副作用，与命令输出无关
-        const violation = contractAfterRun();
-        if (violation !== null) return toolError(violation);
-
-        if (!trimmed) {
-          return toolOk(`命令执行成功（无输出）: ${cmd.slice(0, 100)}`);
-        }
-
-        // 行数与字符数都按**截断前**的原文算。改前 lineCount 取的是截断后的串，而同一句里
-        // "共 N 字符"取的是截断前的数——一前一后自相矛盾，且输出一万行被截到 4000 字符时
-        // 标签会显示"(50 行输出)"，模型据此以为命令只输出了 50 行
-        const lineCount = trimmed.split('\n').length;
-        const shown = trimmed.length > 4000
-          ? `${trimmed.slice(0, 4000)}\n...（输出截断：共 ${trimmed.length} 字符、${lineCount} 行，此处只显示前 4000 字符）`
-          : trimmed;
-
-        return toolOk(`命令执行成功 (${lineCount} 行输出，${trimmed.length} 字符):\n${shown}`);
-      } catch (e) {
-        // 命令失败也可能已经把文件改了（`echo x > CHARTER.md && false`），所以这条路径也要过闸
-        const violation = contractAfterRun();
-        if (violation !== null) return toolError(violation);
-        if (e instanceof ToolInputError) return toolInvalid(e.message);
-        const msg = e instanceof Error ? e.message.slice(0, 500) : String(e);
-        return toolError(`命令执行失败: ${msg}`);
+      // 三种非正常结束分开说，因为模型下一步该做的事完全不同：
+      // 超时 → 缩小范围；超缓冲 → 别把整份输出倒出来；起不来 → 是环境问题，不是命令写错
+      if (failure === 'ETIMEDOUT') {
+        const killed = r.killPlan === null ? '没拿到 pid，无法按树终止' : describeTreeKill(r.killPlan);
+        return toolError(`命令执行失败: 超时（上限 ${BASH_TIMEOUT_MS}ms；${killed}）\n`
+          + `  命令：${cmd.slice(0, 100)}\n`
+          + '  终止的是**整棵树**，命令派生的子进程也一并停了（ROADMAP 10.6.6）；'
+          + '超时前它可能已经改过盘。');
       }
+      if (failure === 'ENOBUFS') {
+        return toolError(`命令执行失败: 输出超过 ${BASH_MAX_BUFFER / (1024 * 1024)}MB 上限，已按树终止。`
+          + '请缩小输出范围重试（只打印需要的部分，别把整份日志倒出来）。');
+      }
+      if (failure !== null) {
+        return toolError(`命令执行失败: 起不来（${r.spawnError?.code ?? 'SPAWN_FAILED'}）`
+          + `${r.spawnError === null ? '' : ` ${r.spawnError.message}`}`);
+      }
+
+      if (r.status !== 0) {
+        // stderr 优先：命令的报错通常在那里。改前这条路径走 execSync 的异常，只剩一句
+        // message（还截到 500 字符），命令自己打印的报错容易被挤掉。
+        const fromStderr = errText !== '';
+        const detail = fromStderr ? errText : outText;
+        return toolError(`命令执行失败: 退出码 ${r.status}（下为 ${fromStderr ? 'stderr' : 'stdout'}）\n`
+          + clipOutput(detail === '' ? '（命令没有产生任何输出）' : detail));
+      }
+
+      if (!outText) {
+        return toolOk(`命令执行成功（无输出）: ${cmd.slice(0, 100)}`);
+      }
+
+      // 行数与字符数都按**截断前**的原文算。改前 lineCount 取的是截断后的串，而同一句里
+      // "共 N 字符"取的是截断前的数——一前一后自相矛盾，且输出一万行被截到 4000 字符时
+      // 标签会显示"(50 行输出)"，模型据此以为命令只输出了 50 行
+      const lineCount = outText.split('\n').length;
+      return toolOk(`命令执行成功 (${lineCount} 行输出，${outText.length} 字符):\n${clipOutput(outText)}`);
     },
   }));
 

@@ -255,12 +255,15 @@ check('E6 write 与 edit **两个** handler 都接了（`await withPostcheck(` �
   (builtinCode.match(/await withPostcheck\(/g) ?? []).length === 2);
 check('E7 追加以空行分隔（结论自成一段，不与工具正文黏在一起）',
   /`\$\{base\}\\n\\n\$\{note\}`/.test(builtinCode), ok(builtinCode.match(/withPostcheck[\s\S]{0,120}/)?.[0] ?? ''));
-check('E8 自检走 spawnSync 且带 timeout（同步执行没有上限会把会话顶死）',
-  builtinCode.includes('spawnSync(') && /timeout:\s*budget/.test(builtinCode));
+// 2026-09-16（ROADMAP 10.6.6）：自检从 spawnSync 换成 process/runner.ts 的整树执行器。
+// 判据跟着换，但**要钉住的东西没变** —— 每条都带上限；"超时能不能管住整棵树"由新增的
+// verify-proctree.ts 用真子进程证明（判据分开钉：这里钉接线形态，那里钉行为）。
+check('E8 自检走统一整树执行器 runChildInTree，且带上这一条的额度 budget',
+  /runChildInTree\(\{[\s\S]{0,220}timeoutMs: budget/.test(builtinCode));
 check('E8b 每条的额度是「单条上限与总闸余额取小」—— 最后一条不会把总闸撞穿',
   /const budget = Math\.min\(config\.timeoutMs, left\)/.test(builtinCode));
 check('E9 自检的 stdout/stderr 交给 decodeChildOutput（Windows 上 cmd.exe 报错是 GBK，硬解 utf-8 会乱码）',
-  /asText[\s\S]{0,160}decodeChildOutput\(/.test(builtinCode));
+  /decodeChildOutput\(r\.stdout\)/.test(builtinCode) && /decodeChildOutput\(r\.stderr\)/.test(builtinCode));
 check('E10 没登记时一字不追加（返回 null 的短路在最前面）',
   /if \(!config\) return \[\];/.test(builtinCode)
   && /if \(runs\.length === 0\) return null;/.test(builtinCode));

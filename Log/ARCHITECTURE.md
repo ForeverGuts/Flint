@@ -52,6 +52,7 @@
 │                   · gitignore.ts `.gitignore` 感知（解析成跳过规则；跳过表 = 内置默认 ∪ .gitignore）
 │                   · commands.ts 项目命令注册表（从 package.json 的 scripts 发现并注入；**发现 ≠ 授权**，不执行任何命令）
 │ git/              git 只读结构化（git.ts：op 白名单 + argv 不经 shell + 8 个 op 的解析渲染）· route.ts bash 裸 git 只读命令的路由（**不是闸**）
+│ process/          子进程**整树终止**（proctree.ts 纯策略：Windows taskkill /T · POSIX 负 pid 进程组 · 失败分类；runner.ts 执行器：异步 spawn + 超时按树杀 + 宽限期兜底）——`bash` 与改完自检**两处共用**
 │ permission/       PermissionManager
 │ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
 │ commands/         CommandServiceImpl + 12 个内置命令（含新增 /memory /events）
