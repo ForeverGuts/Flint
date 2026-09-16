@@ -27,9 +27,9 @@ import { toolsSection } from '../context/sections/tools-section.js';
 import { skillsSection } from '../context/sections/skills-section.js';
 import { loadExtensions } from '../context/extension-loader.js';
 import { taskStore } from '../todo/store.js';
-import { MEMORY_FILE, memoryStore } from '../memory/store.js';
-import { CALLS_FILE, EVENTS_FILE, eventStore } from '../eventlog/store.js';
-import { projectRegistry } from '../eventlog/registry.js';
+import { memoryStore } from '../memory/store.js';
+import { CALLS_FILE, eventStore } from '../eventlog/store.js';
+import { seedProjectContext } from './project-context.js';
 import { charterLock, guardContractWrite } from '../project/charter.js';
 import { routeBashGitRead } from '../git/route.js';
 import {
@@ -68,21 +68,12 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const modelName = checkResult.config?.model ?? 'unknown';
   const baseUrl = checkResult.config?.baseUrl ?? '';
 
-  // 工作记忆种子：把 TASK.md（上一进程留下的投影）吸收进内存真相源，**只此一次**。
-  // 之后运行期一律以 taskStore 为准、不再回读文件 —— 否则就出现"两处判定"（store 与文件），
-  // 迟早漂移。清单若无未完成项（空文件 / 全勾选），loadFromFile 会删掉文件并保持空清单。
-  taskStore.loadFromFile('TASK.md');
-
-  // 项目记忆 / 历史事件库种子：同 TASK.md 的"只此一次"——启动吸收，运行期以内存为准不回读。
-  // events.jsonl 只存叙事+system；tool_call 流水在 tool-calls.jsonl（2026-09-13 拆分）。
-  // 旧 events.jsonl 里残留的 tool_call 行由 loadFromFile 按 kind 路由进流水索引，不回写。
-  memoryStore.loadFromFile(MEMORY_FILE);
-  eventStore.loadFromFile(EVENTS_FILE);
-  eventStore.loadCallsFile(CALLS_FILE);
-
-  // 项目登记（跨项目检索的电话簿）：用过 flint 的项目自动进 ~/.flint/projects.jsonl。
-  // 登记失败静默——它是旁路便利，不该挡住启动。
-  projectRegistry.ensure(process.cwd());
+  // 项目上下文播种：工作记忆（TASK.md）/ 项目记忆（.flint/memory.md）/ 事件库
+  // （.flint/events.jsonl + tool-calls.jsonl）/ 契约锁复位 / 项目电话簿登记 ——
+  // **唯一实现**在 harness/project-context.ts，启动与 `/projects --switch` 共用同一份
+  // （切换只是对着新目录再走一遍）。各条"只在启动读一次、运行期不回读"的理由都在那个文件里。
+  // 清单若无未完成项（空文件 / 全勾选），loadFromFile 会删掉文件并保持空清单。
+  seedProjectContext();
 
   // 改完自检（ROADMAP 10.6.2）：登记表**只在启动时读这一次**，运行期以内存为准、不再回读。
   // 「只读一次」是承重的，不是顺手：否则模型写一份 .flint/postcheck.json 把 command 换成

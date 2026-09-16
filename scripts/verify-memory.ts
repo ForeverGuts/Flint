@@ -387,8 +387,11 @@ console.log('\n⑦ 源码防回退');
     runtimeSrc.includes('memoryStore.isEmpty()') && runtimeSrc.includes('memory: projectMemory'));
   check('G5 runtime 截断与 task 层同一口径（2000 字符）',
     /projectMemory = rawMemory && rawMemory\.length > 2000/.test(runtimeSrc));
-  check('G6 main 启动时用 loadFromFile 做一次性种子',
-    /memoryStore\.loadFromFile\(MEMORY_FILE\)/.test(mainSrc));
+  check('G6 播种模块用 loadFromFile 做一次性种子，main 启动时调用它（ROADMAP 10.11.1：'
+    + '启动与 `/projects --switch` 共用同一份实现）',
+    /memoryStore\.loadFromFile\(MEMORY_FILE\)/.test(
+      fs.readFileSync(path.join(ROOT, 'src/harness/project-context.ts'), 'utf-8'))
+    && mainSrc.includes('seedProjectContext()'));
   check('G7 core-section 教模型用 memory 工具（暗号对上：注入层存在 ⇔ 教学存在）',
     coreSectionSrc.includes('memory 工具 op:"add"'));
   check('G8 builtin 注册了 memory 工具（工具面存在）',

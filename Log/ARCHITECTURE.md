@@ -16,10 +16,11 @@
 
 ┌─ 编排层 · harness/ ───────────────────────────────────────
 │ check()           读配置 → createProvider()；全程本地，0 网络请求
-│ main()            闭包工厂：组装 11 个必注入依赖 → 模式分发
+│ main()            闭包工厂：组装 11 个必注入依赖 → 模式分发；启动时调 seedProjectContext() 播种
 │   ├─ repl.ts      REPL：TTY → TreeUI ／ 管道 → TerminalUI
 │   ├─ rpc.ts       RPC：JSON-RPC over stdin/stdout（**唯一**写 stdout 的地方）
-│   └─ rpc-events.ts  事件 → ACP `session/update` 的映射表（纯函数 + 配对状态）
+│   ├─ rpc-events.ts  事件 → ACP `session/update` 的映射表（纯函数 + 配对状态）
+│   └─ project-context.ts  启动上下文播种**唯一实现** `seedProjectContext()`（三个 store 先清后栽 + 契约锁回锁 + 登记表 ensure）——启动与 `/projects --switch` 共用同一份
 └───────────────────────────────────────────────────────────
 
 ┌─ 运行时 · runtime/runtime.ts ─────────────────────────────
@@ -51,11 +52,12 @@
 │                   · postcheck.ts 改完自检（登记表驱动，`commands` 数组；启动采**基线**后只报新增诊断；结论追加进工具结果，不改工具状态）
 │                   · gitignore.ts `.gitignore` 感知（解析成跳过规则；跳过表 = 内置默认 ∪ .gitignore）
 │                   · commands.ts 项目命令注册表（从 package.json 的 scripts 发现并注入；**发现 ≠ 授权**，不执行任何命令）
+│                   · projects.ts `/projects` 列表与切换的**纯逻辑**（参数解析 / 选项目【重名不猜】/ 排序 / 列表与回执渲染；执行在命令层，播种走 harness/project-context.ts）
 │ git/              git 只读结构化（git.ts：op 白名单 + argv 不经 shell + 8 个 op 的解析渲染）· route.ts bash 裸 git 只读命令的路由（**不是闸**）
 │ process/          子进程**整树终止**（proctree.ts 纯策略：Windows taskkill /T · POSIX 负 pid 进程组 · 失败分类；runner.ts 执行器：异步 spawn + 超时按树杀 + 宽限期兜底）——`bash` 与改完自检**两处共用**
 │ permission/       PermissionManager
 │ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
-│ commands/         CommandServiceImpl + 12 个内置命令（含新增 /memory /events）
+│ commands/         CommandServiceImpl + 14 个内置命令（含 /memory /events /charter /projects）
 │ diagnostics/      DiagnosticsServiceImpl
 │ config/           ConfigManager（配置分层 + 供应商注册表 + 模型列表预热/新鲜期）
 │ llm/              createProvider() 工厂 → AnthropicProvider（provider === 'anthropic'）

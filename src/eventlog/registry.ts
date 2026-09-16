@@ -23,8 +23,19 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { GLOBAL_DIR } from '../config/manager.js';
 
-/** 注册表落点（全局目录，跨项目共享） */
-export const PROJECTS_FILE = path.join(GLOBAL_DIR, 'projects.jsonl');
+/**
+ * 注册表落点（全局目录，跨项目共享）。
+ *
+ * 测试可用 `FLINT_PROJECTS_FILE` 指向临时文件 —— 与 `FLINT_TRACE_FILE` / `FLINT_CONFIG`
+ * 同一手法：**用的时候现读环境变量**，于是脚本在 import 之后设置也来得及（ESM 的 import
+ * 会被提升到文件顶部，写死在模块加载期的常量拿不到脚本里设的值）。
+ * 这条不是可有可无的便利：验证套件要真跑一次"切到别的项目"（ROADMAP 10.11.1），
+ * 而登记是切换流程里必然发生的一步——没有这个开关，每跑一次套件就会往**用户真实的**
+ * `~/.flint/projects.jsonl` 里塞几个临时目录。
+ */
+export function projectsFilePath(): string {
+  return process.env.FLINT_PROJECTS_FILE || path.join(GLOBAL_DIR, 'projects.jsonl');
+}
 
 export interface ProjectRecord {
   /** 归一化绝对路径（正斜杠）——本机身份 */
@@ -34,8 +45,14 @@ export interface ProjectRecord {
   firstSeen: string;
 }
 
-/** 路径归一：绝对化 + 反斜杠转正斜杠 + 去尾斜杠（`C:/a/b/` 与 `C:/a/b` 同一项目） */
-function normalize(p: string): string {
+/**
+ * 路径归一：绝对化 + 反斜杠转正斜杠 + 去尾斜杠（`C:/a/b/` 与 `C:/a/b` 同一项目）。
+ *
+ * **导出**是为了让 `/projects`（ROADMAP 10.11.1）能拿"当前 cwd"与注册表里的 path
+ * 用**同一把尺子**比对（`process.cwd()` 自带反斜杠、可能带尾斜杠）；
+ * 各写一份归一化，迟早出现"列表里同时存在当前项目和它的另一个写法"。
+ */
+export function normalizeProjectPath(p: string): string {
   const abs = path.resolve(p.trim());
   return abs.replace(/\\/g, '/').replace(/\/+$/, '') || '/';
 }
@@ -48,8 +65,8 @@ export class ProjectRegistry {
     if (this.loaded) return;
     this.loaded = true;
     try {
-      if (!existsSync(PROJECTS_FILE)) return;
-      for (const line of readFileSync(PROJECTS_FILE, 'utf-8').split('\n')) {
+      if (!existsSync(projectsFilePath())) return;
+      for (const line of readFileSync(projectsFilePath(), 'utf-8').split('\n')) {
         if (!line.trim()) continue;
         try {
           const raw = JSON.parse(line) as ProjectRecord;
@@ -73,7 +90,7 @@ export class ProjectRegistry {
    */
   ensure(dir: string): string | undefined {
     this.load();
-    const p = normalize(dir);
+    const p = normalizeProjectPath(dir);
     if (this.records.some((r) => r.path === p)) return undefined;
     const record: ProjectRecord = {
       path: p,
@@ -82,8 +99,8 @@ export class ProjectRegistry {
     };
     this.records.push(record);
     try {
-      mkdirSync(path.dirname(PROJECTS_FILE), { recursive: true });
-      appendFileSync(PROJECTS_FILE, `${JSON.stringify(record)}\n`, 'utf-8');
+      mkdirSync(path.dirname(projectsFilePath()), { recursive: true });
+      appendFileSync(projectsFilePath(), `${JSON.stringify(record)}\n`, 'utf-8');
       return undefined;
     } catch (e) {
       return e instanceof Error ? e.message : String(e);
@@ -99,7 +116,7 @@ export class ProjectRegistry {
     const q = query.trim();
     if (!q) return undefined;
     // 带路径分隔符或盘符的一律当路径（存在与否交给调用方检查——路径不强制已登记）
-    if (/[\\/]/.test(q) || /^[a-zA-Z]:/.test(q)) return normalize(q);
+    if (/[\\/]/.test(q) || /^[a-zA-Z]:/.test(q)) return normalizeProjectPath(q);
     const hit = this.records.find((r) => r.name === q);
     return hit?.path;
   }

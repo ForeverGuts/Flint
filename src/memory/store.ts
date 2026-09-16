@@ -86,7 +86,9 @@ export class MemoryStore {
 
   /**
    * 彻底复位（清空内存）。与 clear() 目前等价，留名字是为测试隔离语义与 TaskStore 对齐：
-   * 生产代码用 clear()，reset() 只服务测试（将来若加"已删除存档"之类，差异会落在这里）。
+   * 日常用 clear()；reset() 服务两个"假装这个进程从没跑过"的场景——**测试隔离**，
+   * 以及**项目切换**（`/projects --switch`，ROADMAP 10.11.1：记忆住在 `.flint/memory.md`，
+   * 换了项目就必须先清后栽，否则 A 的约定会被当成 B 的）。
    */
   reset(): void {
     this.items = [];

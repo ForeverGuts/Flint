@@ -377,6 +377,23 @@ watcher 的 ctx 里刻意不给 `on`——“旁观者改流程”在类型层�
 
 参见：[改完自检（Postcheck）](#改完自检postcheck)
 
+### 项目切换（`/projects`）
+`src/commands/builtin/projects.ts` + `src/project/projects.ts`（2026-09-16 加，ROADMAP **10.11.1**）：第 14 个内置命令，给一直在写的注册表 `~/.flint/projects.jsonl` 补上**读取端**。不带参数**只列**（`●` 标当前、目录已不存在的行显式标注、按最近活动倒序、重名不猜）；切换必须显式 `/projects --switch <名或路径>`。
+
+**本质是"把启动那几步对着新目录再走一遍"**：TASK.md 种子 / memory 种子 / events 种子 / 契约锁 / 登记表 `ensure` 这五步抽成**唯一实现** `src/harness/project-context.ts` 的 `seedProjectContext()`，`main.ts` 启动与 `/projects --switch` **共用同一份**——两份实现只会各错一半，而"少装一样"的症状是**看着正常**。这也是**命令层第一次反向依赖 harness**（此前依赖方向是单向的 `harness → 一切`），该反向边被限制在一处、只依赖这一个"组装启动状态"的函数。
+
+**为什么切换能这么轻**：全项目的**项目级路径都用相对路径**（`.flint/*`、`TASK.md`、`sessions/`、`config/provider-keys.json`，以及 `bash` / `git` 用的 `process.cwd()`），在**调用时**才解析，所以 `chdir` 之后这些**自动自愈**；需要显式处理的只有**进程级单例内存状态 + 会话 + 技能**。
+
+**四条承重**：
+① **先清后栽** —— 三个 store 的 `loadFromFile` 对"文件不存在"的语义是**保持现状**（对启动正确），切换方必须先 `reset()` 再 load；切到一个**什么都没有**的项目时 `reset()` 是**唯一**的擦除动作。这条最容易漏——A↔B 两边都有文件时漏掉它照样全绿（"文件存在就替换"掩盖了"文件不存在时没擦除"），只有 `bare` 空项目用例才验得到。
+② **授权类配置清空、不重读** —— `commandRegistry.clear()` + `postcheckRegistry.set(null)` + `postcheckBaseline.set(null)`。这两份配置的授权判据建立在"只在启动读一次"上（防模型写配置自我授权，见[项目命令注册表](#项目命令注册表commands-registry)与[改完自检](#改完自检postcheck)），多一个运行期读取点会把判据从"不许回读"退化成"谁触发的可以回读"。回执因此明说"新项目的项目命令与自检**要重启**才生效"。
+③ **契约锁不继承** —— `charterLock` 是**会话级**的，切换后 `lock()` 回锁，否则"在 A 解锁"的许可会被搬到 B。与 ② 同一思路：**凡在旧项目取得的许可都不跟着搬**。
+④ **不做交互选择器** —— 非 TTY 下 `runtime.select` 会**自动返回第一项**（同 `/model` 那条已知边界），而"切哪个项目"是整个命令里**最不该被默认**的一步（默认错了，后面所有读写都落到错目录）。`pickProject` 遇**重名**也不猜（返回 ambiguous、要求写全路径）。
+
+**已知边界**：切换只改**本进程**的 cwd，不开新终端窗口、也不并行两个项目；**工具表与技能表不重载**（顶栏项目名实时刷，但 tools/skills/cmds 计数刻意不刷——每帧重建 15 个 Schema 代价大）；会话固定开 `default.jsonl`（无则新建）。
+
+参见：[项目命令注册表（Commands Registry）](#项目命令注册表commands-registry) · [改完自检（Postcheck）](#改完自检postcheck) · [CHARTER.md（目标契约文档）](#chartermd目标契约文档) · [会话仓库层（SessionRepo / jsonl-repo）](#会话仓库层sessionrepo--jsonl-repo) · 完整理由见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-16-projects-switch)
+
 ### grep（递归搜索工具）
 `tools/builtin.ts` 里的第 4 个内置工具（ls / read / write / **grep** / bash / edit）。返回“路径:行号:该行内容”，`pattern` 按 **JS 正则**编译。不需权限确认（只读）。
 

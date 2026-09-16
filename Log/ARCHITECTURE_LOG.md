@@ -11,6 +11,39 @@
 
 ---
 
+<a id="log-2026-09-16-project-context"></a>
+
+## 2026-09-16 | 启动播种抽成唯一实现 + 命令层第一次反向依赖 harness：`/projects` 项目切换
+
+**牵连系统 / 层次**：新增 `src/harness/project-context.ts`（`seedProjectContext()`，启动播种唯一实现）· `src/harness/main.ts`（删掉内联的五段播种，改调一处）· 新增 `src/project/projects.ts`（纯逻辑，零 import）· 新增 `src/commands/builtin/projects.ts`（第 14 个内置命令 `/projects`，**命令层第一次反向依赖 harness**）· `src/eventlog/registry.ts`（`PROJECTS_FILE` 常量 → `projectsFilePath()` 函数，支持 `FLINT_PROJECTS_FILE` 重定向）· `src/eventlog/store.ts`（`EventStore.reset()`）· `src/todo/store.ts` / `src/memory/store.ts`（`reset()` 注释补生产用法）· `src/io/ui/tree-ui.ts`（顶栏 Runtime 行改成每帧现取 cwd）· `scripts/verify-projects.ts` 80 项。
+
+**面向的问题**：
+- 注册表 `~/.flint/projects.jsonl` **一直在写、却没有读取端** —— 项目一多，这张表就成了只有写入端的账本（10.11.1 的原始缺口）
+- 更根本的：**"启动时的上下文播种"没有任何可复用的形状**。五步（TASK.md 种子 / memory 种子 / events 种子 / 契约锁 / 登记表 `ensure`）焊死在 `main()` 里连着几段代码，任何"对着另一个目录再走一遍启动"的需求都只能**照抄一份**，而照抄的两份实现一定会各错一半
+- 状态从文件搬进内存（todo / memory / eventlog 的 C 方案）之后，**"切换"这件事没有考虑过**：`loadFromFile` 对"文件不存在"是"保持现状"，于是旧项目的内容在切换时会赖着不走
+
+**做出的改动与关键口径**：
+- **抽 `seedProjectContext()` 为唯一实现**（`harness/project-context.ts`），`main()` 与 `/projects --switch` 共用。判据是"**两份实现只会各错一半，而'少装一样'的症状是看着正常**"。放 harness 的理由：它组装的是**启动期状态**，命令层不该自己拼这些子系统
+- **先清后栽**：三个 store 的加载方必须先 `reset()` 再 `loadFromFile`。`loadFromFile` 的"保持现状"语义对**启动**是对的（没文件就别动），对**切换**是错的（新项目可能恰好没有这些文件）。切到一个什么都没有的项目时 `reset()` 是唯一擦除动作 —— 而这条恰恰是"变异全绿"的形态（两项目都有文件时漏掉它照样全绿），补 `bare` 空项目用例才钉住
+- **授权类配置清空、不重读**：切换时 `commandRegistry.clear()` + `postcheckRegistry.set(null)` + `postcheckBaseline.set(null)`。这两份配置的授权判据建立在"**只在启动读一次**"上（防模型写配置自我授权），多一个运行期读取点会把判据从"不许回读"退化成"谁触发的可以回读"
+- **契约锁不继承**：`charterLock` 是会话级的，切换后 `lock()` 回锁 —— 不然"在 A 解锁"的许可会被搬到 B。同一条思路：**凡在旧项目取得的许可都不跟着搬**
+- **命令层第一次反向依赖 harness**（`commands/builtin/projects.ts` import `harness/project-context.ts`）。此前依赖方向是单向的 `harness → 一切`；这次命令层要复用启动播种，于是出现一条**反向边**。它被限制在一处、且只依赖一个"组装启动状态"的函数（不 import `main` / `repl` / `rpc`），由 `verify-projects.ts` 的源码守护钉住边界
+- **纯逻辑与执行分离**：参数解析 / 选项目 / 排序 / 渲染全落 `src/project/projects.ts`（**零 import 纯函数**）；命令层只做 `chdir` / 开会话 / 调播种 / 清配置。不做交互选择器（非 TTY 下 `select` 自动返回第一项，而"切哪个项目"最不该被默认）
+- **顶栏项目名实时刷新**：tree-ui 的 Runtime 行改成**每帧现取** `process.cwd()` 的项目名；tools/skills/cmds 三个计数**刻意不刷**（每帧重建 15 个 Schema 代价大、可见价值低）
+- **测试隔离**：`ProjectRegistry` 落点从模块级常量改成 `projectsFilePath()` 函数（现读 `FLINT_PROJECTS_FILE`）—— ESM import 提升使"脚本设环境变量再 import"拿不到值，改常量则每跑一次套件就往真实 `~/.flint/projects.jsonl` 塞临时目录
+
+**解决的问题**：
+- 项目注册表第一次有了**读取端**，且切换是**真的切换**（cwd + 注入上下文 + 会话三处一起换），不是"换个显示"
+- 启动播种有了**唯一形状**：日后任何"对着另一个目录初始化上下文"的需求（10.11.4 项目脚手架、测试夹具）都直接调它，不必再抄
+- 切换后的**状态一致性**有了明确口径：能继承的（相对路径解析出的项目级文件）自动自愈，不能继承的（进程级单例 / 会话 / 技能计数 / 授权类配置 / 契约锁）逐条显式处理，且边界写进回执
+
+**未来可优化**：
+- 命令层反向依赖 harness 只此一处；若日后还有第二个命令要复用启动逻辑，应把 `seedProjectContext` 提到更中立的层（例如 `src/project/`），而不是让反向边变粗
+- 切换时工具表与技能表**不重载**（顶栏计数不刷的同一取舍）；若将来要"切过去立刻用新项目技能/命令"，得先解决"运行期重读授权类配置"与"不许回读"的矛盾
+- 会话切换目前固定开 `default.jsonl`（无则新建）；"切项目时恢复到上次那个会话"是独立议题（需要注册表多存一个字段）
+
+---
+
 <a id="log-2026-09-14-lifecycle-archive"></a>
 
 ## 2026-09-14 | 生命周期归档闭环：system prompt 新增 `project` 层，`archive` 工具把"归档 → 提议下一坐标"收成一个动作

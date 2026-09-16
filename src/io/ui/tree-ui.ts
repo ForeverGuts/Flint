@@ -157,6 +157,8 @@ export class TreeUI {
   private headerBackend!: Text;
   /** header 中 Model 行（切换模型后实时刷新，buildHeader 中赋值） */
   private headerModel!: Text;
+  /** header 中 Runtime 行（只为了里面那个**项目名**：`/projects --switch` 会换 cwd） */
+  private headerRuntime!: Text;
 
   constructor(
     private runtime: import('../../runtime/runtime.js').Runtime,
@@ -285,17 +287,16 @@ export class TreeUI {
     const now = new Date();
     const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     const dateStr = now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' });
-    const platform = process.platform === 'win32' ? 'Windows' : process.platform === 'linux' ? 'Linux' : 'macOS';
-    const cwd = process.cwd().split(/[/\\]/).pop() || '';
 
     this.headerBackend = new Text('');
     this.headerModel = new Text('');
+    this.headerRuntime = new Text('');
     box.addChild(new Text(`  ${C.bgGreen}${C.bold}   ◆  Flint v0.1.0  ◆   ${C.reset}`));
     box.addChild(this.headerBackend);
     box.addChild(this.headerModel);
     box.addChild(new Text(`  ${C.dim}${pad('Mode')}${C.reset}   ${C.bold}REPL${C.reset}  │  ${C.dim}tools${C.reset} ${this.info.toolCount}  ${C.dim}skills${C.reset} ${this.info.skillCount}  ${C.dim}cmds${C.reset} ${this.info.cmdCount}`));
     box.addChild(new Text(`  ${C.dim}${pad('Session')}${C.reset}   ${C.bold}${this.info.sessionMsgs}${C.reset} msgs  │  ${C.dim}${dateStr} ${timeStr}${C.reset}`));
-    box.addChild(new Text(`  ${C.dim}${pad('Runtime')}${C.reset}   Node${process.version}  ·  ${platform}  ·  ${C.dim}${cwd}${C.reset}`));
+    box.addChild(this.headerRuntime);
     box.addChild(new Text(`  ${C.green}${'─'.repeat(boxWidth() - 2)}${C.reset}`));
     // 启动自检诊断：诊断区用常驻容器（本地检查结果立即填入；后台网络探测完成后回填，见 start）
     box.addChild(this.diagBox);
@@ -328,15 +329,25 @@ export class TreeUI {
   }
 
   /**
-   * 刷新 header 的 Backend/Model 行（每次渲染前调用）。
+   * 刷新 header 的 Backend / Model / Runtime 三行（每次渲染前调用）。
    * 切换供应商/模型后，runtime.currentProvider/currentModel 已更新，
    * 这里从 runtime 读实时值，让 banner 与真实加载的模型保持一致。
+   *
+   * Runtime 行里那个**项目名**（cwd 末段）必须一起实时刷新：`/projects --switch`
+   * （ROADMAP 10.11.1）会换 cwd，而顶栏是启动时画的 —— 不刷就是顶栏一直报着
+   * 上一个项目的名字，而底下的上下文早换成了新项目的（**看着正常**的那类错）。
+   * 同行里的 tools/skills/cmds **计数**刻意不刷：那是启动快照，
+   * 实时算要多重建 15 个工具的 schema，而本方法是**每帧**调的（转圈动画 250ms 一跳）；
+   * 这件事写在 /projects 的切换回执里，不靠顶栏自觉。
    */
   private refreshHeader(): void {
     const baseUrl = this.runtime.currentBaseUrl || this.info.baseUrl;
     this.headerBackend.setText(`  ${C.dim}${pad('Backend')}${C.reset}   ${backendName(baseUrl)}`);
     const model = this.runtime.currentModel || this.info.model;
     this.headerModel.setText(`  ${C.dim}${pad('Model')}${C.reset}   ${C.bold}${model}${C.reset}`);
+    const platform = process.platform === 'win32' ? 'Windows' : process.platform === 'linux' ? 'Linux' : 'macOS';
+    const cwd = process.cwd().split(/[/\\]/).pop() || '';
+    this.headerRuntime.setText(`  ${C.dim}${pad('Runtime')}${C.reset}   Node${process.version}  ·  ${platform}  ·  ${C.dim}${cwd}${C.reset}`);
   }
 
   /** 启动 UI */

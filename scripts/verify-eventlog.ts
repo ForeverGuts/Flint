@@ -508,13 +508,18 @@ console.log('\n⑧ 源码防回退');
   const storeSrc = fs.readFileSync(path.join(ROOT, 'src/eventlog/store.ts'), 'utf-8');
   const cmdSrc = fs.readFileSync(path.join(ROOT, 'src/commands/builtin/events.ts'), 'utf-8');
   const coreSectionSrc = fs.readFileSync(path.join(ROOT, 'src/context/sections/core-section.ts'), 'utf-8');
+  // 播种那几步的**唯一实现**（ROADMAP 10.11.1 起从 main.ts 抽到 harness/project-context.ts：
+  // 启动与 `/projects --switch` 共用同一份；断言随之指向新家，仍然钉"一次性种子"这条事实）
+  const seedSrc = fs.readFileSync(path.join(ROOT, 'src/harness/project-context.ts'), 'utf-8');
 
   check('H1 main 复用 SpanCollectorImpl（capacity 0 落盘型）做自动捕获',
     /new SpanCollectorImpl\(\{ capacity: 0 \}\)/.test(mainSrc));
   check('H2 自动捕获只认 tool_call 段 + 落 CALLS_FILE 流水档案（配对逻辑零重复）',
     mainSrc.includes("span.name === 'tool_call'") && mainSrc.includes('eventStore.recordToolCall(span, CALLS_FILE)'));
-  check('H3 main 启动时给事件库做一次性种子（叙事 + 流水两份）',
-    /eventStore\.loadFromFile\(EVENTS_FILE\)/.test(mainSrc) && mainSrc.includes('eventStore.loadCallsFile(CALLS_FILE)'));
+  check('H3 播种模块给事件库做一次性种子（叙事 + 流水两份），main 启动时调用它',
+    /eventStore\.loadFromFile\(EVENTS_FILE\)/.test(seedSrc)
+    && seedSrc.includes('eventStore.loadCallsFile(CALLS_FILE)')
+    && mainSrc.includes('seedProjectContext()'));
   check('H4 builtin 注册了 record_event / search_events',
     builtinSrc.includes("name: 'record_event'") && builtinSrc.includes("name: 'search_events'"));
   check('H5 record_event 用 NARRATIVE_KINDS 校验 kind（tool_call 手写被拒）',
@@ -542,9 +547,9 @@ console.log('\n⑧ 源码防回退');
     && /recordToolCall[\s\S]*?this\.calls\.push/.test(storeSrc));
   check('H13 注册表也是追加型（appendFileSync，绝不 writeFileSync），路径归一在位',
     registrySrc.includes('appendFileSync') && !registrySrc.includes('writeFileSync')
-    && registrySrc.includes('function normalize'));
-  check('H14 main 启动时把 cwd 登记进项目注册表',
-    mainSrc.includes('projectRegistry.ensure(process.cwd())'));
+    && registrySrc.includes('export function normalizeProjectPath('));
+  check('H14 播种时把 cwd 登记进项目注册表（启动与切换都会走）',
+    seedSrc.includes('projectRegistry.ensure(process.cwd())'));
   check('H15 pull_events 的许可闸与授权键（跨项目读取必须过用户，键 = 项目路径）',
     /name: 'pull_events'[\s\S]*?requirePermission: true/.test(builtinSrc)
     && /name: 'pull_events'[\s\S]*?permissionKey: \(args\) => String\(args\.project/.test(builtinSrc));

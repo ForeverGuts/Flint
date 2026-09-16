@@ -117,6 +117,23 @@ export class EventStore {
   }
 
   /**
+   * 清空两个索引（叙事 + 流水），**不动磁盘上的任何文件**。
+   *
+   * 两个合法用法，都不是"随手清一下"：
+   *   ① **测试隔离** —— 与 taskStore/memoryStore 的 reset() 同一条理由（进程级单例，
+   *      测完必须擦干净，否则后一套测到的条目属于前一套造的）。
+   *   ② **项目切换**（`/projects --switch`，ROADMAP 10.11.1）—— 事件库的档案住在
+   *      `.flint/events.jsonl`，那是**项目资产**。换了项目却留着上一个项目的事件索引，
+   *      模型检索时就会把别的项目的来龙去脉当成这个项目的（比"查不到"坏得多）。
+   *      切换时的顺序固定为 reset() → loadFromFile() → loadCallsFile()：
+   *      **先清后栽**，因为 loadFromFile 在文件不存在时是"保持现状"而不是"清空"。
+   */
+  reset(): void {
+    this.entries = [];
+    this.calls = [];
+  }
+
+  /**
    * 追加一条叙事事件（record_event 的落点）：生成 id/time → 内存入列 → 追加落盘。
    * 落盘失败不抛，返回错误信息（内存索引仍然有效，只是这份没进档案）。
    */

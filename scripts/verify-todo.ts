@@ -343,8 +343,11 @@ console.log('\n⑥ 接线证明与源码防回退');
     !runtimeSrc.includes('loadTaskMemory'));
   check('F2 runtime 改读 taskStore（注入 task 层与预算判定同源）',
     runtimeSrc.includes('taskStore.hasUnchecked()') && runtimeSrc.includes('taskStore.render()'));
-  check('F3 main 启动时用 loadFromFile 做一次性种子',
-    /taskStore\.loadFromFile\('TASK\.md'\)/.test(mainSrc));
+  check('F3 播种模块用 loadFromFile 做一次性种子，main 启动时调用它（ROADMAP 10.11.1：启动与'
+    + ' `/projects --switch` 共用同一份实现，两份实现只会各错一半）',
+    /taskStore\.loadFromFile\(TASK_FILE\)/.test(
+      fs.readFileSync(path.join(ROOT, 'src/harness/project-context.ts'), 'utf-8'))
+    && mainSrc.includes('seedProjectContext()'));
   check('F4 core-section 教的是 todo 工具，不再教"用 write 写 TASK.md"',
     coreSrc.includes('todo op:"add"') && !/用 write 创建 TASK\.md/.test(coreSrc));
   check('F5 agent-loop 收尾提示已从"write 记入 TASK.md"改为"用 todo 更新清单"',
