@@ -217,11 +217,15 @@ console.log('\n⑤ 登记表引用（use：授权不变，命令本体交给注�
 const menu: ProjectCommand[] = parsePackageScripts(pkg({ test: 'tsc --noEmit', build: 'tsc -p .' }));
 
 check('E1 {"use":"test"} → 解析成那条命令的 run',
-  parsePostcheckConfig('{"use":"test"}', menu)?.command === 'npm run test',
-  ok(String(parsePostcheckConfig('{"use":"test"}', menu)?.command)));
+  parsePostcheckConfig('{"use":"test"}', menu)?.commands?.[0] === 'npm run test',
+  ok(String(parsePostcheckConfig('{"use":"test"}', menu)?.commands?.[0])));
 check('E2 use + timeoutMs → 两者都取到',
   JSON.stringify(parsePostcheckConfig('{"use":"test","timeoutMs":9000}', menu))
-  === JSON.stringify({ command: 'npm run test', timeoutMs: 9000 }));
+  === JSON.stringify({
+    commands: ['npm run test'],
+    timeoutMs: 9000,
+    totalTimeoutMs: 9000,
+  }));
 check('E3 引用了注册表里**没有**的名字 → null（引用不到 = 没声明 = 不跑）',
   parsePostcheckConfig('{"use":"nope"}', menu) === null);
 check('E4 **不传命令表**时 use → null（没有注册表就无所谓引用）',
@@ -236,7 +240,7 @@ check('E8 use 不是字符串 → null', parsePostcheckConfig('{"use":123}', men
 check('E9 use 是 null → null（不是"没给"）',
   parsePostcheckConfig('{"use":null}', menu) === null);
 check('E10 只写 command（旧格式）照旧工作（本条不破坏已登记的登记表）',
-  parsePostcheckConfig('{"command":"npm run x"}', menu)?.command === 'npm run x');
+  parsePostcheckConfig('{"command":"npm run x"}', menu)?.commands?.[0] === 'npm run x');
 check('E11 两个都没有 → null（没声明就是没授权）',
   parsePostcheckConfig('{}', menu) === null);
 check('E12 引用不占用默认超时（use 走的是同一条超时校验）',
@@ -357,8 +361,8 @@ try {
   check('I1 端到端：真 package.json → 注册表里确实有 verify',
     commandRegistry.get().some((c) => c.name === 'verify'));
   check('I2 端到端：登记表 `{"use":"verify"}` 解析成可执行的那一句',
-    postcheckRegistry.get()?.command === 'npm run verify',
-    ok(String(postcheckRegistry.get()?.command)));
+    postcheckRegistry.get()?.commands?.[0] === 'npm run verify',
+    ok(String(postcheckRegistry.get()?.commands?.[0])));
   check('I3 端到端：超时也一起取到了', postcheckRegistry.get()?.timeoutMs === 20000);
 
   // 引用一个不存在的名字 → 不启用（**没有登记表就什么都不跑**的同一条纪律）

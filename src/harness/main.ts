@@ -13,7 +13,7 @@ import { closeTerminal } from '../io/terminal.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import { JsonlSessionRepo } from '../session/jsonl-repo.js';
 import { registerBuiltinCommands } from '../commands/loader.js';
-import { registerBuiltinTools } from '../tools/builtin.js';
+import { registerBuiltinTools, seedPostcheckBaseline } from '../tools/builtin.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { PermissionManager } from '../permission/manager.js';
 import { SkillLoader } from '../runtime/skill.js';
@@ -32,7 +32,12 @@ import { CALLS_FILE, EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { projectRegistry } from '../eventlog/registry.js';
 import { charterLock, guardContractWrite } from '../project/charter.js';
 import { routeBashGitRead } from '../git/route.js';
-import { POSTCHECK_FILE, parsePostcheckConfig, postcheckRegistry } from '../project/postcheck.js';
+import {
+  POSTCHECK_FILE,
+  parsePostcheckConfig,
+  postcheckBaseline,
+  postcheckRegistry,
+} from '../project/postcheck.js';
 import {
   PACKAGE_JSON_FILE,
   commandRegistry,
@@ -98,6 +103,18 @@ export async function main(checkResult: CheckResult): Promise<void> {
   } catch {
     commandRegistry.clear();
     postcheckRegistry.set(null);
+  }
+
+  // 自检基线（2026-09-16）：登记了就**现在**跑一遍，把「项目原本就有的错」记下来，
+  // 之后每次自检只报相对基线**新增**的 —— 否则全项目 tsc 会把历史遗留的旧错一起倒给
+  // 模型，它分不清哪个是自己刚写坏的。
+  // 同样只在启动这一次：运行期重采等于让模型「把当前的错洗白成基线」，防线自己拆自己。
+  // 代价是启动多等一轮命令（上限 = 登记表里的 timeoutMs），慢项目可把 timeoutMs 调小。
+  // 采基线失败不影响启动（它是附加情报，不是启动的前置条件）。
+  try {
+    await seedPostcheckBaseline();
+  } catch {
+    postcheckBaseline.set(null);
   }
 
   // 初始化持久化会话（v2 会话树格式）

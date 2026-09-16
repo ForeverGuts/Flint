@@ -32,7 +32,13 @@ import {
 import {
   CHARTER_FILE, CHARTER_REJECTED_FILE, DEVLOG_FILE, charterLock, contractDrifted,
 } from '../project/charter.js';
-import { describePostcheck, postcheckRegistry } from '../project/postcheck.js';
+import {
+  type PostcheckRun,
+  collectRunKeys,
+  describePostcheckAll,
+  postcheckBaseline,
+  postcheckRegistry,
+} from '../project/postcheck.js';
 import {
   GITIGNORE_FILE, GITIGNORE_MAX_BYTES, isIgnoredByGitignore, parseGitignore, type IgnoreRule,
 } from '../project/gitignore.js';
@@ -121,34 +127,83 @@ function decodeChildOutput(raw: Buffer): string {
  * 本来就含空格与参数——与 git 工具「参数即数据、必须绕开 shell」的场景正好相反。
  * 编码交给 decodeChildOutput：Windows 上 cmd.exe 自己的报错是 GBK，按 utf-8 硬解会乱码。
  */
-async function runPostcheck(): Promise<string | null> {
+async function runPostcheckRaw(): Promise<PostcheckRun[]> {
   const config = postcheckRegistry.get();
-  if (!config) return null;
+  if (!config) return [];
 
   const { spawnSync } = await import('node:child_process');
-  const r = spawnSync(config.command, {
-    shell: true,
-    cwd: process.cwd(),
-    timeout: config.timeoutMs,
-    encoding: 'buffer',
-    maxBuffer: 8 * 1024 * 1024,
-    windowsHide: true,
-  });
-
   const asText = (v: unknown): string => (Buffer.isBuffer(v) ? decodeChildOutput(v) : '');
-  // error.code 的三种取值与处置见 postcheck.ts 的 PostcheckRun 注释（超时 / 超缓冲 / 起不来）
-  const err = r.error as (Error & { code?: string }) | undefined;
 
-  return describePostcheck({
-    command: config.command,
-    timeoutMs: config.timeoutMs,
-    status: r.status,
-    signal: r.signal,
-    stdout: asText(r.stdout),
-    stderr: asText(r.stderr),
-    // exactOptionalPropertyTypes：可选成员无值时不能传 undefined，得整个键不出现
-    ...(err ? { errorCode: err.code ?? 'SPAWN_FAILED', errorMessage: err.message.slice(0, 200) } : {}),
-  });
+  const runs: PostcheckRun[] = [];
+  const startedAt = Date.now();
+
+  for (const command of config.commands) {
+    // 总闸：先算还剩多少额度。用尽就不再起新进程（区别于超时 —— 它是压根没跑）
+    const left = config.totalTimeoutMs - (Date.now() - startedAt);
+    if (left <= 0) {
+      runs.push({
+        command,
+        timeoutMs: config.timeoutMs,
+        status: null,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        skipped: true,
+      });
+      continue;
+    }
+
+    // 这条的额度 = 单条上限与剩余额度取小：不让最后一条把总闸撞穿
+    const budget = Math.min(config.timeoutMs, left);
+    const r = spawnSync(command, {
+      shell: true,
+      cwd: process.cwd(),
+      timeout: budget,
+      encoding: 'buffer',
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true,
+    });
+
+    // error.code 的三种取值与处置见 postcheck.ts 的 PostcheckRun 注释（超时 / 超缓冲 / 起不来）
+    const err = r.error as (Error & { code?: string }) | undefined;
+    runs.push({
+      command,
+      timeoutMs: budget,
+      status: r.status,
+      signal: r.signal,
+      stdout: asText(r.stdout),
+      stderr: asText(r.stderr),
+      // exactOptionalPropertyTypes：可选成员无值时不能传 undefined，得整个键不出现
+      ...(err ? { errorCode: err.code ?? 'SPAWN_FAILED', errorMessage: err.message.slice(0, 200) } : {}),
+    });
+  }
+
+  return runs;
+}
+
+/**
+ * 渲染这一轮自检的结论。返回 null = 没登记 → 调用方一字不追加。
+ * 基线从 postcheckBaseline 单例取（启动时采的那次），为 null 时不过滤（旧行为）。
+ */
+async function runPostcheck(): Promise<string | null> {
+  const runs = await runPostcheckRaw();
+  if (runs.length === 0) return null;
+  return describePostcheckAll(runs, postcheckBaseline.get());
+}
+
+/**
+ * 播种基线（启动时调一次）：跑一遍登记的命令，把认出来的诊断记下来。
+ * 之后每次自检只报**新增**的 —— 否则全项目 tsc 会把历史遗留的旧错一起倒给模型，
+ * 它分不清哪个是自己刚写坏的（要么跑去改不该改的，要么连自己那个一起忽略）。
+ *
+ * 代价：启动会多等一轮命令的时间（上限 = 登记表里的 timeoutMs）。这个值钱不值钱
+ * 取决于项目，所以它是**可选的**——不想要基线就在登记表里写 `{"baseline":false}`？
+ * 不，没有这个开关：启动多等几秒换「每次写文件都看得准」，这笔账默认划得来；
+ * 真嫌慢的用户把 timeoutMs 调小即可（下界 1s）。
+ */
+export async function seedPostcheckBaseline(): Promise<void> {
+  if (!postcheckRegistry.get()) return;
+  postcheckBaseline.set(collectRunKeys(await runPostcheckRaw()));
 }
 
 /** 把自检结论追加到工具结果正文末尾；没登记就原样返回 base */

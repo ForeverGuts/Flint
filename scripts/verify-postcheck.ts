@@ -36,7 +36,10 @@ import { registerBuiltinTools } from '../src/tools/builtin.js';
 import {
   DEFAULT_POSTCHECK_TIMEOUT_MS, POSTCHECK_FILE, POSTCHECK_MAX_LINES, POSTCHECK_TAG,
   POSTCHECK_TAIL_LINES, POSTCHECK_TIMEOUT_MAX_MS, POSTCHECK_TIMEOUT_MIN_MS,
-  describePostcheck, parsePostcheckConfig, postcheckRegistry, summarizePostcheckOutput,
+  POSTCHECK_MAX_COMMANDS, POSTCHECK_MAX_DIAGNOSTICS,
+  collectDiagnosticKeys, collectRunKeys, describePostcheck, describePostcheckAll,
+  diagnosticKey, isRunPassed, parseDiagnosticLine, parseDiagnostics, parsePostcheckConfig,
+  postcheckBaseline, postcheckRegistry, summarizeByDiagnostics, summarizePostcheckOutput,
   type PostcheckRun,
 } from '../src/project/postcheck.js';
 
@@ -68,13 +71,17 @@ console.log('\n① 配置解析（严格：存疑一律不启用 = 没授权）'
 
 check('A1 合法配置 → 命令与显式超时都取到',
   JSON.stringify(parsePostcheckConfig('{"command":"npm run typecheck","timeoutMs":30000}'))
-  === JSON.stringify({ command: 'npm run typecheck', timeoutMs: 30000 }));
+  === JSON.stringify({
+    commands: ['npm run typecheck'],
+    timeoutMs: 30000,
+    totalTimeoutMs: 30000,
+  }));
 check('A2 省略 timeoutMs → 用默认值',
   parsePostcheckConfig('{"command":"npm test"}')?.timeoutMs === DEFAULT_POSTCHECK_TIMEOUT_MS);
 check('A3 command 前后空白被 trim（宽容的两处之一）',
-  parsePostcheckConfig('{"command":"  npm test  "}')?.command === 'npm test');
+  parsePostcheckConfig('{"command":"  npm test  "}')?.commands?.[0] === 'npm test');
 check('A4 额外字段被忽略（宽容的两处之二）',
-  parsePostcheckConfig('{"command":"npm test","note":"hello"}')?.command === 'npm test');
+  parsePostcheckConfig('{"command":"npm test","note":"hello"}')?.commands?.[0] === 'npm test');
 
 check('A5 不是字符串（undefined）→ null', parsePostcheckConfig(undefined) === null);
 check('A6 空串 / 纯空白 → null',
@@ -133,20 +140,22 @@ check('B8 恰好等于上限 → 全给，不加省略行',
 
 const over = summarizePostcheckOutput(mk(POSTCHECK_MAX_LINES + 1), '');
 const overLines = over.split('\n');
+// 2026-09-16 改过一次语义：省略标记**占一个位置**（总行数 = 上限），不再额外突破 1 行。
+// 旧实现输出 cap+1 行，与 POSTCHECK_MAX_LINES 注释里「含尾部的省略行」自相矛盾。
 check('B9 超一行 → 出现省略标记，且省略行数算得对',
-  over.includes(`……（中间省略 1 行）`), ok(over));
-check('B10 超一行 → 总行数 = 上限 + 1（那一条省略标记本身），且首尾都在',
-  overLines.length === POSTCHECK_MAX_LINES + 1
+  over.includes(`……（中间省略 2 行）`), ok(over));
+check('B10 超一行 → 总行数 = 上限（省略标记占一个位置，不额外突破），且首尾都在',
+  overLines.length === POSTCHECK_MAX_LINES
   && overLines[0] === 'L1' && overLines[overLines.length - 1] === `L${POSTCHECK_MAX_LINES + 1}`);
 check('B11 尾部保留的正是最后 N 行（结论行不丢）',
   overLines.slice(-POSTCHECK_TAIL_LINES).join(',')
     === [`L${POSTCHECK_MAX_LINES - 1}`, `L${POSTCHECK_MAX_LINES}`, `L${POSTCHECK_MAX_LINES + 1}`].join(','));
 
 const small = summarizePostcheckOutput(mk(10), '', 5);
-check('B12 自定义上限：省略计数 = 总行数 - 上限',
-  small.includes('……（中间省略 5 行）') && small.split('\n').length === 6, ok(small));
+check('B12 自定义上限：总行数 = 上限，且省略计数 = 没被保留的那些行',
+  small.includes('……（中间省略 6 行）') && small.split('\n').length === 5, ok(small));
 check('B13 上限被设得比"尾部保留数"还小 → 不崩，且仍保留头尾',
-  summarizePostcheckOutput(mk(10), '', 2).includes('……（中间省略 6 行）'));
+  summarizePostcheckOutput(mk(10), '', 2).includes('……（中间省略 7 行）'));
 check('B14 超长单行不会被折断（只按行切，不按字符切）',
   summarizePostcheckOutput('x'.repeat(5000), '') === 'x'.repeat(5000));
 check('B15 上限常量是 30、尾保留 3（TESTING 与文档引用的就是这两个数）',
@@ -213,8 +222,8 @@ check('C13 未通过时摘要为空也有兜底（不会出现冒号后空无一
 console.log('\n④ 内存单例（运行期唯一真相源）');
 
 check('D1 初值为 null（没登记 = 什么都不跑）', postcheckRegistry.get() === null);
-postcheckRegistry.set({ command: 'npm test', timeoutMs: 5000 });
-check('D2 set 后 get 取到同一份', postcheckRegistry.get()?.command === 'npm test');
+postcheckRegistry.set({ commands: ['npm test'], timeoutMs: 5000, totalTimeoutMs: 5000 });
+check('D2 set 后 get 取到同一份', postcheckRegistry.get()?.commands?.[0] === 'npm test');
 postcheckRegistry.clear();
 check('D3 clear 后回到 null', postcheckRegistry.get() === null);
 postcheckRegistry.set(null);
@@ -247,11 +256,14 @@ check('E6 write 与 edit **两个** handler 都接了（`await withPostcheck(` �
 check('E7 追加以空行分隔（结论自成一段，不与工具正文黏在一起）',
   /`\$\{base\}\\n\\n\$\{note\}`/.test(builtinCode), ok(builtinCode.match(/withPostcheck[\s\S]{0,120}/)?.[0] ?? ''));
 check('E8 自检走 spawnSync 且带 timeout（同步执行没有上限会把会话顶死）',
-  builtinCode.includes('spawnSync(') && /timeout:\s*config\.timeoutMs/.test(builtinCode));
+  builtinCode.includes('spawnSync(') && /timeout:\s*budget/.test(builtinCode));
+check('E8b 每条的额度是「单条上限与总闸余额取小」—— 最后一条不会把总闸撞穿',
+  /const budget = Math\.min\(config\.timeoutMs, left\)/.test(builtinCode));
 check('E9 自检的 stdout/stderr 交给 decodeChildOutput（Windows 上 cmd.exe 报错是 GBK，硬解 utf-8 会乱码）',
   /asText[\s\S]{0,160}decodeChildOutput\(/.test(builtinCode));
 check('E10 没登记时一字不追加（返回 null 的短路在最前面）',
-  /if \(!config\) return null;/.test(builtinCode));
+  /if \(!config\) return \[\];/.test(builtinCode)
+  && /if \(runs\.length === 0\) return null;/.test(builtinCode));
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    ⑥ 行为证明：真起进程 + 真用 write 工具写文件
@@ -285,7 +297,7 @@ try {
     baseline.content === '[OK] 写入成功: a.txt (6 字符, 2 行)', ok(baseline.content));
 
   // ── 登记成功命令 ──
-  postcheckRegistry.set({ command: 'node pass.mjs', timeoutMs: 60000 });
+  postcheckRegistry.set({ commands: ['node pass.mjs'], timeoutMs: 60000, totalTimeoutMs: 60000 });
   const okRes = await registry.execute('write', { path: 'a.txt', content: 'hello\n' });
   check('F4 登记后 write 结果末尾追加了自检段',
     okRes.content.includes(POSTCHECK_TAG), ok(okRes.content));
@@ -299,7 +311,7 @@ try {
     okRes.content.startsWith('[OK] 写入成功: a.txt') && okRes.content.includes('\n\n' + POSTCHECK_TAG));
 
   // ── 登记失败命令 ──
-  postcheckRegistry.set({ command: 'node fail.mjs', timeoutMs: 60000 });
+  postcheckRegistry.set({ commands: ['node fail.mjs'], timeoutMs: 60000, totalTimeoutMs: 60000 });
   const failRes = await registry.execute('write', { path: 'b.txt', content: 'x\n' });
   check('F9 失败命令 → 「未通过」+ 真实退出码 2',
     failRes.content.includes(`${POSTCHECK_TAG} 未通过（node fail.mjs，退出码 2）`), ok(failRes.content));
@@ -311,21 +323,21 @@ try {
   check('F12 失败也不改状态（写入本身是成功的）', failRes.status === 'ok');
 
   // ── 命令不存在 ──
-  postcheckRegistry.set({ command: 'definitely_not_a_command_xyz --version', timeoutMs: 60000 });
+  postcheckRegistry.set({ commands: ['definitely_not_a_command_xyz --version'], timeoutMs: 60000, totalTimeoutMs: 60000 });
   const missing = await registry.execute('write', { path: 'c.txt', content: 'x\n' });
   check('F13 命令不存在 → 报「未通过」并带上 shell 的报错（不抛异常、不静默）',
     missing.content.includes(`${POSTCHECK_TAG} 未通过（definitely_not_a_command_xyz --version，退出码`)
     && missing.status === 'ok', ok(missing.content.slice(-200)));
 
   // ── 超时 ──
-  postcheckRegistry.set({ command: 'node slow.mjs', timeoutMs: 1000 });
+  postcheckRegistry.set({ commands: ['node slow.mjs'], timeoutMs: 1000, totalTimeoutMs: 1000 });
   const slow = await registry.execute('write', { path: 'd.txt', content: 'x\n' });
   check('F14 超时 → 「超时未完成」+ 上限 1000ms（同步执行不会把会话顶死）',
     slow.content.includes(`${POSTCHECK_TAG} 超时未完成（node slow.mjs，上限 1000ms）`), ok(slow.content.slice(-200)));
   check('F15 超时同样不改状态（写入确实成功了）', slow.status === 'ok');
 
   // ── edit 也接上了 ──
-  postcheckRegistry.set({ command: 'node fail.mjs', timeoutMs: 60000 });
+  postcheckRegistry.set({ commands: ['node fail.mjs'], timeoutMs: 60000, totalTimeoutMs: 60000 });
   const editRes = await registry.execute('edit', {
     path: 'a.txt', oldText: 'hello', newText: 'hello (edited)',
   });
@@ -370,6 +382,209 @@ try {
     }
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   ⑦ 诊断条目解析（2026-09-16 三项增强共用的地基）
+   期望值全部来自 2026-09-16 的实测探针：同一份坏文件分别用默认与 --pretty 跑 tsc
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+console.log('\n⑦ 诊断条目解析');
+
+const STD_LINE = 'src/a.ts(10,5): error TS2322: Type \'string\' is not assignable to type \'number\'.';
+const PRETTY_LINE = "src/a.ts:10:5 - error TS2322: Type 'string' is not assignable to type 'number'.";
+
+const dStd = parseDiagnosticLine(STD_LINE);
+check('G1 认 tsc 默认格式（file / code / message 三样都取到）',
+  dStd?.file === 'src/a.ts' && dStd?.code === 'TS2322'
+  && dStd?.message.startsWith("Type 'string'"), JSON.stringify(dStd));
+
+const dPretty = parseDiagnosticLine(PRETTY_LINE);
+check('G2 认 tsc --pretty 格式（冒号 + 空格横杠，与默认形态不同）',
+  dPretty?.file === 'src/a.ts' && dPretty?.code === 'TS2322', JSON.stringify(dPretty));
+
+check('G3 pretty 与非 pretty 是**同一个错**（同一份代码换 TTY 不该被判成新错）',
+  !!dStd && !!dPretty && diagnosticKey(dStd) === diagnosticKey(dPretty));
+
+const dMoved = parseDiagnosticLine("src/a.ts(42,9): error TS2322: Type 'string' is not assignable to type 'number'.");
+check('G4 行列号变了但错还是那个错 → 键相同（**抗行号漂移**，基线对比的承重）',
+  !!dStd && !!dMoved && diagnosticKey(dStd) === diagnosticKey(dMoved));
+
+const dOtherCode = parseDiagnosticLine("src/a.ts(10,5): error TS1000: Type 'string' is not assignable to type 'number'.");
+check('G5 错误码不同 → 键不同', !!dStd && !!dOtherCode && diagnosticKey(dStd) !== diagnosticKey(dOtherCode));
+
+const dOtherFile = parseDiagnosticLine("src/b.ts(10,5): error TS2322: Type 'string' is not assignable to type 'number'.");
+check('G6 文件不同 → 键不同', !!dStd && !!dOtherFile && diagnosticKey(dStd) !== diagnosticKey(dOtherFile));
+
+check('G7 npm 的横幅行不是诊断', parseDiagnosticLine('> flint@0.1.0 typecheck') === null);
+check('G8 pretty 模式回显的源码行不是诊断', parseDiagnosticLine('10 export const n: number = "x";') === null);
+check('G9 pretty 模式的波浪线不是诊断', parseDiagnosticLine('                 ~') === null);
+check('G10 「Found 2 errors」这类结论行不是诊断',
+  parseDiagnosticLine('Found 2 errors in the same file, starting at: src/a.ts:1') === null);
+check('G11 warning 不认（自检关心的是过不过得去，警告不该让它变红）',
+  parseDiagnosticLine('src/a.ts(1,1): warning TS1000: whatever') === null);
+check('G12 空行不是诊断', parseDiagnosticLine('   ') === null);
+
+const prettyBlock = [
+  PRETTY_LINE,
+  '',
+  '10 export const n: number = "x";',
+  '                 ~',
+  '',
+  'Found 1 error.',
+].join('\n');
+check('G13 pretty 的六行里只挑出**一条**诊断（一坨文本 ≠ 一个错）',
+  parseDiagnostics(prettyBlock, '').length === 1);
+
+check('G14 同一条错重复出现 → 身份去重后只剩一个',
+  collectDiagnosticKeys(parseDiagnostics(`${STD_LINE}\n${STD_LINE}`, '')).length === 1);
+check('G15 两条不同的错 → 身份有两个',
+  collectDiagnosticKeys(parseDiagnostics(`${STD_LINE}\n${STD_LINE.replace('TS2322', 'TS1000')}`, '')).length === 2);
+
+console.log('\n⑧ 按条目摘要（错误不再被尾部结论行挤掉）');
+
+const manyErrs = Array.from({ length: 25 }, (_, i) => `src/f${i}.ts(1,1): error TS1000: bad ${i}`);
+const manyOut = `${manyErrs.join('\n')}\nFound 25 errors.`;
+const sumMany = summarizePostcheckOutput(manyOut, '');
+check('H1 认得出诊断时按**条目**回显（一行一个错）', sumMany.includes('bad 0'));
+check('H2 报错多时不会只剩结论行 —— 按行截断时「Found 25 errors」会把真错误挤没',
+  sumMany.includes('bad 19') && !sumMany.includes('Found 25 errors'));
+check('H3 超出上限就说清还有几条（不静默吞掉）', sumMany.includes('还有 5 条未列出'));
+check('H4 上限恰好够时不多话',
+  summarizePostcheckOutput(manyErrs.slice(0, 3).join('\n'), '').includes('bad 2')
+  && !summarizePostcheckOutput(manyErrs.slice(0, 3).join('\n'), '').includes('未列出'));
+check('H5 一条诊断都认不出 → 退回按行摘要（fail-safe 朝「多给」倒）',
+  summarizePostcheckOutput('plain line one\nplain line two', '').includes('plain line one'));
+check('H6 按行兜底仍会截断（上限没被绕过）',
+  summarizePostcheckOutput(Array.from({ length: 80 }, (_, i) => `L${i}`).join('\n'), '')
+    .split('\n').length <= POSTCHECK_MAX_LINES);
+check('H7 条目上限退化到 0 时也至少给一条（不返回空串让人以为没错）',
+  summarizeByDiagnostics(parseDiagnostics(STD_LINE, ''), 0).includes('TS2322'));
+
+console.log('\n⑨ 基线对比（只报新增的错）');
+
+const OLD_ERR = "src/old.ts(1,1): error TS1000: 这是启动前就有的错";
+const NEW_ERR = "src/new.ts(2,2): error TS2000: 这是我刚写出来的错";
+const baseKeys = collectDiagnosticKeys(parseDiagnostics(OLD_ERR, ''));
+
+const mkRun = (stdout: string, over: Partial<PostcheckRun> = {}): PostcheckRun => ({
+  command: 'npm run typecheck', timeoutMs: 1000, status: 2, signal: null,
+  stdout, stderr: '', ...over,
+});
+
+const onlyOld = describePostcheck(mkRun(OLD_ERR), baseKeys);
+check('I1 报出来的全是旧错 → 明说「没有新增问题」（模型就不会跑去改它们）',
+  onlyOld.includes('没有新增问题'), onlyOld);
+check('I2 且点明是启动前就有的那几条', onlyOld.includes('启动前就有的那 1 条'));
+
+const mixed = describePostcheck(mkRun(`${OLD_ERR}\n${NEW_ERR}`), baseKeys);
+check('I3 只列**新增**的那条，旧错不刷屏',
+  mixed.includes('TS2000') && !mixed.includes('TS1000'), mixed);
+check('I4 说清共几条、其中几条是新增',
+  mixed.includes('共 2 条') && mixed.includes('1 条是本次新增'));
+
+check('I5 没基线（null）→ 不过滤（与接入前逐字一致）',
+  describePostcheck(mkRun(`${OLD_ERR}\n${NEW_ERR}`), null).includes('TS1000'));
+check('I6 基线是空的（启动前项目干净）→ 全算新增',
+  describePostcheck(mkRun(NEW_ERR), []).includes('TS2000'));
+check('I7 认不出诊断时**不过滤**（绝不静默吞掉看不懂的输出）',
+  describePostcheck(mkRun('some unknown output'), baseKeys).includes('some unknown output'));
+
+console.log('\n⑩ 多命令槽位');
+
+check('J1 commands 数组 → 几条就几条',
+  JSON.stringify(parsePostcheckConfig('{"commands":["npm run a","npm run b"]}')?.commands)
+  === JSON.stringify(['npm run a', 'npm run b']));
+check('J2 commands 只有一个元素也成立（不必为了一条去用数组）',
+  parsePostcheckConfig('{"commands":["npm run a"]}')?.commands?.length === 1);
+check('J3 use 也支持数组（与 command 侧对称）',
+  JSON.stringify(parsePostcheckConfig('{"use":["a","b"]}', [
+    { name: 'a', run: 'npm run a' }, { name: 'b', run: 'npm run b' },
+  ])?.commands) === JSON.stringify(['npm run a', 'npm run b']));
+check('J4 use 数组里有一个查不到 → 整份不启用（引用不到 = 没声明好）',
+  parsePostcheckConfig('{"use":["a","zzz"]}', [{ name: 'a', run: 'npm run a' }]) === null);
+check('J5 command 与 commands 同写 → null（不知道该听谁的）',
+  parsePostcheckConfig('{"command":"a","commands":["b"]}') === null);
+check('J6 command 与 use 同写 → null',
+  parsePostcheckConfig('{"command":"a","use":"b"}') === null);
+check('J7 三种写法都写 → null',
+  parsePostcheckConfig('{"command":"a","commands":["b"],"use":"c"}') === null);
+check('J8 三种写法都不写 → null（等于没声明）',
+  parsePostcheckConfig('{"timeoutMs":5000}') === null);
+check(`J9 超过上限 ${POSTCHECK_MAX_COMMANDS} 条 → null（再多就不是自检了）`,
+  parsePostcheckConfig(`{"commands":["a","b","c","d","e","f"]}`) === null);
+check('J10 空数组 → null', parsePostcheckConfig('{"commands":[]}') === null);
+check('J11 数组里有空串 → null', parsePostcheckConfig('{"commands":["a",""]}') === null);
+check('J12 数组里有非字符串 → null', parsePostcheckConfig('{"commands":["a",123]}') === null);
+check('J13 总闸小于单条上限 → null（第一条都跑不完，配置自相矛盾）',
+  parsePostcheckConfig('{"command":"a","timeoutMs":10000,"totalTimeoutMs":5000}') === null);
+check('J14 总闸越界 → null',
+  parsePostcheckConfig('{"command":"a","totalTimeoutMs":99999999}') === null);
+check('J15 总闸非整数 → null',
+  parsePostcheckConfig('{"command":"a","totalTimeoutMs":1.5}') === null);
+check('J16 没配总闸 → 默认 = 条数 × 单条上限',
+  parsePostcheckConfig('{"commands":["a","b"],"timeoutMs":10000}')?.totalTimeoutMs === 20000);
+check('J17 默认总闸也不超过总上限（5 条 × 600s 不该配出 3000s）',
+  parsePostcheckConfig(`{"commands":["a","b","c","d","e"],"timeoutMs":600000}`)?.totalTimeoutMs
+  === 600000);
+check('J18 单条时默认总闸正好等于单条上限（不额外放宽）',
+  parsePostcheckConfig('{"command":"a","timeoutMs":30000}')?.totalTimeoutMs === 30000);
+
+console.log('\n⑪ 多命令渲染与总闸');
+
+const okRun = mkRun('', { status: 0 });
+check('K1 单条时汇总 == 单条渲染（只登记一条的用户看到的和以前**逐字一致**）',
+  describePostcheckAll([okRun], null) === describePostcheck(okRun, null));
+check('K2 多条全过 → 一句「全部通过」并列出来',
+  describePostcheckAll([okRun, mkRun('', { status: 0, command: 'npm run lint' })], null)
+    .includes('全部通过（2 条'));
+const mixRuns = describePostcheckAll([okRun, mkRun(NEW_ERR, { command: 'npm run typecheck' })], null);
+check('K3 多条里有失败 → 点明「几条中几条未通过」', mixRuns.includes('2 条中 1 条未通过'), mixRuns);
+check('K4 失败的那条带上真实退出码', mixRuns.includes('退出码 2'));
+check('K5 退出码 0 才算过', isRunPassed(okRun) === true);
+check('K6 非空退出码不算过', isRunPassed(mkRun(NEW_ERR)) === false);
+check('K7 被总闸跳过（根本没跑）不算过',
+  isRunPassed({ ...okRun, status: null, skipped: true }) === false);
+check('K8 超时不算过', isRunPassed({ ...okRun, status: null, errorCode: 'ETIMEDOUT' }) === false);
+check('K9 总闸用尽的渲染：说清「未执行」而不是「未通过」（它压根没跑）',
+  describePostcheck({ ...okRun, status: null, skipped: true }, null).includes('未执行'));
+check('K10 collectRunKeys 汇总多条的全部诊断',
+  collectRunKeys([mkRun(OLD_ERR), mkRun(NEW_ERR)]).length === 2);
+
+/** 「整轮收尾句」在一段渲染里出现了几次 */
+const tailCount = (s: string): number => s.split('改动已落盘；先处理这些').length - 1;
+const twoFail = describePostcheckAll([
+  mkRun(NEW_ERR, { command: 'npm run typecheck' }),
+  mkRun(NEW_ERR, { command: 'npm run lint' }),
+], null);
+check('K11 两条命令都失败 → 收尾句**只说一次**（曾按单条各附一遍，同一句话重复 N 次）',
+  tailCount(twoFail) === 1, `出现 ${tailCount(twoFail)} 次：\n${twoFail}`);
+check('K12 两条命令都失败 → 两条正文都在（修复没把谁吞掉）',
+  twoFail.includes('npm run typecheck') && twoFail.includes('npm run lint'));
+check('K13 单条渲染仍带收尾句（tail 默认 true，只登记一条的用户看到的没变）',
+  describePostcheck(mkRun(NEW_ERR), null).includes('改动已落盘；先处理这些'));
+const skippedAll = describePostcheckAll([
+  mkRun(NEW_ERR, { command: 'npm run typecheck' }),
+  { ...okRun, status: null, skipped: true, command: 'npm run lint' },
+], null);
+check('K14 总闸跳过的那条在多命令里仍说「未执行」（不是「未通过」），且不重复尾句',
+  skippedAll.includes('未执行') && tailCount(skippedAll) === 1, skippedAll);
+
+console.log('\n⑫ 源码守护（三项增强的接线）');
+
+const mainSrc = fs.readFileSync(path.join(ROOT, 'src/harness/main.ts'), 'utf-8');
+const pcSrc = fs.readFileSync(path.join(ROOT, 'src/project/postcheck.ts'), 'utf-8');
+check('L1 启动时播种基线（main.ts 里调了 seedPostcheckBaseline）',
+  /await seedPostcheckBaseline\(\)/.test(mainSrc));
+check('L2 播种失败不影响启动（它是附加情报，不是启动的前置条件）',
+  /try \{\s*await seedPostcheckBaseline\(\);?\s*\} catch/.test(mainSrc));
+check('L3 注册表没登记就不采基线（没登记 = 什么都不跑）',
+  /if \(!postcheckRegistry\.get\(\)\) return;/.test(builtinCode));
+check('L4 builtin 里串行跑每一条（for...of，不是并发）',
+  /for \(const command of config\.commands\)/.test(builtinCode));
+check('L5 纯模块仍然零 import（新增的三个能力没破坏这条）',
+  !/^import .*from/m.test(pcSrc.replace(/^import type .*$/gm, '')));
+check('L6 基线的键**不含行列号**（含了就会因行号漂移全部误判成新错）',
+  /return `\$\{d\.file\}\|\$\{d\.code\}\|\$\{d\.message\}`/.test(pcSrc));
 
 /* ═══════════════════════════════════════════════════════════════════════════════ */
 

@@ -48,7 +48,7 @@
 │ eventlog/         EventStore —— 历史事件库（.flint/events.jsonl 追加档案 + 检索；tool_call span 自动捕获）
 │ project/          项目生命周期协议（charter.ts 目标契约写保护闸 · roadmap.ts 路线图表契约 + 分段编号与状态派生
 │                   · lifecycle.ts DEVLOG 排版与归档回执 · snapshot.ts PROJECT.md 只读注入）· fork.ts 分叉点提问
-│                   · postcheck.ts 改完自检（登记表驱动；结论追加进工具结果，不改工具状态）
+│                   · postcheck.ts 改完自检（登记表驱动，`commands` 数组；启动采**基线**后只报新增诊断；结论追加进工具结果，不改工具状态）
 │                   · gitignore.ts `.gitignore` 感知（解析成跳过规则；跳过表 = 内置默认 ∪ .gitignore）
 │                   · commands.ts 项目命令注册表（从 package.json 的 scripts 发现并注入；**发现 ≠ 授权**，不执行任何命令）
 │ git/              git 只读结构化（git.ts：op 白名单 + argv 不经 shell + 8 个 op 的解析渲染）· route.ts bash 裸 git 只读命令的路由（**不是闸**）
