@@ -784,7 +784,9 @@ NOOP **不是跳过这段代码，是跳过打卡**：回调照常执行，只�
 ### TaskStore（任务清单真相源）
 任务清单的**唯一真相源**：`src/todo/store.ts` 里的内存结构化状态（`TaskItem[]` + 状态机）。运行期只让它说了算——[Runtime](#runtime) 注入 system 的 `task` 层时读它，轮数预算与 `thinking auto` 也读它。`TASK.md` 降级为它的**投影 + 启动种子**：写盘由 [todo](#todo任务清单工具) 工具在每次变更后做，读盘只在进程启动时做一次（`main.ts`）。
 
-它取代了改造前的"文件即状态"（模型用 `write` 维护 TASK.md、[Runtime](#runtime) 用一个正则数复选框）。两条硬不变量：① 同一时刻至多一项 `active`；② `render()` 与 `static fromMarkdown()` **严格互逆**（写盘 / 读盘是一对逆运算，否则"重启一次漂一次"，同一手法见 [Autogen Block](#autogen-block生成区) 的 `syncText`）。
+它取代了改造前的"文件即状态"（模型用 `write` 维护 TASK.md、[Runtime](#runtime) 用一个正则数复选框）。两条硬不变量：① 同一时刻至多一项 `active`（**全局**，不是"每层各一个"——见 [任务层级与前置依赖](#任务层级与前置依赖parent--after)）；② `render()` 与 `static fromMarkdown()` **严格互逆**（写盘 / 读盘是一对逆运算，否则"重启一次漂一次"，同一手法见 [Autogen Block](#autogen-block生成区) 的 `syncText`）。互逆性的**口径**在 2026-09-17 被收紧：往返只覆盖**结构字段**（`text` / `status` / `parent` / `after`），[任务时间戳](#任务时间戳createdat--startedat--doneat)刻意不落盘。
+
+`TaskItem` 现在有七个字段：`text` / `status` / `parent` / `after` + 三个时间戳。投影格式随之升为"**缩进 + 按需标记 + 前缀码转义**"：层次用缩进表达（`INDENT_UNIT = 2`，`depthsOf()` 是深度的唯一实现，渲染 / 解析 / 面板 / `/tasks` 四处共用）；**缩进推不出真父级的形状**（"父项=1 的子项排在别的同层项之后"）才追加 ` ⤴N`；正文里的 `←` / `⤴` / `⇐` 用前缀码逃回来（`⇐` 自身先翻倍）。行解析由 `parseLines` 统一实现，种子与归档回读共用一份。
 
 参见：[todo](#todo任务清单工具)、[Runtime](#runtime)、[Agent Loop](#agent-loop)
 
@@ -802,18 +804,41 @@ C3 的关键约束：`ThinkingBlock` = 推理文本 + `signature`（Anthropic �
 参见：[LLMConfig](#llmconfig)、[EventStream](#eventstream推拉通道)
 
 ### todo（任务清单工具）
-第 7 个内置工具，C 方案里的"**工具做接口**"：模型不再用 `write` 重抄整份清单，而是按按钮——`todo(op, index?, text?)`，`op` ∈ add / start / done / clear，参数**全是标量**（`spec.ts` 只给 5 种标量形状，也刻意不为清单开数组形状）。返回值是**渲染后带序号的整份清单**，序号即下次 `start` / `done` 要传的 `index`。
+第 7 个内置工具，C 方案里的"**工具做接口**"：模型不再用 `write` 重抄整份清单，而是按按钮——`todo(op, index?, text?, parent?, after?)`，`op` ∈ add / start / done / clear，参数**全是标量**（`spec.ts` 只给 5 种标量形状，也刻意不为清单开数组形状）。返回值是**渲染后带序号的整份清单**，序号即下次 `start` / `done` 要传的 `index`（也即 `parent` / `after` 要指向的下标）。
+
+`parent:N` 与 `after:N` 是 2026-09-17 加的两个标量参数（层次与依赖，见 [任务层级与前置依赖](#任务层级与前置依赖parent--after)）：`parent` 把新项挂到第 N 项之下（只影响缩进与归属），`after` 声明"必须先完成第 N 项才能开始"。两者都**须指向已存在的更早项**。`add` 的返回值由裸序号改为**判别式联合**（`added` / `empty-text` / `bad-parent` / `bad-after`），`start` 则由 `started` / `out-of-range` / `blocked` 三态组成——`blocked` 的回执会**点名**是哪一项没完成并给出出路。三处拒绝都归 `[INVALID]`，判据仍是"原样重试必然再错"。
 
 每次变更后把状态投影到 `TASK.md`（**系统行为**，不走权限弹窗）。谎报完成会留痕：`done` 走的是工具调用，进 `/traces` 与 `/history`。真相源与投影的边界见 [TaskStore](#taskstore任务清单真相源)。
 
 参见：[TaskStore](#taskstore任务清单真相源)、[Runtime](#runtime)
+
+### 任务层级与前置依赖（parent / after）
+2026-09-17 给清单加的两个**标量**字段（`TaskItem.parent` / `TaskItem.after`），分别表达"归属"与"顺序约束"：
+
+- **`parent`**：新项挂到第 N 项**之下**（子步骤）。只影响缩进与归属，不影响状态——**父级状态不由子项派生**（这与 [分段编号](#分段编号segmented-id) 那条"父级状态由子树派生"**取向刻意相反**：路线图是给人看的进度条，清单是执行器的工作台）。
+- **`after`**：声明"必须先完成第 N 项才能开始"。`add after:N` 只做**声明**，真正的判定在 `start`——因为登记一张单子时习惯**先把整张写完再动手**，在 `add` 拦会逼着按执行顺序一条条登记。被挡住返回 `blocked` 并点名是哪一项。
+- "**至多一项进行中**"这条不变量加了层次之后**仍是全局的**（不是每层各一个）：面板只有一个"当前在做什么"、模型也只有一个执行流；按层各算会让"到底在进行哪件事"重新说不清。
+- 两者都**只能指向已存在的更早项**。这条约束白捡一个性质：父指针**不可能成环**，所以 `depthsOf()` 一次顺序扫描就能算完，不需要环检测。
+
+投影侧的表达方式：层次用**缩进**；**缩进推不出真父级的形状**才追加显式标记 ` ⤴N`（默认走简洁路径、只在有歧义时付显式代价）；正文里出现的 `←` / `⤴` / `⇐` 用**前缀码**逃回来，且只有指向已存在更早项时才算标记。一条 fail-open：`after` 指向的项被 `clear` 掉 → 当无依赖放行，否则残留的 `after` 会把项永久锁死。
+
+参见：[TaskStore](#taskstore任务清单真相源)、[todo](#todo任务清单工具)、[依赖环](#依赖环dependency-cycle)
+
+### 任务时间戳（createdAt / startedAt / doneAt）
+`TaskItem` 的三个时间字段（2026-09-17 加），回答"这项卡了多久"。全部**只活在内存里、刻意不投影到 `TASK.md`**——它们是**会话内的运行期事实**，不是要跨会话继承的状态；落盘只会让 [TaskStore](#taskstore任务清单真相源) 的"严格互逆"凭空多出三个必须往返的字段。
+
+派生量只有两个纯函数：`itemDuration(item, now)`（**没 start 过 → null**；进行中 → 随 `now` 增长；已完成 → 冻结在 `doneAt - startedAt`；**时钟回拨 → null**，不报负数）与 `formatDuration(ms)`（`45s` / `2m30s` / `1h05m`）。`TaskStore` 构造器收一个 `now()`，缺省 `Date.now`——**测试可注入假时钟**，否则时间断言会"跑慢一点就红"。`done` 只在**非 done → done** 那次转换上打戳，重复 `done` 不覆盖历史。
+
+跨会话的耗时另有承载：完成清单归档时写进标题行 `## <时间> 完成（耗时 Xs）`（`spanOf()` 算首条 `createdAt` 到末条 `doneAt`，旧格式无耗时仍可读），`/tasks` 回看历史时读它。
+
+参见：[TaskStore](#taskstore任务清单真相源)、[/tasks](#tasks任务清单回看命令)
 
 ### 常驻任务面板（Task Panel）
 输入框正上方那块实时进度面板：完成 `✓` / 进行中 `▶` / 待办 `☐`，顶端一行 `任务 N/M`。**空清单时返回零行**——容器没子组件就不渲染，一行都不占，这就是"全部完成后立即收起"的实现方式。
 
 它**不经过 EventBus**：`todo` 工具改的是内存里的 `TaskStore`，而工具拿不到总线（也没有事件可发），所以面板由 `TaskStore.onChange()` 这根独立的观察者线驱动。观察者是**零依赖**的（只是个回调集合），store 不必认识"UI"是什么，反过来由 UI 去 import store——`todo/` 因此守住了"零依赖 + 纯数据结构"的立身之本。
 
-渲染实现在 `io/ui/task-panel.ts`，是**纯函数**（收 `TaskItem[]` 与 width、返回 `string[]`），所以不必起终端就能断言输出。
+渲染实现在 `io/ui/task-panel.ts`，是**纯函数**（收 `TaskItem[]` 与 width、返回 `string[]`），所以不必起终端就能断言输出。2026-09-17 起它按 `depthsOf()` **逐行缩进**，窄屏时**逐行按深度**收窄可用文本宽度（不这么做子项会被挤断行）；完成项尾部显 `（耗时 X）`（`withDuration` 开关）。
 
 参见：[TaskStore](#taskstore任务清单真相源)、[todo（任务清单工具）](#todo任务清单工具)
 

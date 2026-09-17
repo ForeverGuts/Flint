@@ -44,7 +44,7 @@
 │                     删除两层守卫：文件名白名单拒穿越 + Runtime 拒删当前活跃会话）
 │ tools/            ToolRegistry + spec.ts（参数规格：一份定义派生 Schema / 运行时校验 / 入参类型）
 │                   + 14 个内置工具（ls / read / write / edit / grep / bash / todo / memory / record_event / search_events / pull_events / ask / archive / git）
-│ todo/             TaskStore —— 任务清单的内存真相源（render/parse 互逆 + TASK.md 投影/种子）
+│ todo/             TaskStore —— 任务清单的内存真相源（render/parse 互逆 + TASK.md 投影/种子；层级 / 依赖 / 会话内时间戳）
 │ memory/           MemoryStore —— 项目记忆的内存真相源（render/parse 互逆 + .flint/memory.md 投影/种子）
 │ eventlog/         EventStore —— 历史事件库（.flint/events.jsonl 追加档案 + 检索；tool_call span 自动捕获）
 │ project/          项目生命周期协议（charter.ts 目标契约写保护闸 · roadmap.ts 路线图表契约 + 分段编号与状态派生

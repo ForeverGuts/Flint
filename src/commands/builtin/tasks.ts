@@ -32,7 +32,7 @@ export function activate(runtime: Runtime): void {
       const c = taskStore.counts();
       return [
         `任务清单（${c.total} 项：${c.done} 完成 / ${c.active} 进行中 / ${c.pending} 待办）`,
-        ...formatTaskList(current),
+        ...formatTaskList(current, { withDuration: true }),
         ...(history.length > 0
           ? ['', `（另有 ${history.length} 份历史完成记录；清单清空或全部完成后 /tasks 可回看）`]
           : []),
@@ -45,7 +45,7 @@ export function activate(runtime: Runtime): void {
     if (last && last.length > 0) {
       lines.push(
         `当前没有进行中的任务。最近一份已完成的清单（${last.length} 项）：`,
-        ...formatTaskList(last),
+        ...formatTaskList(last, { withDuration: true }),
       );
     }
     if (history.length > 0) {
@@ -53,7 +53,10 @@ export function activate(runtime: Runtime): void {
       if (lines.length > 0) lines.push('');
       lines.push(`历史完成记录（共 ${history.length} 份${history.length > shown.length ? `，显示最近 ${shown.length} 份` : ''}）：`);
       for (const entry of shown) {
-        lines.push('', `── ${entry.at} 完成（${entry.items.length} 项）`, ...formatTaskList(entry.items));
+        // 历史那几段**不显示逐项耗时**：归档里刻意没有逐项时间戳（TASK.md 投影不带时间戳，
+        // 归档跟着投影走），所以逐项耗时算不出来；能算的只有表头那句**整份跨度**。
+        lines.push('', `── ${entry.at} 完成（${entry.items.length} 项${entry.duration ? `，耗时 ${entry.duration}` : ''}）`,
+          ...formatTaskList(entry.items));
       }
     }
     if (lines.length > 0) return lines.join('\n');

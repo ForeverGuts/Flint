@@ -125,6 +125,14 @@
       "text": {
         "type": "string",
         "description": "add 时的步骤描述（单行）。示例: \"改 tools/builtin.ts 并跑验证\""
+      },
+      "parent": {
+        "type": "number",
+        "description": "add 时把新项挂到第 N 项之下（1 基，须已存在）；缺省 0 = 顶层。示例: 2"
+      },
+      "after": {
+        "type": "number",
+        "description": "add 时声明必须先完成第 N 项才能开始（1 基，须已存在）；缺省 0 = 无依赖。示例: 1"
       }
     },
     "required": [

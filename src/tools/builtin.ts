@@ -878,29 +878,49 @@ export function registerBuiltinTools(
      返回值就是渲染后的整份清单 —— 模型下一轮自然看到最新进度，不必自己重抄。
      每次变更后把状态**投影**到 TASK.md（系统行为，不走权限弹窗）：进程重启后由 main 读它当种子。
      刻意不做的事：不做嵌套参数（items 数组）。spec.ts 只给 5 种标量形状，且"清单本体住在工具的
-     状态里"正是本设计的关键 —— 参数保持标量，状态与校验都收在 TaskStore 一处。 */
+     状态里"正是本设计的关键 —— 参数保持标量，状态与校验都收在 TaskStore 一处。
+     2026-09-17（ROADMAP 10.3.1/10.3.2）：层级与依赖各加**一个标量参数**（parent / after，
+     0 = 不设），spec.ts 一行没动 —— 形状不变、语义在 store 里。 */
   tools.register(defineTool({
     name: 'todo',
-    description: '维护任务步骤清单（长任务用，保证多步任务不断链）。op: add 追加一项（需 text）/ start 标记某项进行中 / done 标记某项完成 / clear 清空。同一时刻至多一项"进行中"。返回值是带序号的整份清单，序号即下次 start/done 要传的 index。清单会投影到 TASK.md，进程重启后仍可续。简单问答、闲聊不要用本工具。',
+    description: '维护任务步骤清单（长任务用，保证多步任务不断链）。op: add 追加一项（需 text）/ start 标记某项进行中 / done 标记某项完成 / clear 清空。同一时刻至多一项"进行中"（**全局**，不分层）。add 时可用 parent:N 把新项挂到第 N 项之下（子步骤，只影响缩进与归属）、用 after:N 声明"必须先完成第 N 项才能开始"（前置未完成时 start 会被拒绝，并告诉你卡在哪）。返回值是带序号的整份清单，序号即下次 start/done 要传的 index。清单会投影到 TASK.md，进程重启后仍可续。简单问答、闲聊不要用本工具。',
     spec: {
       op: str('操作', '要做的操作：add（追加一项，需 text）/ start（标记进行中，需 index）/ done（标记完成，需 index）/ clear（清空）'),
       index: optPosInt('项序号', '目标项的序号（1 基，与返回值里的编号一致），start / done 使用。缺省 1。示例: 2', 1),
       text: optStr('任务文本', 'add 时的步骤描述（单行）。示例: "改 tools/builtin.ts 并跑验证"', ''),
+      parent: optPosInt('父项序号', 'add 时把新项挂到第 N 项之下（1 基，须已存在）；缺省 0 = 顶层。示例: 2', 0),
+      after: optPosInt('前置序号', 'add 时声明必须先完成第 N 项才能开始（1 基，须已存在）；缺省 0 = 无依赖。示例: 1', 0),
     },
     handler: async (args) => {
       try {
-        const { op, index, text } = args;
+        const { op, index, text, parent, after } = args;
         switch (op) {
           case 'add': {
-            if (store.add(text) < 0) {
+            const r = store.add(text, parent, after);
+            if (r.kind === 'empty-text') {
               return toolInvalid(`add 需要非空的 text（要追加的步骤描述）`);
+            }
+            if (r.kind === 'bad-parent') {
+              const t = store.counts().total;
+              return toolInvalid(`add 的 parent=${r.parent} 不存在：父项只能是**已登记**的项（当前 ${t} 项，序号 1..${t}）`);
+            }
+            if (r.kind === 'bad-after') {
+              const t = store.counts().total;
+              return toolInvalid(`add 的 after=${r.after} 不存在：前置只能是**已登记**的项（当前 ${t} 项，序号 1..${t}）`);
             }
             break;
           }
           case 'start': {
-            if (!store.start(index)) {
-              const t = store.counts().total;
-              return toolInvalid(`start 的 index=${index} 越界（当前 ${t} 项，序号 1..${t}）`);
+            const r = store.start(index);
+            if (r.kind === 'out-of-range') {
+              return toolInvalid(`start 的 index=${r.index} 越界（当前 ${r.total} 项，序号 1..${r.total}）`);
+            }
+            // 被前置挡住 → 归 [INVALID]（计失败）。判据是 toolInvalid 那句定义——
+            // "原样重试必然再错"：前置没完成之前，同一个 start 重试一次还是错。
+            // 文案要给**出路**（先做哪一项 / 依赖登记错了可以 done 掉前置或 clear 重来），
+            // 否则模型只会反复重试同一个 start，然后撞上连续失败保护。
+            if (r.kind === 'blocked') {
+              return toolInvalid(`start 的 index=${r.index} 被前置挡住：第 ${r.by} 项「${r.byText}」还没完成。先把它 done 掉再 start（序号见返回值）；若这条依赖是登记错的，也可以 done 掉前置，或用 clear 重来。`);
             }
             break;
           }
