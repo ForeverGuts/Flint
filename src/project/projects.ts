@@ -13,8 +13,20 @@
  * 而"切换项目"会换掉 cwd 与整份注入上下文，属于**代价最大、最该由人说出口**的一步。
  * 于是 `/projects`（不带参数）= **只列不改**，要切必须 `/projects --switch <名>`。
  *
- * 零运行时依赖（本文件连 node: 都不 import）。
+ * ── 准入与"候选"的提示也在这里渲染（ROADMAP 10.11.6）──
+ * 判据在 project/detect.ts（它只负责判），本模块负责**怎么说给人听**：
+ *   · `renderRegistrationNote()` —— 启动 banner 与 `/projects` 列表**共用**的那一句
+ *     （判成独立项目 → 返回 null：绝大多数启动**不该有任何提示**）；
+ *   · `renderAddReceipt()` —— `/projects --add` 的回执。
+ * 共用一份文案的理由很直接：这条提示会在两个地方出现（启动时、查列表时），
+ * 各写一份就会两处措辞不一致，而且改一处忘一处。
+ *
+ * 零运行时依赖：本文件**不碰任何 IO**（不 import `node:*`、不 import fs / 子进程），
+ * 唯一的 import 是同层的纯判据模块 detect.ts —— 「列表长什么样、提示怎么写」于是可以
+ * 逐字校验，不必先真起一个进程、真读一次磁盘。
  */
+import type { ProjectVerdict } from './detect.js';
+import { reasonText } from './detect.js';
 
 /** 列表里的一行 —— 由命令层探测好后喂进来（谁在磁盘上、谁是当前、最近活动什么时候） */
 export interface ProjectRow {
@@ -35,13 +47,16 @@ export interface ProjectRow {
 export type ProjectsArgs =
   | { action: 'list' }
   | { action: 'switch'; query: string }
+  /** `--add [路径]`：显式登记（不看准入判据——用户点名了就算数）。path=null → 当前目录 */
+  | { action: 'add'; path: string | null }
   | { action: 'help' }
   | { action: 'error'; message: string };
 
 export const PROJECTS_USAGE = [
   '用法：',
-  '  /projects                      列出已登记的项目（只列不改）',
-  '  /projects --switch <名称或路径>  切换过去（换 cwd + 重载上下文 + 换会话）',
+  '  /projects                       列出已登记的项目（只列不改）',
+  '  /projects --switch <名称或路径>   切换过去（换 cwd + 重载上下文 + 换会话）',
+  '  /projects --add [路径]           把当前目录（或指定路径）登记进通讯录',
 ].join('\n');
 
 /** 取路径末段当名字（纯字符串操作，不 import path）。取不到返回原串。 */
@@ -52,9 +67,13 @@ export function nameFromPath(p: string): string {
 }
 
 /**
- * 解析命令参数。认识的只有三样：空 / `--switch <目标>` / `--help`。
+ * 解析命令参数。认识的只有四样：空 / `--switch <目标>` / `--add [路径]` / `--help`。
  * 认不出的一律**报用法**而不是"忽略掉多余参数"——切换项目这种事上，
  * 把 `--swtich foo` 当成了"没带参数"于是只列个表，比报错更容易让人以为已经切了。
+ *
+ * `--add` 与 `--switch` 的差别只在"路径缺省算不算错"：`--add` 缺路径 = **当前目录**
+ * （合法且常用），`--switch` 缺路径 = 报错（切哪儿都没说）。这条区别不写下来的话，
+ * 很容易被"顺手统一一下"改成一样。
  */
 export function parseProjectsArgs(args: string): ProjectsArgs {
   const tokens = args.trim().split(/\s+/).filter((t) => t.length > 0);
@@ -76,6 +95,14 @@ export function parseProjectsArgs(args: string): ProjectsArgs {
     if (!query) return { action: 'error', message: '--switch= 后面要跟项目名或路径。\n' + PROJECTS_USAGE };
     return { action: 'switch', query };
   }
+
+  if (head === '--add' || head === 'add') {
+    const p = tokens.slice(1).join(' ').trim();
+    return { action: 'add', path: p || null };
+  }
+
+  const addInline = /^--add=(.*)$/.exec(head);
+  if (addInline) return { action: 'add', path: addInline[1]!.trim() || null };
 
   return { action: 'error', message: `未知参数 "${head}"。\n${PROJECTS_USAGE}` };
 }
@@ -147,12 +174,18 @@ function fitName(name: string, width: number): string {
 /**
  * 渲染列表。`●` 标当前项目；目录不在了单独标出来 —— 那行**不许静默省略**：
  * 省略了会让人以为"这个项目不在列表里"，而真相是"它在，只是目录被删/改名了"。
+ *
+ * `note`（可选）= 当前目录的准入提示（见 renderRegistrationNote）。
+ * 由调用方判好渲染好再传进来 —— 本模块不碰磁盘，也就无从知道"当前目录在册不在册"。
  */
-export function renderProjectList(rows: readonly ProjectRow[]): string {
+export function renderProjectList(rows: readonly ProjectRow[], note?: string | null): string {
+  const tail = note ? ['', note] : [];
   if (rows.length === 0) {
     return [
       '还没有登记过任何项目。',
-      '用过 flint 的项目会自动进电话簿（~/.flint/projects.jsonl）——在某个项目目录里启动一次 flint 即可。',
+      '在 git 仓库根（或已经有 .flint/ 的目录）里启动一次 flint 会自动登记；',
+      '其它目录可以显式登记：/projects --add',
+      ...tail,
     ].join('\n');
   }
 
@@ -165,8 +198,8 @@ export function renderProjectList(rows: readonly ProjectRow[]): string {
 
   const lines = sorted.map((r) => {
     const mark = r.current ? '● ' : '  ';
-    const note = r.exists ? '' : '   ⚠ 目录已不存在';
-    return `  ${mark}${fitName(r.name, width)}  ${formatActivity(r.lastActivityMs)}  ${r.path}${note}`;
+    const missing = r.exists ? '' : '   ⚠ 目录已不存在';
+    return `  ${mark}${fitName(r.name, width)}  ${formatActivity(r.lastActivityMs)}  ${r.path}${missing}`;
   });
 
   return [
@@ -174,6 +207,56 @@ export function renderProjectList(rows: readonly ProjectRow[]): string {
     ...lines,
     '',
     '切换：/projects --switch <名称或路径>（会换 cwd、重载上下文、换到那个项目的主会话）',
+    ...tail,
+  ].join('\n');
+}
+
+/** 子目录相对祖先根的路径（纯字符串操作，居中截断给不出相对路径时退回绝对路径） */
+function relativeTo(child: string, parent: string): string {
+  if (child.length > parent.length && child.startsWith(parent)) {
+    return child.slice(parent.length).replace(/^\/+/, '');
+  }
+  return child;
+}
+
+/**
+ * 准入判据的**那一句提示** —— 启动 banner 与 `/projects` 列表**共用同一份文案**。
+ *
+ * 判成独立项目 → **null**：绝大多数启动不该有任何提示。提示只该在你可能会好奇
+ * "为什么它没进通讯录"的时候出现（嵌套子目录 / 候选 / 各类硬排除）。
+ *
+ * 候选那两句拆成两行的理由：banner 的行会被按终端宽度截断（fitWidth），
+ * 而"理由 + 怎么做"拼一行会超宽，被截掉的恰好是**怎么做**（最后那截）。
+ */
+export function renderRegistrationNote(v: ProjectVerdict): string | null {
+  if (v.kind === 'independent') return null;
+  if (v.kind === 'nested') {
+    const root = nameFromPath(v.root);
+    return `ℹ️ 当前目录是「${root}」的子目录（${relativeTo(v.path, v.root)}）—— 已按项目「${root}」记账`;
+  }
+  return [
+    `ℹ️ 当前目录没进通讯录（${reasonText(v.reason)}）`,
+    '   要登记它：/projects --add',
+  ].join('\n');
+}
+
+export interface AddReceipt {
+  path: string;
+  /** 登记之前就已经在册 */
+  already: boolean;
+}
+
+/**
+ * `/projects --add` 的回执。
+ * **必须明说这条通道不看判据** —— 否则用户会以为"准入判据失效了/时灵时不灵"，
+ * 而真相是：显式通道本来就是判据的逃生口（判不出来时由人拍板）。
+ */
+export function renderAddReceipt(r: AddReceipt): string {
+  const name = nameFromPath(r.path);
+  if (r.already) return `ℹ️ 「${name}」本来就在通讯录里：${r.path}`;
+  return [
+    `✅ 已登记「${name}」：${r.path}`,
+    '   （这条通道不看准入判据 —— 你点名了就算数）',
   ].join('\n');
 }
 

@@ -12,7 +12,23 @@
  *   memoryStore  ← .flint/memory.md（跨会话结论）
  *   eventStore   ← .flint/events.jsonl + .flint/tool-calls.jsonl（来龙去脉 + 流水索引）
  *   charterLock  ← 复位成**已锁**
- * 外加 projectRegistry.ensure()：用过 flint 的项目进 ~/.flint/projects.jsonl 电话簿。
+ * 外加**通讯录登记**：按准入判据决定要不要写进 ~/.flint/projects.jsonl（见下）。
+ *
+ * ── 通讯录登记：保守准入 + 候选兜底（ROADMAP 10.11.6）──
+ * 判据本体在 `project/detect.ts`（纯函数）+ `project/probe.ts`（探针）。这里负责**调用它**，
+ * 并把结论原样带回去给回执渲染——三态的处理分别是：
+ *   · `independent` → 写盘（判据给的理由：有档案 / 是 git 仓库根 / 有清单文件）；
+ *   · `nested`      → **不写 cwd**，改登记 git 仓库根（"我在仓库子目录里"不是新项目，
+ *                     是"又进了同一个项目"）。这一步是幂等的：从仓库的哪个子目录启动都落到同一行；
+ *   · `candidate`   → **不写盘**（家目录 / 临时目录 / 盘根 / node_modules / 无证据）。
+ * 候选**不进** projects.jsonl，所以簿子里不存在"待确认"这种半成品状态。
+ *
+ * 记不登记与"装不装上下文"是**两件事**：候选目录照样装载上下文（用户就在这儿干活），
+ * 只是不往跨项目检索的簿子里写一行 —— 别把这两件事绑在一起。
+ *
+ * `register: 'explicit'` 是判据的逃生口（`/projects --switch` 与 `--add` 用）：
+ * 用户点名了一个目录 = 显式声明"这是我的项目"，**不看判据直接登记**（判据判不出来的，
+ * 由人拍板——与 `ask` 的分工同源）。
  *
  * ── 为什么这里的每个 store 都"先 reset 再 load" ──
  * 三个 store 的 `loadFromFile` 在**文件不存在**时的语义是"保持现状"，不是"清空"——
@@ -43,13 +59,15 @@
 import { taskStore } from '../todo/store.js';
 import { MEMORY_FILE, memoryStore } from '../memory/store.js';
 import { CALLS_FILE, EVENTS_FILE, eventStore } from '../eventlog/store.js';
-import { projectRegistry } from '../eventlog/registry.js';
+import { normalizeProjectPath, projectRegistry } from '../eventlog/registry.js';
 import { charterLock } from '../project/charter.js';
+import { classifyProject } from '../project/probe.js';
+import type { ProjectVerdict } from '../project/detect.js';
 
 /** 清单落点（cwd 根，不是 .flint/ 下——历史原因，见 todo/store.ts） */
 const TASK_FILE = 'TASK.md';
 
-/** 播种结果 —— 只用于回执展示（调用方不该拿它做判定） */
+/** 播种结果 —— 只用于回执 / 提示展示（调用方不该拿它做判定） */
 export interface ProjectContextReport {
   /** 归一化之前的原始 cwd（人读） */
   cwd: string;
@@ -60,6 +78,38 @@ export interface ProjectContextReport {
   events: number;
   /** 工具调用流水条数 */
   calls: number;
+  /**
+   * 通讯录准入结论。启动提示与 `/projects` 列表共用它渲染那一句
+   * （`renderRegistrationNote`）；判成独立项目 → 渲染成 null = 静默。
+   */
+  verdict: ProjectVerdict;
+}
+
+export interface SeedOptions {
+  /**
+   * 登记模式。缺省 `'auto'` = 走准入判据（启动路径）；
+   * `'explicit'` = 用户点名了（`/projects --switch` 与 `--add`），不看判据直接登记。
+   */
+  register?: 'auto' | 'explicit';
+}
+
+/**
+ * 通讯录登记 —— 「判 → 写」的唯一装配点（判据与探针在 project/ 下，本函数只接线）。
+ * 返回判据结论原样，由调用方渲染成回执 / 提示。
+ */
+function registerProject(mode: 'auto' | 'explicit'): ProjectVerdict {
+  const cwd = normalizeProjectPath(process.cwd());
+  if (mode === 'explicit') {
+    projectRegistry.ensure(cwd);
+    return { kind: 'independent', path: cwd, via: 'explicit' };
+  }
+  const verdict = classifyProject(process.cwd());
+  if (verdict.kind === 'independent') projectRegistry.ensure(verdict.path);
+  // 归并：登记 **git 仓库根**而不是 cwd。理由见文件头 —— 并且这一步是幂等的：
+  // 从仓库的哪个子目录启动都落到同一行（否则每个子目录都会占一行）。
+  else if (verdict.kind === 'nested') projectRegistry.ensure(verdict.root);
+  // candidate：**不写盘**。回执里问一句（renderRegistrationNote），用户点头才走 --add。
+  return verdict;
 }
 
 /**
@@ -68,8 +118,9 @@ export interface ProjectContextReport {
  * 失败也不该让调用方回滚到一半。
  *
  * 注意顺序：先 reset 再 load（理由见文件头）。文件不存在 → 装载后是**空**，不是旧值。
+ * 登记排在最后：它是**旁路**（跨项目检索的便利），不该影响"上下文装好了没"。
  */
-export function seedProjectContext(): ProjectContextReport {
+export function seedProjectContext(opts: SeedOptions = {}): ProjectContextReport {
   taskStore.reset();
   taskStore.loadFromFile(TASK_FILE);
 
@@ -83,8 +134,8 @@ export function seedProjectContext(): ProjectContextReport {
   // 目标文档的锁**不跨项目继承**：新项目一律从"已锁"开始（要改就再 /charter unlock）。
   charterLock.lock();
 
-  // 电话簿登记（幂等）：切换到的项目也进 ~/.flint/projects.jsonl。
-  projectRegistry.ensure(process.cwd());
+  // 通讯录登记（按准入判据；判据判不出来的走显式通道）—— 装配点见 registerProject。
+  const verdict = registerProject(opts.register ?? 'auto');
 
   const tasks = taskStore.counts();
   return {
@@ -93,5 +144,6 @@ export function seedProjectContext(): ProjectContextReport {
     memory: memoryStore.count(),
     events: eventStore.count(),
     calls: eventStore.countCalls(),
+    verdict,
   };
 }

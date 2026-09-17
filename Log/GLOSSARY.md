@@ -394,6 +394,29 @@ watcher 的 ctx 里刻意不给 `on`——“旁观者改流程”在类型层�
 
 参见：[项目命令注册表（Commands Registry）](#项目命令注册表commands-registry) · [改完自检（Postcheck）](#改完自检postcheck) · [CHARTER.md（目标契约文档）](#chartermd目标契约文档) · [会话仓库层（SessionRepo / jsonl-repo）](#会话仓库层sessionrepo--jsonl-repo) · 完整理由见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-16-projects-switch)
 
+### 项目准入判据（Project Admission）
+`src/project/detect.ts`（判据）+ `src/project/probe.ts`（探测）（2026-09-17 加，ROADMAP **10.11.6**）：给电话簿 `~/.flint/projects.jsonl` 定一把**准入的尺子**，把"进簿子"从"在哪儿启动过就算"改成"**按证据裁决**"。此前 `ensure(process.cwd())` 是**无条件写**——家目录 / 临时目录 / 盘根 / `node_modules` 全都进簿子。那不只是列表难看：**簿子是 [`pull_events`](#eventstream推拉通道) 的取件索引、且按短名匹配**，一条噪音行将来会在某个时刻让"同名项目"的事件流指向别处，并且**静默**（无报错、无提示）。
+
+**方向故意偏"少记"——这是代价不对称，不是"哪种更准"。** 少记的后果是下次手输路径或一句 `/projects --add`（当场可修、且用户知道自己修了什么）；多记的后果是簿子里多一行冒充某项目，平时无害、只在未来静默接管另一个同名项目的档案。所以判据不是"尽力猜对"，而是"**猜不准时一律不写**"。
+
+**判据的次序就是结论**（`judgeProject(probes)`，**零 import** 纯函数）：
+① **硬排除**（家目录 / 临时目录 / 盘根 / `node_modules`）→ 一票否决，**不看证据**；② **实物档案**（`.flint/` 或 `TASK.md`）→ `independent`；③ **git 仓库根**（当前目录**就是**根 → `independent`；只是**根之下** → `nested`，归并到根，不新增行）；④ **清单文件**（`package.json` / `pyproject.toml` / `go.mod` / `Cargo.toml` / `pom.xml`，**仅不在仓库里时算**）；⑤ **候选** → **不写盘**。
+**硬排除必须排在"看档案"之前**：家目录里必然存在 `~/.flint/`（flint 的[全局配置目录](#config配置)），顺序颠倒则家目录被百分之百命中、认成项目。
+
+**三态裁决与副作用分离**：`judgeProject` 只回 `independent` / `nested` / `candidate`，写不写盘由 `src/harness/project-context.ts` 的装配点 `registerProject(mode)` 决定。**"登记"与"装上下文"是两件事**——**候选目录照样装载上下文**（`seedProjectContext` 照跑），只跳过 `ensure()`：准入管"未来从哪取件"，装载管"这一轮给模型看什么"，候选目录也是用户此刻在的地方。候选的回执里给一条召回路径：`/projects --add <路径>`。
+
+**显式通道**：`--switch` 与 `--add` 都走 `register: 'explicit'`，**用户点名即绕过判据**（判据要解决的是"自动判断该不该记"）。`--add` **只登记、不动 cwd**。
+
+**为什么不让模型判**：登记写的是**信任边界之外**的东西（决定模型下一轮看到谁的档案），一旦由模型决定就等于"模型可以给自己的上下文换来源"，而判错是静默的。判据必须是**程序**：三条落点纪律——判据**零 import**（可脱离磁盘打靶）、碰磁盘 / 起子进程的代码**只收在 `probe.ts`**、模型能写的路径与配置**碰不到判据**。
+
+**惰性 git 探测**：`ProjectProbes.gitRoot` 是**回调**而非取值，①② 定案的分支**一个子进程都不起**（实测：冷缓存首次 721ms / 仓库内 15–16ms / 非仓库 14ms 快速失败 / git 缺失 `ENOENT` 3ms）。
+
+**归一化两处取证**：`normalizeProjectPath` 用 **`realpathSync.native`**（普通 `realpathSync` 会原样返回入参大小写、也不解 junction；而 `chdir` 进 junction 后 `process.cwd()` 报**别名**，所以只做字符串处理挡不住重复行）；`load()` **读时**归一化 + 去重（同一条路径多行合成一行、取**最早** firstSeen），**不回写**——老记录里的反斜杠 / 重复行是**足迹**，"读"不该变成"写"。路径不存在或没权限时**退回字面形态且不抛**（簿子里本来就躺着"目录已删除"的行）。
+
+**已知边界**：① 没有忽略名单（保守判据已天然放过多数噪音，加名单等于引入一份要人维护的例外表）；② 清单文件那条规则目前只有"构造 probes"的判据用例，缺**端到端**；③ `symlink` **未实测**（本机建软链返回 `EPERM`），目前只宣称 junction。
+
+参见：[EventStream（推拉通道）](#eventstream推拉通道) · [项目命令注册表（Commands Registry）](#项目命令注册表commands-registry) · 登记流程本身见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-16-projects-switch) · 完整理由见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-17-project-admission)
+
 ### grep（递归搜索工具）
 `tools/builtin.ts` 里的第 4 个内置工具（ls / read / write / **grep** / bash / edit）。返回“路径:行号:该行内容”，`pattern` 按 **JS 正则**编译。不需权限确认（只读）。
 

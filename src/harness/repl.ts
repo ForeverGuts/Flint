@@ -22,10 +22,20 @@ export interface ReplInfo {
   skillCount: number;
   /** 启动自检诊断（可靠性工程），banner 下方展示 */
   diagnostics: import('../types.js').Diagnostic[];
+  /**
+   * 通讯录准入提示（ROADMAP 10.11.6）—— 判成独立项目时为 null = **不显示**。
+   * 只有"这个目录为什么没进通讯录"这类情形才有话说（嵌套子目录 / 候选 / 硬排除）；
+   * 非 TTY（管道）模式**不展示**（与诊断同口径：管道输出要能直接被脚本消费）。
+   */
+  projectNote?: string | null;
 }
 
 /** 基于 runtime 组装 REPL 展示信息（单一信息源，main 不需重复取） */
-async function buildReplInfo(runtime: Runtime, diagnostics: import('../types.js').Diagnostic[]): Promise<ReplInfo> {
+async function buildReplInfo(
+  runtime: Runtime,
+  diagnostics: import('../types.js').Diagnostic[],
+  projectNote?: string | null,
+): Promise<ReplInfo> {
   return {
     model: runtime.currentModel,
     baseUrl: runtime.currentBaseUrl,
@@ -34,6 +44,8 @@ async function buildReplInfo(runtime: Runtime, diagnostics: import('../types.js'
     cmdCount: runtime.listCommands().length,
     skillCount: runtime.getSkillLoader().getAll().length,
     diagnostics,
+    // exactOptionalPropertyTypes：无提示时**不传这个键**（而不是传 undefined）
+    ...(projectNote ? { projectNote } : {}),
   };
 }
 
@@ -41,13 +53,16 @@ async function buildReplInfo(runtime: Runtime, diagnostics: import('../types.js'
  * 运行 REPL 模式（TTY 组件树 UI 或管道 TerminalUI）。
  * @param probePromise 后台网络探测（启动提速第一档）：界面先行，结果到达后回填；
  *        TTY 由 TreeUI 在订阅完成后消费，管道模式不展示诊断（与历史行为一致）
+ * @param projectNote 通讯录准入提示（ROADMAP 10.11.6）：null = 不显示；
+ *        同样只在 TTY 下展示（管道模式连诊断都不展示，提示更不该混进可被脚本消费的输出）
  */
 export async function runReplMode(
   runtime: Runtime,
   diagnostics: import('../types.js').Diagnostic[],
   probePromise?: Promise<import('../types.js').Diagnostic[]>,
+  projectNote?: string | null,
 ): Promise<void> {
-  const info = await buildReplInfo(runtime, diagnostics);
+  const info = await buildReplInfo(runtime, diagnostics, projectNote);
 
   // TTY 模式：组件树 UI —— 接管终端，Input 组件接收输入
   if (process.stdin.isTTY) {

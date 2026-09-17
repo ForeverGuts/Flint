@@ -30,6 +30,7 @@ import { taskStore } from '../todo/store.js';
 import { memoryStore } from '../memory/store.js';
 import { CALLS_FILE, eventStore } from '../eventlog/store.js';
 import { seedProjectContext } from './project-context.js';
+import { renderRegistrationNote } from '../project/projects.js';
 import { charterLock, guardContractWrite } from '../project/charter.js';
 import { routeBashGitRead } from '../git/route.js';
 import {
@@ -69,11 +70,15 @@ export async function main(checkResult: CheckResult): Promise<void> {
   const baseUrl = checkResult.config?.baseUrl ?? '';
 
   // 项目上下文播种：工作记忆（TASK.md）/ 项目记忆（.flint/memory.md）/ 事件库
-  // （.flint/events.jsonl + tool-calls.jsonl）/ 契约锁复位 / 项目电话簿登记 ——
+  // （.flint/events.jsonl + tool-calls.jsonl）/ 契约锁复位 / 通讯录登记 ——
   // **唯一实现**在 harness/project-context.ts，启动与 `/projects --switch` 共用同一份
   // （切换只是对着新目录再走一遍）。各条"只在启动读一次、运行期不回读"的理由都在那个文件里。
   // 清单若无未完成项（空文件 / 全勾选），loadFromFile 会删掉文件并保持空清单。
-  seedProjectContext();
+  //
+  // 通讯录登记**不再是无条件的**（ROADMAP 10.11.6）：判据判成"独立项目"才写，
+  // 判成"仓库子目录"就归并到仓库根，判不出来（家目录 / 临时目录 / 无证据）就**不写盘**、
+  // 只在 banner 里问一句。那个 verdict 就是下面给 repl 的那句提示（独立项目 → null = 不提示）。
+  const seed = seedProjectContext();
 
   // 改完自检（ROADMAP 10.6.2）：登记表**只在启动时读这一次**，运行期以内存为准、不再回读。
   // 「只读一次」是承重的，不是顺手：否则模型写一份 .flint/postcheck.json 把 command 换成
@@ -270,5 +275,6 @@ export async function main(checkResult: CheckResult): Promise<void> {
       .catch(() => { /* 预热失败即静态兜底（warmModels 内部已吞异常），不打扰界面 */ });
   }
 
-  await runReplMode(runtime, checkResult.diagnostics ?? [], probePromise);
+  await runReplMode(runtime, checkResult.diagnostics ?? [], probePromise,
+    renderRegistrationNote(seed.verdict));
 }

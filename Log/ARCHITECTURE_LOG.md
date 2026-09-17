@@ -11,6 +11,38 @@
 
 ---
 
+<a id="log-2026-09-17-project-admission"></a>
+
+## 2026-09-17 | `src/project/` 分出"判据 / 探针 / 纯逻辑"三个模块：通讯录准入从"无条件写"变成"按证据裁决"
+
+**牵连系统 / 层次**：新增 `src/project/detect.ts`（准入判据，**零 import**）· 新增 `src/project/probe.ts`（**全项目唯一**碰磁盘 / 起子进程的探测层）· `src/project/projects.ts`（补 `renderRegistrationNote` / `renderAddReceipt` 两个渲染函数与新的 `add` 动作解析）· `src/harness/project-context.ts`（`ProjectContextReport` 增 `verdict`、新增 `SeedOptions.register`、新增装配点 `registerProject(mode)`）· `src/commands/builtin/projects.ts`（新增 `--add` 通道 + `currentDirNote()`；与 `src/project/detect.ts` 新增一条依赖边）· `src/eventlog/registry.ts`（`normalizeProjectPath` 升 `realpathSync.native`、`load()` 读时归一化 + 去重、新增只读 `has()`）· `src/io/ui/tree-ui.ts` / `src/harness/repl.ts`（`projectNote` 块）· `scripts/verify-detect.ts` 82 项。
+
+**面向的问题**：
+- 注册表是**无条件写**的：`ensure(process.cwd())` 只要启动过就落一行，家目录 / 临时目录 / 盘根 / `node_modules` 全都进簿子
+- 上面那个问题**不是"列表难看"**：簿子是 `pull_events` 的取件索引，而它**按短名匹配**。一条噪音行会在将来某个时刻让"同名项目"的事件流指向别处，且**静默**——没有报错、没有提示
+- 归一化只做字符串处理挡不住重复行：实测普通 `realpathSync` 原样返回入参大小写、也不解 junction，而 `chdir` 进 junction 后 `process.cwd()` 报别名 —— 同一项目会占两行
+
+**做出的改动与关键口径**：
+- **`src/project/` 一分为三，职责按"谁碰外部世界"切**：`detect.ts` = 判据（**零 import** 纯函数，零依赖使得"构造 probes 打靶"成为可能，不必造真目录 / 真仓库）；`probe.ts` = 探测（唯一 `node:fs` / `child_process` 出现处）；`projects.ts` = 参数解析与渲染（纯函数，10.11.1 已有）。这条切法沿用本仓一贯形态（`git.ts` / `gitignore.ts` / `postcheck.ts` 同路），但这次**多切出一层"探测"**：判据要能脱离磁盘被验，而"看盘"又不能混进判据
+- **判据的次序就是结论**：① 硬排除 → ② 实物档案 → ③ git 仓库根 → ④ 清单文件 → ⑤ 候选。**硬排除必须排在"看档案"之前** —— 家目录必然含 `~/.flint/`（flint 的全局配置目录），顺序颠倒则家目录被百分之百命中。硬排除**不看证据**（家目录里放着整个仓库也不登记），因为"在这类目录里启动"本身就是信号
+- **git 探测是惰性回调而非取值**：`ProjectProbes.gitRoot` 是 `() => string | null`。①② 定案的分支一个子进程都不起（实测冷缓存首次 721ms、仓库内 15–16ms、非仓库 14ms、git 缺失 `ENOENT` 3ms），代价只落在真需要问 git 的路上。这条把"启动变慢"从"可能"变成"不可能"
+- **三态裁决 + 装配点分离**：`judgeProject` 只回 `independent` / `nested` / `candidate`，**写不写盘由 `registerProject(mode)` 决定**（`nested` 写仓库根 —— "在仓库子目录里启动"不新增行）。判据与副作用分开，使得"候选不写盘"可以被纯函数验证，也让 `--switch` / `--add` 的显式通道只需换一个 `mode`
+- **"登记"与"装上下文"解耦**：候选目录**照样** `seedProjectContext` 装载上下文，只跳过 `ensure()`。两者管的是不同问题（簿子决定未来从哪取件 / 注入决定这一轮给模型看什么），顺手合并会让模型在真空里干活
+- **新增反向边一格**：`commands/builtin/projects.ts` 为显示"当前目录为何没进簿子"而 import `project/detect.ts`。它是**纯判据**、不是 harness，故方向上是"命令层 → 更中立的纯逻辑"，与 10.11.1 那条"命令层 → harness"性质不同、也更轻
+
+**解决的问题**：
+- 准入从"被动记录"变成"**主动裁决**"：强证据（实物档案 / git 仓库根 / 清单文件）才登记，硬排除一票否决，判不准**不写盘**并给出一条召回路径（`/projects --add`）
+- **判据可脱离磁盘被验证**（零 import），"看盘"的代价被限制在一个模块内；`verify-detect.ts` 因此能穷举前缀陷阱（`C:\build` 不算在 `C:\` 里）而不需要真的建出那些目录
+- 归一化的两个真实缺口（大小写 / junction）被堵住，且**读时归一化不回写**：老记录里的反斜杠 / 重复行是**足迹**，改文件才是越权
+
+**未来可优化**：
+- 清单文件这条规则（`package.json` / `pyproject.toml` / `go.mod` / `Cargo.toml` / `pom.xml`）目前只有"构造 probes"的判据用例，缺一条**端到端**（真目录 → 真探针 → 真登记）
+- 没有忽略名单；若将来确有"某目录永远别记"的需求，先考虑扩硬排除而不是引入一份要人维护的例外表
+- `symlink` **未实测**（本机建软链返回 `EPERM`），目前只宣称 junction；换机器跑一次才能补上这一半
+- 候选的召回路径目前只印在**启动 / 列表 / 切换**三处；若 `/projects` 之外还有入口需要它，应把这句提示收进 `renderRegistrationNote` 的唯一实现（现已是唯一实现，只需接线）
+
+---
+
 <a id="log-2026-09-16-project-context"></a>
 
 ## 2026-09-16 | 启动播种抽成唯一实现 + 命令层第一次反向依赖 harness：`/projects` 项目切换

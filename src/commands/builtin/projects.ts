@@ -23,12 +23,23 @@
  *     回执里明说。完整判据见 `harness/project-context.ts` 头部 ①。
  *   · **配置不动**（ConfigManager 是启动时构造的单例）：新项目若在
  *     `config/provider-keys.json` 里另配了密钥，本会话读不到，同样在回执里点明。
+ *
+ * ── 三个入口的登记语义**刻意不同**（ROADMAP 10.11.6），别顺手统一 ──
+ * 启动路径走准入判据（保守准入 + 候选兜底，见 harness/project-context.ts），
+ * 而本命令的三个入口分别是：
+ *   · `/projects`（只列）—— **不登记任何东西**。当前目录没进通讯录时，列表尾部附一句
+ *     判据给的提示（`renderRegistrationNote`），措辞与启动 banner 完全一致（同一份实现）。
+ *   · `/projects --switch <目标>` —— 用户点名了目标 = 显式授权 → `register: 'explicit'`，
+ *     **不看判据**。项目身份本来就是 cwd，"这条路径是我自己说的"，没有理由拦。
+ *   · `/projects --add [路径]` —— 判据的**逃生口**：判不出来（候选）时由人拍板。
+ *     同样不看判据，且**不切 cwd、不重载上下文**（用户只说"记下来"，没说要过去）。
  */
 import { existsSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import type { Runtime } from '../../runtime/runtime.js';
 import { normalizeProjectPath, projectRegistry } from '../../eventlog/registry.js';
 import { seedProjectContext } from '../../harness/project-context.js';
+import { classifyProject } from '../../project/probe.js';
 import { commandRegistry } from '../../project/commands.js';
 import { postcheckBaseline, postcheckRegistry } from '../../project/postcheck.js';
 import {
@@ -36,7 +47,9 @@ import {
   nameFromPath,
   parseProjectsArgs,
   pickProject,
+  renderAddReceipt,
   renderProjectList,
+  renderRegistrationNote,
   renderSwitchReceipt,
   type ProjectRow,
 } from '../../project/projects.js';
@@ -163,7 +176,9 @@ async function doSwitch(runtime: Runtime, rows: readonly ProjectRow[], query: st
     return `❌ 切换失败（目录没进去）：${errText(e)}`;
   }
 
-  const context = seedProjectContext();
+  // 显式通道（register: 'explicit'）：用户点名了目标目录，就不再过准入判据 ——
+  // 项目身份本来就是 cwd，"这条路径是我自己说的"没有理由拦（判据是给"程序自己决定"用的）。
+  const context = seedProjectContext({ register: 'explicit' });
 
   // 授权类配置：**清空，不重读**（判据见文件头）。不清的后果很具体 ——
   // 注入了 A 的项目命令、却在 B 的目录里跑 A 的 tsc，而且回执看不出来。
@@ -172,6 +187,35 @@ async function doSwitch(runtime: Runtime, rows: readonly ProjectRow[], query: st
   postcheckBaseline.set(null);
 
   return renderSwitchReceipt({ from, row, sessionNote, context });
+}
+
+/**
+ * 当前目录的准入提示（列表尾部那一句）。
+ *
+ * **已在册 → 不提示**：判据说"这里该登记"而用户早已登记过的话，再提示"没进通讯录"
+ * 就是错的 —— "判据怎么看"与"簿子里有没有"是两件事，只有后者为否时才有话可说。
+ * 这条前置还有代价上的好处：**常见情形（当前目录在册）零代价**，不走磁盘探测；
+ * 只有真要提示时才去 classify（那才会跑 git）。
+ */
+function currentDirNote(rows: readonly ProjectRow[]): string | null {
+  if (rows.some((r) => r.current)) return null;
+  return renderRegistrationNote(classifyProject(process.cwd()));
+}
+
+/**
+ * `/projects --add [路径]` —— 显式登记，判据的**逃生口**。
+ * 与 `--switch` 的差别：只登记，**不切 cwd、不重载上下文**（用户没说要过去）。
+ */
+function doAdd(rawPath: string | null): string {
+  const target = normalizeProjectPath(rawPath ?? process.cwd());
+  let isDir = false;
+  try { isDir = statSync(target).isDirectory(); } catch { /* 不存在 / 无权限 → 下面统一报 */ }
+  if (!isDir) return `❌ 不是一个能登记的目录：${target}`;
+
+  if (projectRegistry.has(target)) return renderAddReceipt({ path: target, already: true });
+  const err = projectRegistry.ensure(target);
+  if (err) return `❌ 写入通讯录失败：${err}`;
+  return renderAddReceipt({ path: target, already: false });
 }
 
 export function activate(runtime: Runtime): void {
@@ -183,7 +227,8 @@ export function activate(runtime: Runtime): void {
     const rows = buildRows();
     // 不带参数 = **只列不改**（理由见 project/projects.ts 头部：非 TTY 下交互选择器
     // 会自动返回第一项，而切换项目是最不该被"默认"的一步）。
-    if (parsed.action === 'list') return renderProjectList(rows);
+    if (parsed.action === 'list') return renderProjectList(rows, currentDirNote(rows));
+    if (parsed.action === 'add') return doAdd(parsed.path);
     return doSwitch(runtime, rows, parsed.query);
   });
 }

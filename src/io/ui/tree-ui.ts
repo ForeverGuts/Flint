@@ -105,6 +105,12 @@ export interface TreeUIInfo {
   skillCount: number;
   /** 启动自检诊断（可靠性工程），有 warn/fail 时在 banner 下方展示 */
   diagnostics?: import('../../types.js').Diagnostic[];
+  /**
+   * 通讯录准入提示（ROADMAP 10.11.6）—— null / 缺省 = 不显示。
+   * 与 `diagnostics` 分开而不是塞进去当一条诊断：诊断区是一组 ✅/⚠️/❌ 的**自检项**，
+   * 会被 `/diagnostics` 当历史记录读；这条只是"当前目录为什么没进通讯录"的一句说明。
+   */
+  projectNote?: string | null;
 }
 
 export class TreeUI {
@@ -308,6 +314,14 @@ export class TreeUI {
       // 网络探测后台化：先占位一行，结果到达后替换（界面先行，检查后台化）
       this.probeHint = new Text(`  ${C.dim}⏳ 网络自检进行中…${C.reset}`);
       this.diagBox.addChild(this.probeHint);
+    }
+    // 通讯录准入提示（ROADMAP 10.11.6）：判成独立项目 → info.projectNote 是 null，
+    // 这一块整个不出现（**绝大多数启动都该是这个样子**）。多行文案按 \n 拆开渲染 ——
+    // 它是"理由 + 怎么做"两句，拼成一行会被 fitWidth 截掉后半截（被截掉的恰好是"怎么做"）。
+    // 这块**不做实时刷新**（与 Runtime 行的项目名相反）：判定发生在启动那一刻，
+    // 之后 cwd 若被 `/projects --switch` 换走，那条路会自己给回执，不靠这里自觉。
+    for (const noteLine of (this.info.projectNote ?? '').split('\n')) {
+      if (noteLine) box.addChild(new Text(`  ${C.dim}${noteLine}${C.reset}`));
     }
     // 命令提示按分隔符贪心折行：旧实现拼成单行共 110 列，80 列终端下被 fitWidth
     // 静默截到 /history 为止，/sessions 与 /diagnostics 用户根本看不到

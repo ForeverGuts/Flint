@@ -548,8 +548,10 @@ console.log('\n⑧ 源码防回退');
   check('H13 注册表也是追加型（appendFileSync，绝不 writeFileSync），路径归一在位',
     registrySrc.includes('appendFileSync') && !registrySrc.includes('writeFileSync')
     && registrySrc.includes('export function normalizeProjectPath('));
-  check('H14 播种时把 cwd 登记进项目注册表（启动与切换都会走）',
-    seedSrc.includes('projectRegistry.ensure(process.cwd())'));
+  check('H14 播种时按**准入判据**登记（不再无条件写；启动与切换共用同一个装配点，三态各写各的）',
+    seedSrc.includes('classifyProject(process.cwd())')
+    && seedSrc.includes('projectRegistry.ensure(verdict.path)')
+    && seedSrc.includes('projectRegistry.ensure(verdict.root)'));
   check('H15 pull_events 的许可闸与授权键（跨项目读取必须过用户，键 = 项目路径）',
     /name: 'pull_events'[\s\S]*?requirePermission: true/.test(builtinSrc)
     && /name: 'pull_events'[\s\S]*?permissionKey: \(args\) => String\(args\.project/.test(builtinSrc));

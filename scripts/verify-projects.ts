@@ -228,8 +228,8 @@ console.log('\n── ⑥ 列表渲染 ──');
 
 {
   const out = renderProjectList([]);
-  check('F1 空表 → 说清"还没有"+ 怎么才会有（不是空白一片）',
-    out.includes('还没有登记过任何项目') && out.includes('projects.jsonl'));
+  check('F1 空表 → 说清"还没有"+ 怎么才会有（**指向判据**，不是过时的"用过就自动进"）',
+    out.includes('还没有登记过任何项目') && out.includes('/projects --add'));
 }
 {
   const rows = [row('alpha', { current: true }), row('beta')];
@@ -503,6 +503,49 @@ try {
   check('H24 空项目此前没有会话 → 走"新建"分支（回执把这步说清楚）',
     typeof bareOut === 'string' && bareOut.includes('已切换到项目「bare」')
     && bareOut.includes('新建') && bareOut.includes('任务 0'), String(bareOut).slice(0, 160));
+
+  /* ── 显式登记通道 `--add`（ROADMAP 10.11.6）：准入判据判不出来时，由人拍板 ── */
+  const regLines = (): number =>
+    fs.readFileSync(process.env.FLINT_PROJECTS_FILE!, 'utf-8').split('\n').filter(Boolean).length;
+  const addTarget = path.join(tmpRoot, 'added');
+  fs.mkdirSync(addTarget, { recursive: true });
+
+  const addOut = await commandSystem.execute(`/projects --add ${addTarget}`);
+  check('H25 `--add <路径>` 登记一个从没启动过的目录（**不看准入判据** —— 用户点名了就算数）',
+    typeof addOut === 'string' && addOut.includes('已登记')
+    && fs.readFileSync(process.env.FLINT_PROJECTS_FILE!, 'utf-8').includes(addTarget.replace(/\\/g, '/')),
+    String(addOut).slice(0, 160));
+
+  {
+    const before = regLines();
+    const again = await commandSystem.execute(`/projects --add ${addTarget}`);
+    check('H26 `--add` 幂等：再登记一次只说"本来就在"，不多写一行',
+      typeof again === 'string' && again.includes('本来就在') && regLines() === before, String(again));
+  }
+
+  const addMissing = await commandSystem.execute(`/projects --add ${path.join(tmpRoot, 'no-such-dir')}`);
+  check('H27 `--add` 指向不存在的目录 → 拒绝（不当场造一个空条目等着变成僵尸行）',
+    typeof addMissing === 'string' && addMissing.includes('不是一个能登记的目录'), String(addMissing));
+
+  const addFile = await commandSystem.execute(`/projects --add ${asFile}`);
+  check('H28 `--add` 指向一个文件 → 拒绝（注册表里只有目录）',
+    typeof addFile === 'string' && addFile.includes('不是一个能登记的目录'), String(addFile));
+
+  /* ── 列表里的准入提示：只有"当前目录没进通讯录"时才有话说 ── */
+  const unregistered = path.join(tmpRoot, 'unregistered');
+  fs.mkdirSync(unregistered, { recursive: true });
+  process.chdir(unregistered);
+  const hintOut = await commandSystem.execute('/projects');
+  check('H29 当前目录没进通讯录 → 列表尾部附一句判据给的提示（含"怎么登记"）',
+    typeof hintOut === 'string' && hintOut.includes('没进通讯录') && hintOut.includes('/projects --add'),
+    String(hintOut).slice(-200));
+
+  process.chdir(bare);
+  const noHint = await commandSystem.execute('/projects');
+  check('H30 当前目录**在册** → 不出现那句提示（已在册还提示"没进通讯录"就是错的）',
+    typeof noHint === 'string' && !noHint.includes('没进通讯录'), String(noHint).slice(-160));
+  check('H31 `--add` 只登记、**不动 cwd**（用户只说"记下来"，没说要过去）',
+    fs.realpathSync(process.cwd()) === fs.realpathSync(bare));
 } finally {
   process.chdir(cwd0);
   delete process.env.FLINT_PROJECTS_FILE;
@@ -527,8 +570,9 @@ const cmdSrc = fs.readFileSync(path.join(ROOT, 'src/commands/builtin/projects.ts
 const seedSrc = fs.readFileSync(path.join(ROOT, 'src/harness/project-context.ts'), 'utf-8');
 const mainSrc = fs.readFileSync(path.join(ROOT, 'src/harness/main.ts'), 'utf-8');
 
-check('I1 表示层零 import（不认识 fs / 注册表 / runtime，于是它能在不起进程的前提下逐字校验）',
-  !/^import\s/m.test(projectsSrc));
+check('I1 表示层**不碰 IO**（不 import node:* / fs / 子进程 —— 于是列表与提示能在不起进程、'
+  + '不读磁盘的前提下逐字校验；它唯一的 import 是同层的纯判据模块，那一条由 verify-detect 的 G2 钉）',
+  !stripComments(projectsSrc).includes('node:') && !stripComments(projectsSrc).includes('child_process'));
 check('I2 命令层不碰 io/（RPC 启动路径不许被拖进会写 stdout 的 UI 层）',
   !cmdSrc.includes("from '../../io/"));
 check('I3 切换**不做交互选择**（非 TTY 下选择器会自动返回第一项 = 默认切到某个项目）',
