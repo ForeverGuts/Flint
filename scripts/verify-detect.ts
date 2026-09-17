@@ -109,9 +109,17 @@ const tryGit = (fn: () => string | null): { ok: boolean; value: string | null } 
   try { return { ok: true, value: fn() }; } catch { return { ok: false, value: null }; }
 };
 
-/* 临时落点：全部建在 WorkBuddy_Test/ 下（本仓内 → 是 git 仓库子目录，这正是 ② 要的环境），
-   finally 里删干净。注册表另用 os.tmpdir() 下的文件（④ 段）。 */
+/* 临时落点：全部建在 WorkBuddy_Test/ 下（本仓内 → 是 git 仓库子目录，这正是 ② 要的环境）。
+   注册表另用 os.tmpdir() 下的文件（④ 段）。 */
 const scratch = fs.mkdtempSync(path.join(ROOT, 'WorkBuddy_Test', 'detect-'));
+/* ⚠ 清理挂在 process 'exit' 上，**不是写在文末的收尾行**。
+   顶层脚本没有外层 try 可写 finally，而 'exit' 在「正常收尾 / 中途抛异常崩溃 / 显式
+   process.exit()」三种收场都会触发 —— 它就是顶层脚本里的 finally。
+   教训很具体：原先那句 rmSync 写在第 496 行，脚本在 ①~⑤ 段任意一处抛异常就整段跑不到，
+   于是 WorkBuddy_Test/ 里慢慢积了 85 个空壳 detect-*（被 .gitignore 盖住，只是脏，不影响仓库）。 */
+process.on('exit', () => {
+  try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* 清理失败不掩盖结论 */ }
+});
 const cwd0 = process.cwd();
 
 /* ════════════════════════════════════════════════════════════════════
@@ -493,7 +501,8 @@ check('G10 提示只在"没进通讯录"时才出现（已在册再提示"没进
 
 /* ── 清扫 ── */
 
-fs.rmSync(scratch, { recursive: true, force: true });
+/* scratch 的删除挂在开头的 process 'exit' 钩子上（见 ① 段前的注释），此处不再重复一句
+   —— 两处并存会让人误以为文末那句才是真闸。 */
 
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);
 process.exit(failed > 0 ? 1 : 0);
