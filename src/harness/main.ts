@@ -30,7 +30,7 @@ import { taskStore } from '../todo/store.js';
 import { memoryStore } from '../memory/store.js';
 import { CALLS_FILE, eventStore } from '../eventlog/store.js';
 import { seedProjectContext } from './project-context.js';
-import { renderRegistrationNote } from '../project/projects.js';
+import { atFileInputHandler } from '../input/probe.js';import { renderRegistrationNote } from '../project/projects.js';
 import { charterLock, guardContractWrite } from '../project/charter.js';
 import { routeBashGitRead } from '../git/route.js';
 import {
@@ -243,8 +243,13 @@ export async function main(checkResult: CheckResult): Promise<void> {
   // "返回第一项"上——那等于替用户选了技术方案。
   registerBuiltinTools(tools, taskStore, memoryStore, eventStore,
     createForkAsker((items, title) => runtime.select(items, title)));
-  // 输入预处理器（runtime.onInput）当前不挂任何实现：原先挂的 demoInputHandler 会静默
-  // 吞掉 "@@" 开头的输入，属未文档化的演示行为；能力保留给 Hook 系统
+  // 输入预处理器（runtime.onInput，ROADMAP 10.8.1）：`@path` 输入引用。
+  // 落点说明：这个钩子在 runtime.prompt() 里、**命令分发之后、skill 展开之前**被消费，
+  // 能改写文本 —— 正是"输入层解析"要的位置（路线图 R4 早就点名了它）。
+  // 挂在这里而不是 REPL 里：RPC 模式同样走 prompt()，编辑器和终端应当一个口径。
+  // 传回调而不是 cwd 字符串：项目切换会 chdir，必须在调用时现取。
+  // 它**只在输入里真的出现 `@` 时才干活**（内部有短路），不含任何启动期成本。
+  runtime.onInput(atFileInputHandler(() => process.cwd()));
 
   // SIGINT/Ctrl+C：raw mode 下由 InputHandler 处理（选择器取消/输入），
   // 这里只作兜底（非 TTY 或 InputHandler 未捕获时），优雅退出

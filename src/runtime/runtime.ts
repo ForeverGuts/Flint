@@ -273,8 +273,8 @@ export class Runtime {
    * 注册输入预处理器（在命令分发前改写 / 吞掉用户输入）。
    * 注：这里的 InputHandler 是**函数类型**（见本文件上方定义），与 io/ui/input-handler.ts
    *     那个逐键解析的 InputHandler **类**同名不同物。
-   * 当前无注册者：原先挂的 demoInputHandler 会静默吞掉 "@@" 开头的输入，属未文档化的
-   * 演示行为，已摘除；能力本身保留给 ROADMAP 里的 Hook 系统。
+   * 当前注册者只有一位：`harness/main.ts` 挂的 `@file` 输入引用（ROADMAP 10.8.1）。
+   * 此前挂过的 demoInputHandler 会静默吞掉 "@@" 开头的输入，属未文档化的演示行为，已摘除。
    */
   onInput(handler: InputHandler): void {
     this.inputHandlers.push(handler);
