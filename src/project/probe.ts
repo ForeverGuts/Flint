@@ -23,11 +23,12 @@
  * 零运行时依赖：只用 node 内置（child_process / fs / os / path）。
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { normalizeProjectPath } from '../eventlog/registry.js';
 import { MANIFEST_FILES, judgeProject, type ProjectProbes, type ProjectVerdict } from './detect.js';
+import { STACK_CANDIDATES, type StackProbes } from './stack.js';
 
 /**
  * 实物档案的落点 —— 任一存在，就是"flint 真在这儿工作过"。
@@ -84,4 +85,32 @@ export function probeProject(dir: string): ProjectProbes {
 /** 探 + 判 —— 调用方（播种 / `/projects`）要的就是这一个结论 */
 export function classifyProject(dir: string): ProjectVerdict {
   return judgeProject(probeProject(dir));
+}
+
+/**
+ * 技术栈探测的探针（ROADMAP 10.1.1）—— 只做**存在性检查**，外加读一份 `package.json`
+ * 的文本（它的 `packageManager` 字段是包管理器的第一顺位依据）。
+ *
+ * 为什么把 package.json 的**文本**整份取回来、而不是在这里先解析出字段：解析属于**判据**，
+ * 判据要能被逐条打靶（`parsePackageManagerField` 有一组脏输入用例），所以它留在 stack.ts。
+ * 本文件只负责"把字节取回来"，与 `probeProject` 同一分家理由。
+ *
+ * **宽容读**：文件不存在 / 读失败 / 权限不够 → 那一格给 null，绝不抛。
+ * 后果只有一个方向 —— 画像少说一句（甚至整段缺席），不会让启动失败。
+ *
+ * 成本（回答 C9）：只有 `existsSync` × 候选文件数 + 至多一次 `readFileSync`，
+ * 且**不含任何子进程**（不像 `probeProject` 可能起 git）。调用方在播种时跑一次。
+ */
+export function probeStack(dir: string): StackProbes {
+  const cwd = normalizeProjectPath(dir);
+  const files = STACK_CANDIDATES.filter((f) => existsSync(path.join(cwd, f)));
+  let packageJson: string | null = null;
+  if (files.includes('package.json')) {
+    try {
+      packageJson = readFileSync(path.join(cwd, 'package.json'), 'utf-8');
+    } catch {
+      packageJson = null;
+    }
+  }
+  return { files, packageJson };
 }

@@ -23,6 +23,7 @@ import { taskStore } from '../todo/store.js';
 import { memoryStore } from '../memory/store.js';
 import { readProjectSnapshot } from '../project/snapshot.js';
 import { commandRegistry, renderCommandsSection } from '../project/commands.js';
+import { renderStackSection, stackRegistry } from '../project/stack.js';
 import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
 
 /* ── 工作记忆：真相源是 `taskStore`（src/todo/store.ts） ──
@@ -710,6 +711,11 @@ export class Runtime {
     // 运行期不再回读（理由见 commands.ts 文件头「发现 ≠ 授权」：package.json 是模型可写文件）。
     // 每轮只做一次渲染（空表 → 空串 → 半段缺席，与现状快照缺席同一纪律）。
     const commandsSection = renderCommandsSection(commandRegistry.get());
+    // 技术栈画像（10.1.1）：与命令表**完全同一手法** —— 播种时探测一次进注册表、
+    // 运行期只渲染不回读（理由见 project/stack.ts 文件头：它喂给命令表的包管理器前缀，
+    // 而命令表是"启动读一次"的，刷新率必须一致才不会出现两个口径）。
+    // 空画像（一个模板文件都没命中）→ 空串 → 半段缺席，与其他各层同一纪律。
+    const stackSection = renderStackSection(stackRegistry.get());
     // 项目记忆：读内存真相源（memoryStore），有条目才注入；截断同 task 层——注入可截，投影不截
     const rawMemory = memoryStore.isEmpty() ? undefined : memoryStore.render();
     const projectMemory = rawMemory && rawMemory.length > 2000
@@ -723,6 +729,7 @@ export class Runtime {
       model: this.currentModel,
       summary: compacted.summary,
       project: projectSnapshot,
+      stack: stackSection === '' ? undefined : stackSection,
       commands: commandsSection === '' ? undefined : commandsSection,
       task: taskMemory,
       memory: projectMemory,

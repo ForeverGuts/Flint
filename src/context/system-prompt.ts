@@ -71,15 +71,19 @@ export class SystemPromptServiceImpl implements SystemPromptService {
     //   所以模型一改它就立刻生效（自愈），不需要任何"谁通知 runtime"的线。
     //   没有这个文件则整层缺席（模型照旧用 ls/read 自己看，不是错误状态）。
     //   位置：比 memory 易变（随代码漂移，每坐标一次）、比 task 稳定，故夹在 skills 与 memory 之间。
-    //    同层的第二半：**项目命令表**（10.6.1，package.json 的 scripts 发现而来）。
-    //    与现状快照合在同一条消息里 —— 两者都是"这个项目长什么样"，且**都没有内存真相源**
-    //    （现状快照每轮现读文件、命令表启动读一次进注册表），分开成两条只会多一条消息、层序不变。
-    //    任一半缺席就只出另一半；两半都无 → 整层缺席（维持"没有就不注入"的纪律）。
-    if (ctx.project || ctx.commands) {
+    //    同层的另外两半：**技术栈画像**（10.1.1，存在性探测的语言 / 包管理器）与
+    //    **项目命令表**（10.6.1，package.json 的 scripts 发现而来）。三半合在同一条消息里 ——
+    //    都是"这个项目长什么样"，且**都没有内存真相源**（现状快照每轮现读文件、画像与命令表
+    //    播种时各读一次进注册表），分开成三条只会多两条消息、层序不变。
+    //    内部顺序是**承重的**：现状 → 画像 → 命令表。命令表的包管理器前缀由画像派生，
+    //    先看到"用 pnpm"再看到 `pnpm run test`，读起来才是一件事而不是两处口径。
+    //    任一半缺席就只出另一半；三半都无 → 整层缺席（维持"没有就不注入"的纪律）。
+    if (ctx.project || ctx.stack || ctx.commands) {
       const parts: string[] = [];
       if (ctx.project) {
         parts.push(`[项目现状]（.flint/PROJECT.md —— 当前系统由哪些模块 / 技术点构成；随代码漂移，过时就更新它）\n${ctx.project}`);
       }
+      if (ctx.stack) parts.push(ctx.stack);
       if (ctx.commands) parts.push(ctx.commands);
       messages.push({ layer: 'project', content: parts.join('\n\n') });
     }

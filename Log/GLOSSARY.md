@@ -375,7 +375,24 @@ watcher 的 ctx 里刻意不给 `on`——“旁观者改流程”在类型层�
 
 **已知边界**：只做 `package.json` 的 scripts，**Makefile 半边不做**——本机 `which make` 无命中、拿不到 oracle，按"语义类功能的期望值必须来自权威实现、没实测到的那一半不许用推理补"的纪律宁缺勿补；补法只需加一个 `parseMakefile()`，走同一个 `ProjectCommand` 形状，注入端与引用端都不用动。
 
-参见：[改完自检（Postcheck）](#改完自检postcheck)
+**`run` 串的包管理器前缀由[技术栈画像](#技术栈画像tech-stack)派生**（2026-09-17，ROADMAP **10.1.1** 落地）：`parsePackageScripts(text, manager)` 的第二个参数缺省是 `npm`（= 加了画像之前硬写的值，**探测不到东西的项目行为逐字不回退**）；`main.ts` 播种时把 `stackRegistry` 的 `nodeManager` 传进来，于是 pnpm 项目里命令表写的是 `pnpm run test`。**两半必须同刻播种、同刷新率** —— 否则同一段上下文里会出现"包管理器 `pnpm`"配着 `npm run test` 两个口径。
+
+参见：[改完自检（Postcheck）](#改完自检postcheck) · [技术栈画像（Tech Stack）](#技术栈画像tech-stack)
+
+### 技术栈画像（Tech Stack）
+`src/project/stack.ts`（2026-09-17 加，ROADMAP **10.1.1**）：**存在性探测**——看目录下有哪些标记文件（`package.json` / `tsconfig.json` / 五个锁文件 / `pyproject.toml` / `go.mod` / `Cargo.toml` / `pom.xml` / `build.gradle*`）→ 派生**语言**与**包管理器**，渲染成【项目技术栈】段并进 project 层注入。治的是与[项目命令注册表](#项目命令注册表commands-registry)**同一类**误判的另一半：那个回答"能跑什么"，这个回答"在哪个生态里、用哪个工具"，而"猜错了且不知道自己猜错了"是两者共有的病。
+
+**判据顺序（承重）**：`package.json` 的 `packageManager` 字段（**声明**）> 锁文件（**实物证据**，优先级链 pnpm → yarn → bun → npm 固定）> 默认 `npm`。字段认不出（`make@1`）即丢弃、往下滚，绝不把陌生字符串当命令前缀。**一条否命题比上面三条都重要**：**没有 `package.json` 就绝不认 npm** —— 一个纯 Rust 项目配着 `npm run` 前缀比什么都不说更糟（把"我不知道"伪装成"我知道"）。
+
+**判不出来就留白，不编默认**：`pyproject.toml` 只声明依赖、不说明用 pip / poetry / uv / pipenv 哪一个 —— 于是 `manager` 是 `null`，且 `via` 必须给一句**原因**。两种错的可发现性不对称：留白时模型会去 `read` 一眼（几十个 token），编默认时它**认为这件事已经知道了**，转头去跑一条不存在的命令。同[gitignore 感知](#gitignore-感知跳过表并入项目规则)的"认不出即丢弃"。
+
+**原料清单共用下限、各持上限**：候选表 = `detect.ts` 的 [`MANIFEST_FILES`](#项目准入判据project-admission) **∪** 探测专用文件，方向**单向**（stack → detect），加长的部分**不得回流**去当准入证据（`requirements.txt` / `Makefile` 在子目录里遍地都是，会把准入判据打穿）。两个用途共享同一份下限、各自持有上限，谁也别替谁做主。
+
+**刷新率与[项目命令注册表](#项目命令注册表commands-registry)绑死**：由 `seedProjectContext()` 在**启动与切项目时**播种一次（启动/切换**唯一实现**），运行期不回读。这里与 [`.flint/PROJECT.md` 现状快照](#projectmd现状快照)的"每轮现读即自愈"**刻意相反** —— 因为命令表的 `run` 前缀由它派生，而命令表只在启动读一次；两半刷新率不同就会出现两个口径。这也是路线图约束 **C9**（"新增探测要惰性化或挪出启动关键路径"）的答法：**探测不新增任何文件读取**（`package.json` 本来就在读），净新增只有几次 `existsSync`、无子进程 —— 关键路径上本来就没有重活。
+
+**已知边界**：非 Node 生态（Python / Go / Rust / Java）**只报语言与包管理器名、不派生命令**（本机装不了 cargo / go / poetry，按"没实测到的那一半不许用推理补"留白）；`Makefile` 刻意不在候选表；只在**目录下**找标记、不看父目录（monorepo 子包里只报子包自己）；版本号被丢掉，`build.gradle.kts` 不区分 Kotlin。
+
+参见：[项目命令注册表（Commands Registry）](#项目命令注册表commands-registry) · [项目准入判据（Project Admission）](#项目准入判据project-admission) · 完整理由见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-17-stack)
 
 ### 项目切换（`/projects`）
 `src/commands/builtin/projects.ts` + `src/project/projects.ts`（2026-09-16 加，ROADMAP **10.11.1**）：第 14 个内置命令，给一直在写的注册表 `~/.flint/projects.jsonl` 补上**读取端**。不带参数**只列**（`●` 标当前、目录已不存在的行显式标注、按最近活动倒序、重名不猜）；切换必须显式 `/projects --switch <名或路径>`。

@@ -55,6 +55,8 @@
 │                   · projects.ts `/projects` 列表·切换·新增的**纯逻辑**（参数解析含 `--add` / 选项目【重名不猜】/ 排序 / 列表·回执·登记提示·`--add` 回执渲染；执行在命令层，播种走 harness/project-context.ts）
 │                   · detect.ts **项目准入判据**（**零 import**：逐条判 硬排除 → 实物档案 → git 仓库根 → 清单文件 → 候选，`nested` 归并到仓库根、`candidate` **不写盘**）
 │                   · probe.ts 探测层（**全项目唯一**碰 fs / 起子进程处；`gitRoot` 是**惰性回调**，判据不碰盘、探测不判事）
+│                   · stack.ts **技术栈画像**（**判据纯函数**：存在性标记 → 语言 / 包管理器，顺序 声明 > 锁文件 > 默认；
+│                      **没有 package.json 绝不认 npm**；原料表 = detect 的 MANIFEST_FILES ∪ 探测专用，单向不回流）
 │ git/              git 只读结构化（git.ts：op 白名单 + argv 不经 shell + 8 个 op 的解析渲染）· route.ts bash 裸 git 只读命令的路由（**不是闸**）
 │ process/          子进程**整树终止**（proctree.ts 纯策略：Windows taskkill /T · POSIX 负 pid 进程组 · 失败分类；runner.ts 执行器：异步 spawn + 超时按树杀 + 宽限期兜底）——`bash` 与改完自检**两处共用**
 │ permission/       PermissionManager

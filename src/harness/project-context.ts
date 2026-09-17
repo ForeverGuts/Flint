@@ -7,11 +7,12 @@
  *         两份实现不会同时错，只会**各错一半**（启动装了四样、切换忘了第三样），
  *         而"少装一样"的症状是**看着一切正常**——用的是上一个项目的数据。
  *
- * 装进来的是四样（都是**进程级单例**，所以只能由一处统一负责）：
- *   taskStore    ← TASK.md（清单的投影 + 跨重启种子）
- *   memoryStore  ← .flint/memory.md（跨会话结论）
- *   eventStore   ← .flint/events.jsonl + .flint/tool-calls.jsonl（来龙去脉 + 流水索引）
- *   charterLock  ← 复位成**已锁**
+ * 装进来的是五样（都是**进程级单例**，所以只能由一处统一负责）：
+ *   taskStore     ← TASK.md（清单的投影 + 跨重启种子）
+ *   memoryStore   ← .flint/memory.md（跨会话结论）
+ *   eventStore    ← .flint/events.jsonl + .flint/tool-calls.jsonl（来龙去脉 + 流水索引）
+ *   stackRegistry ← 技术栈画像（存在性探测的语言 / 包管理器，ROADMAP 10.1.1）
+ *   charterLock   ← 复位成**已锁**
  * 外加**通讯录登记**：按准入判据决定要不要写进 ~/.flint/projects.jsonl（见下）。
  *
  * ── 通讯录登记：保守准入 + 候选兜底（ROADMAP 10.11.6）──
@@ -42,13 +43,17 @@
  * "有权限改 B 的目标文档"——一次解锁被搬到另一个项目上，正是契约锁最不该有的行为。
  *
  * ── 刻意不做的两件（边界，不装糊涂）──
- *   ① **不读** package.json / .flint/postcheck.json。它们是**授权类配置**（"声明即授权"
- *      的登记表，以及它引用的命令表），"运行期不回读"本身就是那条防线的组成部分
- *      （理由见 ROADMAP 10.6.1 / 10.6.2 与 DECISION_LOG 的对应锚点）。项目切换确实由
- *      用户显式发起，但它发生在**运行期**；一旦多出第二个读取点，判据就从"不许回读"
- *      退化成"看是谁触发的能不能回读"——那是**策略**，不是正确性。故切换方**清空**
- *      commandRegistry / postcheckRegistry / postcheckBaseline，并在回执里明说
- *      "新项目的项目命令与改完自检要重启 flint 才生效"：用**看得见的缺失**，
+ *   ① **不读** `.flint/postcheck.json`，它**本身就是授权书**（"声明即授权"的登记表）。
+ *      `package.json` 自 10.1.1 起**分两种读法**（原文写的是"不读 package.json"，
+ *      2026-09-17 补记更正 —— 它已不是一个绝对禁令，而是一条**按用途分岔**的界线）：
+ *        · **展示用**（技术栈画像要的 `packageManager` 字段）：播种时读一次，与 `main.ts`
+ *          播种命令表**同一时刻**；结果只进画像段与 `run` 串前缀，**不开任何新的执行通路**；
+ *        · **授权用**（命令表被发现、被 `use` 引用）：**只在启动读一次**，切换时**清空不重读**。
+ *      界线因此是"**启动之后不再回读**"，而不是"切换时不许读" —— 切换由用户显式发起，
+ *      刷新的是展示内容；而运行期回读会让模型改一行 scripts 就改写注入内容、并让 `use`
+ *      指向另一条命令（自我授权路径，理由见 ROADMAP 10.6.1 / 10.6.2 与 DECISION_LOG 锚点）。
+ *      故切换方**清空** commandRegistry / postcheckRegistry / postcheckBaseline，并在回执里
+ *      明说"新项目的项目命令与改完自检要重启 flint 才生效"：用**看得见的缺失**，
  *      换掉**看不见的通路**。
  *   ② **不碰**配置（`~/.flint/config.json` 与项目的 `config/provider-keys.json`）：
  *      ConfigManager 是启动时构造的进程级单例。切过来的项目若在 provider-keys.json 里
@@ -61,7 +66,8 @@ import { MEMORY_FILE, memoryStore } from '../memory/store.js';
 import { CALLS_FILE, EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { normalizeProjectPath, projectRegistry } from '../eventlog/registry.js';
 import { charterLock } from '../project/charter.js';
-import { classifyProject } from '../project/probe.js';
+import { classifyProject, probeStack } from '../project/probe.js';
+import { detectStack, stackRegistry } from '../project/stack.js';
 import type { ProjectVerdict } from '../project/detect.js';
 
 /** 清单落点（cwd 根，不是 .flint/ 下——历史原因，见 todo/store.ts） */
@@ -130,6 +136,14 @@ export function seedProjectContext(opts: SeedOptions = {}): ProjectContextReport
   eventStore.reset();
   eventStore.loadFromFile(EVENTS_FILE);
   eventStore.loadCallsFile(CALLS_FILE);
+
+  // 技术栈画像（ROADMAP 10.1.1）：**同样先清后栽**。它是模块级单例，切项目时不重探的话，
+  // 新项目会顶着旧项目的画像（"这是 Rust 项目"配着 node 的命令表）——而症状是看着一切正常。
+  // 与上面三个 store 不同的是：它**不是授权类配置**，所以切项目时可以（也应当）重探 ——
+  // 界线是"运行期不回读"，不是"切换时不许读"（切换由用户显式发起，且刷新的是展示内容）。
+  // 详见 detectStack 的文件头与 main.ts 里命令表播种那一段。
+  stackRegistry.clear();
+  stackRegistry.set(detectStack(probeStack(process.cwd())));
 
   // 目标文档的锁**不跨项目继承**：新项目一律从"已锁"开始（要改就再 /charter unlock）。
   charterLock.lock();

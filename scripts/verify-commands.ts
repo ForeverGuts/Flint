@@ -20,6 +20,9 @@
  *   ⑤ 登记表引用 use —— 命中 / 引用不到 / 不传表 / 与 command 同写（含糊）/ 空白 / 非字符串
  *   ⑥ 源码守护 —— 零 import；**不执行任何命令**（无 spawn/exec）；main 播种一次；
  *      runtime 与 system-prompt 都接了；core 类型里有 commands 位
+ *   ⑧ （在别处）`parsePackageScripts` 的第二个参数——**包管理器前缀**，即 10.1.1 与 10.6.1
+ *      的唯一接头——由 `verify-stack.ts` 的 D 段钉（含脏值退回默认）。这里**刻意不重复**：
+ *      同一条判据写两处，改一处就会留下一处假装还在管事的僵尸断言。
  *   ⑦ 行为证明 —— 真读本仓 package.json；真 SystemPromptServiceImpl 注入（含层缺席）；
  *      端到端：真文件 → 播种 → 登记表 use → 解析出可执行串
  *
@@ -280,8 +283,11 @@ check('F8 空表 → 传 undefined（半段缺席，不塞空串进提示词）'
   runtimeCode.includes("commandsSection === '' ? undefined : commandsSection"));
 check('F9 system-prompt 的 project 层把 commands 拼进同一条消息',
   /layer: 'project'/.test(spCode) && spCode.includes('ctx.commands'));
-check('F10 两半都无 → project 层整层缺席（维持"没有就不注入"）',
-  /if \(ctx\.project \|\| ctx\.commands\)/.test(spCode));
+// ⚠ 2026-09-17 本条**必然要改**（同 C10 那类"新增能力动了既有断言"）：project 层自
+//   ROADMAP 10.1.1（技术栈画像）起从**两半**扩成**三半**，正则跟着扩。改的是"哪几半算一层"，
+//   不是"哪一层"——层序（F12/F13）与"没有就不注入"的纪律都没动。
+check('F10 三半都无 → project 层整层缺席（维持"没有就不注入"）',
+  /if \(ctx\.project \|\| ctx\.stack \|\| ctx\.commands\)/.test(spCode));
 check('F11 SystemPromptContext 里加了 commands 位（类型层没漏）',
   /commands\?: string \| undefined;/.test(coreSpCode));
 // 分层序是**承重的**（越稳定越靠前）：命令表并进 project 层，不能把它挪到别处去
@@ -327,7 +333,7 @@ const built = await svc.build({
 });
 const projectMsg = built.messages.find((m) => m.layer === 'project');
 check('H1 注入真的发生了：project 层存在', projectMsg !== undefined);
-check('H2 同一条消息里既有现状快照也有命令表（两半合成一层）',
+check('H2 同一条消息里既有现状快照也有命令表（同层多半合成一层）',
   projectMsg?.content.includes('[项目现状]') === true
   && projectMsg?.content.includes('## 项目命令') === true, ok(projectMsg?.content.slice(0, 80)));
 
@@ -336,7 +342,7 @@ check('H3 只有命令表、没有现状快照 → 层仍在（任一半就出�
   onlyCommands.messages.some((m) => m.layer === 'project') === true);
 
 const neither = await svc.build({ ...baseCtx });
-check('H4 两半都无 → **整层缺席**（没有就不注入）',
+check('H4 都无 → **整层缺席**（没有就不注入；三半的完整矩阵见 verify-stack 的 J 段）',
   neither.messages.some((m) => m.layer === 'project') === false);
 
 // ── I：端到端 —— 真文件 → 播种 → 登记表 use → 可执行的那一句 ──

@@ -40,10 +40,12 @@ import {
   postcheckRegistry,
 } from '../project/postcheck.js';
 import {
+  DEFAULT_MANAGER,
   PACKAGE_JSON_FILE,
   commandRegistry,
   parsePackageScripts,
 } from '../project/commands.js';
+import { stackRegistry } from '../project/stack.js';
 import { createForkAsker } from '../io/ui/fork-prompt.js';
 import type { CollectedSpan } from '../core/events.js';
 import { SpanCollectorImpl } from '../runtime/span-collector.js';
@@ -89,8 +91,13 @@ export async function main(checkResult: CheckResult): Promise<void> {
     // 命令表先播种：登记表里的 {"use":"名字"} 要在它里面查（10.6.1 的发现半边）。
     // 同样**只在启动读一次** —— package.json 是模型可写文件，运行期重读等于让它改一行
     // scripts 就改写注入内容、并让 use 指向另一条命令（自我授权路径的同源论证）。
+    // **包管理器前缀由技术栈画像给**（10.1.1）：`seedProjectContext()` 刚在上面播过种，
+    // 两半读取发生在**同一时刻**、刷新率一致，所以不会出现"画像说 pnpm、命令表写 npm"。
+    // 画像判不出来（无 Node 生态 / 无锁文件无字段）→ 退回 DEFAULT_MANAGER，
+    // 也就是 10.1.1 之前硬写的那个值：**探测不到任何东西的项目，行为逐字不变**。
+    const manager = stackRegistry.get().nodeManager ?? DEFAULT_MANAGER;
     const commands = existsSync(PACKAGE_JSON_FILE)
-      ? parsePackageScripts(readFileSync(PACKAGE_JSON_FILE, 'utf-8'))
+      ? parsePackageScripts(readFileSync(PACKAGE_JSON_FILE, 'utf-8'), manager)
       : [];
     commandRegistry.set(commands);
     postcheckRegistry.set(existsSync(POSTCHECK_FILE)

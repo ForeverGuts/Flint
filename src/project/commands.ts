@@ -29,6 +29,11 @@
  *   而不是写一个"看着对"的解析器。它随时可加：加一个 `parseMakefile()`，走同一套
  *   `ProjectCommand` 形状，注入端与引用端都不用动。
  *
+ * 与 ROADMAP 10.1.1（技术栈探测）的**唯一接头**：`run` 串的包管理器前缀由调用方传入
+ *   （`parsePackageScripts` 的第二参数）。本文件**不自己探测** —— 探测归 `project/stack.ts`；
+ *   两半在**同一时刻**播种（`harness/project-context.ts` 播种画像 → `harness/main.ts` 用它读 scripts），
+ *   刷新率一致，于是不可能出现"画像段说 pnpm、命令表写着 npm"。
+ *
  * 本文件**零 import**（无 node:fs / node:child_process）：解析与渲染都是纯函数，可脱离终端验。
  *   读文件在 harness/main.ts（宽容读），注入在 src/context/system-prompt.ts 的 project 层。
  */
@@ -44,6 +49,15 @@ export const COMMAND_NAME_MAX = 60;
 
 /** 注入时命令**内容**（scripts 的值）的预览长度上限：拿它看"这条大概干什么"，不是看全文 */
 export const COMMAND_PREVIEW_MAX = 120;
+
+/**
+ * 包管理器判不出来时的缺省值 —— 与 10.1.1 落地前硬写的那个值**逐字相同**，
+ * 于是"探测不到任何东西"的项目行为不回退（默认态零变化）。
+ */
+export const DEFAULT_MANAGER = 'npm';
+
+/** 允许出现在 `run` 串前缀里的形状：小写字母开头、只含小写字母与连字符 */
+const SAFE_MANAGER = /^[a-z][a-z0-9-]*$/;
 
 /** 分类标签。这是**展示分组**，不参与任何判定 —— 见 classifyCommand 头注 */
 export type CommandKind =
@@ -100,12 +114,22 @@ export function classifyCommand(name: string, script: string): CommandKind {
  * 本功能只是"少猜一次"，读不出来退回现状即可，绝不该因此让启动失败。
  * 条目级过滤（空名、超长名、值不是非空字符串）也是同一个理由：脏条目丢掉比硬塞好。
  *
- * `run` 统一是 `npm run <name>`：**不嗅探包管理器**（pnpm/yarn/bun 归 10.1.1 那类画像活儿）。
- * 选 npm 作最大公约数是因为 `npm run` 在只要有 package.json 的项目里就能用；万一项目实际用
- * pnpm，跑错也是**当场报错、看得见**，不会静默跑成另一件事。
+ * `run` 的**命令前缀**（`<manager> run <name>`）由第二参数给，缺省 `npm` —— 本条落地时
+ * 硬写死 npm，自 ROADMAP **10.1.1**（技术栈探测）起改为**由画像派生**：探测到
+ * `pnpm-lock.yaml` 就写 `pnpm run test`（`main.ts` 播种时把 `stackRegistry` 里的
+ * `nodeManager` 传进来）。两半的刷新率必须一致，否则会出现"画像段说 pnpm、命令表写 npm"
+ * ——所以两者都在**同一时刻**播种、运行期都不回读。
+ *
+ * 参数是 `string` 而**不是** `NodeManager`：本文件有"零 import"的源码守护
+ * （`verify-commands.ts` 的 F1），引一个类型过去会把它顶掉。代价是这里得自己挡脏值 ——
+ * 见下面那道 `SAFE_MANAGER` 正则：非字符串 / 空 / 含空格或重定向符号一律退回 `npm`，
+ * 因为它要拼进一句**要被执行**的命令里（虽然本模块自己不执行）。
  */
-export function parsePackageScripts(text: unknown): ProjectCommand[] {
+export function parsePackageScripts(text: unknown, manager: string = DEFAULT_MANAGER): ProjectCommand[] {
   if (typeof text !== 'string' || text.trim() === '') return [];
+  const pm = typeof manager === 'string' && SAFE_MANAGER.test(manager.trim())
+    ? manager.trim()
+    : DEFAULT_MANAGER;
   let raw: unknown;
   try {
     raw = JSON.parse(text);
@@ -122,7 +146,7 @@ export function parsePackageScripts(text: unknown): ProjectCommand[] {
     if (name === '' || name.length > COMMAND_NAME_MAX) continue;
     if (typeof value !== 'string' || value.trim() === '') continue;
     const script = value.trim();
-    out.push({ name, run: `npm run ${name}`, script, kind: classifyCommand(name, script) });
+    out.push({ name, run: `${pm} run ${name}`, script, kind: classifyCommand(name, script) });
   }
   return out;
 }
