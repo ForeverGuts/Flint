@@ -68,7 +68,10 @@
 │                   · workspace.ts **工作区外写保护**（10.9.3，`before_tool_call` 的**第三道闸**）
 │                   ——默认只许写 cwd 之内，判据 `isUnder` / `isOutsideWorkspace`（**`path.relative` 不是字符串前缀**）；
 │                     只认 write / edit（**`bash` 刻意排除**：读写形状无异）；开门只走用户手打的 `/workspace allow <目录>`
-│                     （**授权表与 PermissionManager 分开** —— 权限弹窗在非 TTY / RPC 下自动放行）；授权含子树不向上不向旁、切项目清空
+│                     （**授权表与 PermissionManager 分开** —— 权限弹窗在非 TTY / RPC 下自动放行）；授权含子树不向上不向旁、切项目**先清后栽**
+│                   · grants.ts **工作区授权持久化**（10.9.1 落地前半）—— `/workspace allow --save` 之后重启仍生效，
+│                     落盘 `~/.flint/permissions.json`（按项目键分区）；**读一次**（启动读进内存快照 → 运行期不读盘，
+│                     掐掉"模型改文件给自己发授权"那条通路）· **读不懂当没有**且**拒写**（免得抹掉别的项目条目）· **写失败报出来**
 │ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
 │ commands/         CommandServiceImpl + 15 个内置命令（含 /memory /events /charter /projects /workspace）
 │ diagnostics/      DiagnosticsServiceImpl

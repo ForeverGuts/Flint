@@ -316,6 +316,10 @@ function makeRuntime(session: any, sessionRepo: any, commandSystem: CommandServi
 const cwd0 = process.cwd();
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-projects-'));
 process.env.FLINT_PROJECTS_FILE = path.join(tmpRoot, 'projects.jsonl');
+// 授权持久化同样重定向（ROADMAP 10.9.1）：播种现在会去读 `~/.flint/permissions.json` 里
+// **本项目**那一份长期放行，读**用户真实的**那份虽然不至于挂（临时目录不会是键），
+// 但这套件跑的是"切换"这条路径，把环境隔干净是它一贯的做法 —— 顺便让 H12b 变确定性。
+process.env.FLINT_PERMISSIONS_FILE = path.join(tmpRoot, 'permissions.json');
 
 const alpha = path.join(tmpRoot, 'alpha');
 const beta = path.join(tmpRoot, 'beta');
@@ -440,6 +444,9 @@ try {
     && fs.statSync(alphaSessionFile).mtimeMs === alphaMtime);
 
   check('H12 契约锁不跨项目继承（A 的解锁不许让 B 的目标文档白送）', !charterLock.isUnlocked());
+  // 10.9.1 之后这条的语义精确说来是"**清空、再栽 B 自己那份**"（B 的长期放行在盘上，
+  // 不是从 A 搬来的）—— 本套件里 B 没有长期条目，故结果仍是空。
+  // "栽的是 B 自己那份"那一条由 verify-grants 用真目录 + 真播种另钉（那边才能控盘上内容）。
   check('H12b 外写放行表不跨项目继承（在 A 里放行的目录，不许让模型顺手写到 B 外面去）',
     workspaceGrants.list().length === 0, JSON.stringify(workspaceGrants.list()));
 

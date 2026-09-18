@@ -51,6 +51,14 @@ import { activate as activateWorkspace } from '../src/commands/builtin/workspace
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const isWin = process.platform === 'win32';
 
+// ⚠ **必须把授权持久化文件重定向到临时目录**（ROADMAP 10.9.1）：`/workspace clear` 现在
+//   会**连盘一起清**，而 F14/F15 就在敲它 —— 不重定向的话，跑一次套件就会把**用户真实的**
+//   `~/.flint/permissions.json` 里本项目那一份长期放行删掉，一次静默的数据丢失。
+//   与 `FLINT_PROJECTS_FILE`（verify-projects）同一手法：**用的时候现读环境变量**，
+//   所以在这里（import 之后）设也来得及。
+process.env.FLINT_PERMISSIONS_FILE = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), 'ws-perm-')), 'permissions.json');
+
 let passed = 0;
 let failed = 0;
 function check(name: string, cond: boolean, detail = ''): void {
@@ -330,10 +338,14 @@ check('G11 拒因里的两处边界声明在**代码里**（剥掉注释后仍�
 check('G12 拒因前缀只有一处定义', (workSrc.match(/export const WORKSPACE_MARK/g) ?? []).length === 1);
 
 // 唯一开门口：全 src/ 里只有命令层调 workspaceGrants.allow()
+// ⚠ **必须剥注释再判**。本仓记过多次"源码文本断言误伤注释"，这是同一个坑的**第八次**形态：
+//   10.9.1 在 permission/grants.ts 的注释里写了一句"`workspaceGrants.allow()` 的返回值"，
+//   这条当场变红。剥掉注释之后**断言本身一个字没改** —— 它要钉的仍然是"谁在调 `allow()`"。
+//   （另一半"批量开门"的守卫在 verify-grants 的 G7：`workspaceGrants.fill(` 的唯一调用方是播种。）
 const srcFiles = fs.readdirSync(path.join(ROOT, 'src'), { recursive: true }) as string[];
 const allowCallers = srcFiles
   .filter((f) => f.endsWith('.ts'))
-  .filter((f) => fs.readFileSync(path.join(ROOT, 'src', f), 'utf8').includes('workspaceGrants.allow('));
+  .filter((f) => stripComments(fs.readFileSync(path.join(ROOT, 'src', f), 'utf8')).includes('workspaceGrants.allow('));
 check('G13 放行表只有**一个**写入口（/workspace 命令）—— 模型自己开不了',
   allowCallers.length === 1 && allowCallers[0]!.replace(/\\/g, '/') === 'commands/builtin/workspace.ts',
   JSON.stringify(allowCallers));

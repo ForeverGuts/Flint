@@ -45,10 +45,14 @@
  * 命令解析自由文本，就完全不必碰 `tools/spec.ts` —— C2 对本条的阻塞与它对 10.8.1 的阻塞
  * 同型：**"这条要动 X"之前先问一句"它非得是工具吗"**。落点选对，代价凭空少一整块。
  *
- * ── 会话级，不落盘 ──
- * 放行表是**会话级**的（与 charterLock 同源）：一次放行不该放大成长期有效 ——
- * 落盘等于把"这次我同意"变成"以后每次都同意"，而那恰好是本条要防的那种静默失效。
- * 项目切换时**必须清空**（见 project-context.ts）：A 项目放行的目录不该跟到 B 上去。
+ * ── 内存表是会话级；"长期"要走显式 `--save`（ROADMAP 10.9.1）──
+ * 放行表本身仍然**只在内存、只活一次会话**（与 charterLock 同源）：一次随手放行不该
+ * 被放大成长期有效。用户确实要"长期信任某个目录"时，改走**显式**的
+ * `/workspace allow --save <目录>` —— 落盘那半边全在 `permission/grants.ts`，
+ * 本文件**刻意一个 fs 都不碰**（verify-workspace 的 G8 钉着这条）。
+ * 分工一句话：**默认只活一次会话，长期要用户说出口；说了就真长期。**
+ * 项目切换时仍**必须清空**（见 project-context.ts）—— 清完之后栽回来的是
+ * **B 自己**在盘上的那一份，不是 A 的（"凡在旧项目取得的许可都不跟着搬"照旧成立）。
  *
  * ── 已知边界（不装糊涂）──
  * · **符号链接 / junction 不追**：判据只做字符串路径代数，不碰 fs（目标文件可能还不存在，
@@ -141,6 +145,12 @@ export function isOutsideWorkspace(target: string, ctx: WorkspaceContext): boole
  *
  * 一处刻意的省略：字面量本身就等于解析结果时（绝大多数绝对路径）**不再重复印一遍** ——
  * 拼接放大型的噪音在本仓记过多次，能少印一行就少印一行。
+ *
+ * 另一处刻意的省略：**不在这里提 `--save`**（长期放行，ROADMAP 10.9.1）。这条拒因是递给
+ * **模型**的，而模型转述它的时刻恰好是用户"正被挡住、只想把挡路的东西挪开"的那一刻 ——
+ * 由模型主动提示一个"永久放行"的选项，等于把这个决定从用户手里挪进了模型的措辞里。
+ * 长期放行的发现路径应当是用户自己敲一句 `/workspace` 看到用法（那里写着 `--save`），
+ * 与"落盘不是默认、要用户说出口"是同一条取舍。
  */
 export function renderWorkspaceReason(target: string, ctx: WorkspaceContext): string {
   const abs = path.resolve(ctx.cwd, target);
@@ -153,7 +163,7 @@ export function renderWorkspaceReason(target: string, ctx: WorkspaceContext): st
     '  三条出路：',
     '    · 目标本来就在项目里 —— 多半是路径写错了（落到了兄弟目录或上级目录）。先用 ls 看清项目根在哪，再用项目内的相对路径写一次；',
     '    · 确实要写到项目外 —— 把"写哪个文件、为什么"讲给用户听，'
-      + '请他执行 /workspace allow <目录> 放行那个目录（本会话有效，含其子树）。'
+      + '请他执行 /workspace allow <目录> 放行那个目录（**仅本会话有效**，含其子树）。'
       + '这是**唯一**的开门动作，模型自己开不了；',
     '    · 只是要看外面的文件 —— 用 read。这道闸只管写。',
     '  （说明：这道闸只管 write / edit 的**目标路径参数**；bash 的目标藏在命令串里'
@@ -190,13 +200,17 @@ export function guardWorkspaceWrite(
 }
 
 /**
- * 外写放行表 —— 会话级单例（进程内），**永不落盘**。
+ * 外写放行表 —— 会话级单例（进程内）。**这张内存表本身永不落盘**：
+ * "长期"那一份在 `permission/grants.ts`（磁盘 → 播种时栽进来 → 到了这里仍然只是一张内存表）。
  *
  * 存的是"用户点过名的目录"（绝对路径）。放行一个目录 = 放行它**及其子树**，
  * 因为外写的真实用法是"往某个地方连着写几个文件"，逐文件放行会把体验做坏
  * （而体验坏了，用户就会去关闸 —— 那比漏拦更坏）。
  *
- * 只由用户经 `/workspace` 写入；项目切换时由 `seedProjectContext()` 清空。
+ * 写入口有两个，**可信度来源不同，所以刻意是两个方法**（别顺手合成一个）：
+ *   · `allow()` —— **用户开门**：唯一调用方是 `/workspace` 命令（verify-workspace 的 G13 钉着）；
+ *   · `fill()`  —— **播种**：把用户已经写在盘上的名单栽回内存，唯一调用方是
+ *                   `seedProjectContext()`，且它按"先清后栽"写成 `clear()` + `fill()`。
  */
 export const workspaceGrants = {
   dirs: [] as string[],
@@ -208,6 +222,21 @@ export const workspaceGrants = {
     return abs;
   },
 
+  /**
+   * 用一批目录**填充**放行表（**不**先清空 —— 清空是调用方显式的一步）。
+   *
+   * 刻意不自带清空的两个理由：
+   *   ① 与另三个 store 的 `reset()` + `loadFromFile()` 配成同一个形状，"先清后栽"在
+   *      调用点**看得见**；自带清空会让调用点只剩一步，"忘了清"这件事就再也看不出来了
+   *      （而症状是上一个项目放行的目录静默留着）。
+   *   ② 它与 `allow()` 的可信度来源不同（见上面那段块注释），合成一个方法之后
+   *      "到底谁在开门"就说不清了。
+   * 逐个走 `allow()` 而不是自己 push：归一化与去重只留一份实现。
+   */
+  fill(dirs: readonly string[], cwd: string = process.cwd()): void {
+    for (const d of dirs) this.allow(d, cwd);
+  },
+
   /** 当前放行的目录（副本 —— 调用方改它不该影响状态） */
   list(): string[] {
     return [...this.dirs];
@@ -215,7 +244,8 @@ export const workspaceGrants = {
 
   /**
    * 清空放行表。三个调用方**同一个动作**：用户敲 `/workspace clear`、
-   * 项目切换时复位（`seedProjectContext`）、验证脚本在用例之间擦干净单例状态。
+   * 播种时复位（`seedProjectContext`，**紧接着 `fill()` 栽回本项目自己的那一份**）、
+   * 验证脚本在用例之间擦干净单例状态。
    * 不另起 `reset()` 别名 —— 初始态就是空表，`clear` 已经把语义说完了。
    */
   clear(): void {

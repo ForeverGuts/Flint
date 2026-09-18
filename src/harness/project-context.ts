@@ -13,7 +13,7 @@
  *   eventStore      ← .flint/events.jsonl + .flint/tool-calls.jsonl（来龙去脉 + 流水索引）
  *   stackRegistry   ← 技术栈画像（存在性探测的语言 / 包管理器，ROADMAP 10.1.1）
  *   charterLock     ← 复位成**已锁**
- *   workspaceGrants ← 清空（工作区外写保护，ROADMAP 10.9.3）
+ *   workspaceGrants ← **先清后栽**：清空后填回**本项目自己的**盘上长期放行（10.9.3 建表 + 10.9.1 持久化）
  * 外加**通讯录登记**：按准入判据决定要不要写进 ~/.flint/projects.jsonl（见下）。
  *
  * ── 通讯录登记：保守准入 + 候选兜底（ROADMAP 10.11.6）──
@@ -51,6 +51,13 @@
  *   自动失效，不清就是真的跨项目带着走了。
  * 一句话：**凡在旧项目取得的许可都不跟着搬**。
  *
+ * ⚠ 10.9.1 之后这段多了一个**看起来像例外**的地方，先写清楚免得后人读错：
+ *   清完之后紧跟一句 `fill(persistedGrants(本项目键))` —— 栽回来的是 **B 自己**在
+ *   `~/.flint/permissions.json` 里的那一份（用户当初在 B 里 `--save` 过的），**不是 A 的**。
+ *   所以"不跟着搬"照旧成立：搬过来的从来不是旧项目的许可，而是新项目自己的。
+ *   而 `persistedGrants` 背后是**进程内只读一次**的快照（见 permission/grants.ts 承重①），
+ *   于是切换这边**不产生第二次磁盘读**，运行期改那个文件也一点用没有。
+ *
  * ── 刻意不做的两件（边界，不装糊涂）──
  *   ① **不读** `.flint/postcheck.json`，它**本身就是授权书**（"声明即授权"的登记表）。
  *      `package.json` 自 10.1.1 起**分两种读法**（原文写的是"不读 package.json"，
@@ -76,6 +83,7 @@ import { CALLS_FILE, EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { normalizeProjectPath, projectRegistry } from '../eventlog/registry.js';
 import { charterLock } from '../project/charter.js';
 import { workspaceGrants } from '../permission/workspace.js';
+import { persistedGrants } from '../permission/grants.js';
 import { classifyProject, probeStack } from '../project/probe.js';
 import { detectStack, stackRegistry } from '../project/stack.js';
 import type { ProjectVerdict } from '../project/detect.js';
@@ -161,7 +169,12 @@ export function seedProjectContext(opts: SeedOptions = {}): ProjectContextReport
   // 外写放行表**同样不跨项目继承**（ROADMAP 10.9.3）：A 项目里放行的目录不该让模型
   // 顺手写到 B 项目外面去。两者同型 —— 都是"用户在某个项目上给的许可"，
   // 而**凡在旧项目取得的许可都不跟着搬**（启动与切换共用本函数，故一处清干净两处都对）。
+  //
+  // 10.9.1 起"清"后面多栽一步：把**本项目自己**盘上的长期放行目录填回来（用户 `--save` 过的）。
+  // 与另三个 store 的 `reset()` + `loadFromFile()` 是同一个形状，所以这里刻意写成两步 ——
+  // 合成一个方法之后"有没有先清"就再也看不出来了，而漏清的症状恰好是静默的（见 workspace.ts）。
   workspaceGrants.clear();
+  workspaceGrants.fill(persistedGrants(normalizeProjectPath(process.cwd())));
 
   // 通讯录登记（按准入判据；判据判不出来的走显式通道）—— 装配点见 registerProject。
   const verdict = registerProject(opts.register ?? 'auto');
