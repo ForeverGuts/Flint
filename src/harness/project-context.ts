@@ -7,12 +7,13 @@
  *         两份实现不会同时错，只会**各错一半**（启动装了四样、切换忘了第三样），
  *         而"少装一样"的症状是**看着一切正常**——用的是上一个项目的数据。
  *
- * 装进来的是五样（都是**进程级单例**，所以只能由一处统一负责）：
- *   taskStore     ← TASK.md（清单的投影 + 跨重启种子）
- *   memoryStore   ← .flint/memory.md（跨会话结论）
- *   eventStore    ← .flint/events.jsonl + .flint/tool-calls.jsonl（来龙去脉 + 流水索引）
- *   stackRegistry ← 技术栈画像（存在性探测的语言 / 包管理器，ROADMAP 10.1.1）
- *   charterLock   ← 复位成**已锁**
+ * 装进来的是六样（都是**进程级单例**，所以只能由一处统一负责）：
+ *   taskStore       ← TASK.md（清单的投影 + 跨重启种子）
+ *   memoryStore     ← .flint/memory.md（跨会话结论）
+ *   eventStore      ← .flint/events.jsonl + .flint/tool-calls.jsonl（来龙去脉 + 流水索引）
+ *   stackRegistry   ← 技术栈画像（存在性探测的语言 / 包管理器，ROADMAP 10.1.1）
+ *   charterLock     ← 复位成**已锁**
+ *   workspaceGrants ← 清空（工作区外写保护，ROADMAP 10.9.3）
  * 外加**通讯录登记**：按准入判据决定要不要写进 ~/.flint/projects.jsonl（见下）。
  *
  * ── 通讯录登记：保守准入 + 候选兜底（ROADMAP 10.11.6）──
@@ -37,10 +38,18 @@
  * 项目的状态**：直接 load 会把 A 的清单、A 的记忆、A 的事件留在 B 里，而且一路无提示。
  * 故切换方必须显式 reset()；本函数把「reset + load」配成一对，调用方不必记住这条。
  *
- * ── 契约锁为什么要复位（而不是继承）──
- * `charterLock` 是**会话级**开关，挡的是"改当前项目的 .flint/CHARTER.md"。切换后
- * `guardContractWrite` 会把目标路径按**新 cwd** 解析，于是 A 的解锁状态会直接变成
- * "有权限改 B 的目标文档"——一次解锁被搬到另一个项目上，正是契约锁最不该有的行为。
+ * ── 两处"许可"为什么要复位（而不是继承）──
+ * 两者同型，都是**用户在某个项目上给的许可**，答案都是"不跟着搬"：
+ *
+ * · `charterLock` 是**会话级**开关，挡的是"改当前项目的 .flint/CHARTER.md"。切换后
+ *   `guardContractWrite` 会把目标路径按**新 cwd** 解析，于是 A 的解锁状态会直接变成
+ *   "有权限改 B 的目标文档"——一次解锁被搬到另一个项目上，正是契约锁最不该有的行为。
+ * · `workspaceGrants` 是**会话级**的外写放行表（ROADMAP 10.9.3），挡的是"写当前项目之外"。
+ *   切换后 `guardWorkspaceWrite` 同样按新 cwd 判定，于是"我在 A 里放行过 D:\shared"
+ *   这条许可会让模型顺手写到 **B 项目外面**去 —— 与上面那条一字不差的同一个错。
+ *   放行表里存的是**绝对路径**，所以它比契约锁更需要清：它不会像"相对 cwd 的路径"那样
+ *   自动失效，不清就是真的跨项目带着走了。
+ * 一句话：**凡在旧项目取得的许可都不跟着搬**。
  *
  * ── 刻意不做的两件（边界，不装糊涂）──
  *   ① **不读** `.flint/postcheck.json`，它**本身就是授权书**（"声明即授权"的登记表）。
@@ -66,6 +75,7 @@ import { MEMORY_FILE, memoryStore } from '../memory/store.js';
 import { CALLS_FILE, EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { normalizeProjectPath, projectRegistry } from '../eventlog/registry.js';
 import { charterLock } from '../project/charter.js';
+import { workspaceGrants } from '../permission/workspace.js';
 import { classifyProject, probeStack } from '../project/probe.js';
 import { detectStack, stackRegistry } from '../project/stack.js';
 import type { ProjectVerdict } from '../project/detect.js';
@@ -147,6 +157,11 @@ export function seedProjectContext(opts: SeedOptions = {}): ProjectContextReport
 
   // 目标文档的锁**不跨项目继承**：新项目一律从"已锁"开始（要改就再 /charter unlock）。
   charterLock.lock();
+
+  // 外写放行表**同样不跨项目继承**（ROADMAP 10.9.3）：A 项目里放行的目录不该让模型
+  // 顺手写到 B 项目外面去。两者同型 —— 都是"用户在某个项目上给的许可"，
+  // 而**凡在旧项目取得的许可都不跟着搬**（启动与切换共用本函数，故一处清干净两处都对）。
+  workspaceGrants.clear();
 
   // 通讯录登记（按准入判据；判据判不出来的走显式通道）—— 装配点见 registerProject。
   const verdict = registerProject(opts.register ?? 'auto');

@@ -65,8 +65,12 @@
 │ permission/       PermissionManager（授权键内存 Set）· danger.ts **危险命令拦截**（`before_tool_call` 的第二道闸）
 │                   ——按命令串**字面形态**拦三类不可逆灾难（删整棵树 / 写裸设备 / 关机重启与 fork 炸弹）；
 │                     **只有 L1、没有 L2**（删除不可逆，事后无从比对回滚），故判据刻意窄、**是护栏不是沙箱**
+│                   · workspace.ts **工作区外写保护**（10.9.3，`before_tool_call` 的**第三道闸**）
+│                   ——默认只许写 cwd 之内，判据 `isUnder` / `isOutsideWorkspace`（**`path.relative` 不是字符串前缀**）；
+│                     只认 write / edit（**`bash` 刻意排除**：读写形状无异）；开门只走用户手打的 `/workspace allow <目录>`
+│                     （**授权表与 PermissionManager 分开** —— 权限弹窗在非 TTY / RPC 下自动放行）；授权含子树不向上不向旁、切项目清空
 │ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
-│ commands/         CommandServiceImpl + 14 个内置命令（含 /memory /events /charter /projects）
+│ commands/         CommandServiceImpl + 15 个内置命令（含 /memory /events /charter /projects /workspace）
 │ diagnostics/      DiagnosticsServiceImpl
 │ config/           ConfigManager（配置分层 + 供应商注册表 + 模型列表预热/新鲜期）
 │ llm/              createProvider() 工厂 → AnthropicProvider（provider === 'anthropic'）

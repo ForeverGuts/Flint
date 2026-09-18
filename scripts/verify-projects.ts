@@ -21,10 +21,11 @@
  *   ⑦ 切换回执 —— 目标 / 会话 / 四个计数 / 上一项目名 / 两条边界（授权类配置 + 顶栏快照）
  *   ⑧ 真切换端到端 —— 临时项目目录 + **真** Runtime + **真** JsonlSessionRepo：
  *      换上下文（三个 store）、换会话（**并且 A 的会话文件一字未动**）、契约锁回锁、
- *      授权类配置被清空、幂等、未知名、目录不存在、目录是个文件、会话那步失败时**回滚 cwd**
+ *      **外写放行表清空**（10.9.3）、授权类配置被清空、幂等、未知名、目录不存在、
+ *      目录是个文件、会话那步失败时**回滚 cwd**
  *   ⑨ 源码守护 —— projects.ts 零 import；命令层不碰 io/ 与授权类配置文件；
  *      `seedProjectContext` 的**唯一实现 + 调用点只有启动与切换**（模型路径碰不到）；
- *      "先清后栽"（reset 与 loadFromFile 成对）
+ *      "先清后栽"（reset 与 loadFromFile 成对）；两处"许可"（契约锁 / 外写放行表）都在播种时复位
  *
  * 运行：node node_modules/tsx/dist/cli.mjs scripts/verify-projects.ts
  *      （npm run verify 会自动发现本文件，无需登记）
@@ -47,6 +48,7 @@ import { taskStore } from '../src/todo/store.js';
 import { memoryStore } from '../src/memory/store.js';
 import { eventStore } from '../src/eventlog/store.js';
 import { charterLock } from '../src/project/charter.js';
+import { workspaceGrants } from '../src/permission/workspace.js';
 import { commandRegistry } from '../src/project/commands.js';
 import { normalizeProjectPath } from '../src/eventlog/registry.js';
 import { postcheckBaseline, postcheckRegistry } from '../src/project/postcheck.js';
@@ -405,6 +407,9 @@ try {
 
   // 契约锁先解开 —— 它**不许**跨项目继承
   charterLock.unlock();
+  // 外写放行表先塞上（ROADMAP 10.9.3）—— 它同样**不许**跨项目继承。
+  // 存的是绝对路径，所以不清就是真的带着走（不会像"相对 cwd 的路径"那样自动失效）。
+  workspaceGrants.allow(alpha);
   // 授权类配置先塞上 —— 切换后必须被**清空**（而不是重读）
   commandRegistry.set([{ name: 'verify', run: 'npm run verify', script: 'node x.mjs', kind: 'verify' }]);
   postcheckRegistry.set({ commands: [{ command: 'npm run verify', timeoutMs: 1000 }] });
@@ -435,6 +440,8 @@ try {
     && fs.statSync(alphaSessionFile).mtimeMs === alphaMtime);
 
   check('H12 契约锁不跨项目继承（A 的解锁不许让 B 的目标文档白送）', !charterLock.isUnlocked());
+  check('H12b 外写放行表不跨项目继承（在 A 里放行的目录，不许让模型顺手写到 B 外面去）',
+    workspaceGrants.list().length === 0, JSON.stringify(workspaceGrants.list()));
 
   check('H13 授权类配置被**清空**（不是重读）：命令表 / 登记表 / 基线三样都空',
     commandRegistry.get().length === 0 && postcheckRegistry.get() === null && postcheckBaseline.get() === null);
@@ -593,6 +600,8 @@ check('I5 切换时显式清空授权类配置（不清 = 注入了 A 的命令�
     && body.includes('eventStore.loadCallsFile(CALLS_FILE)'));
 }
 check('I7 契约锁在播种时复位（不跨项目继承）', stripComments(seedSrc).includes('charterLock.lock()'));
+check('I8 外写放行表在播种时清空（同上，10.9.3）',
+  stripComments(seedSrc).includes('workspaceGrants.clear()'));
 
 {
   // "只在启动读一次"的**新表述**：读取点在 project-context 那边是唯一的，
