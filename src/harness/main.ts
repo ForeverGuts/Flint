@@ -32,6 +32,7 @@ import { CALLS_FILE, eventStore } from '../eventlog/store.js';
 import { seedProjectContext } from './project-context.js';
 import { atFileInputHandler } from '../input/probe.js';import { renderRegistrationNote } from '../project/projects.js';
 import { charterLock, guardContractWrite } from '../project/charter.js';
+import { guardDangerousCommand } from '../permission/danger.js';
 import { routeBashGitRead } from '../git/route.js';
 import {
   POSTCHECK_FILE,
@@ -183,9 +184,14 @@ export async function main(checkResult: CheckResult): Promise<void> {
     // ① 安全闸：契约锁。完备性要求高（漏一次 = 目标被偷改），故排在前面、命中即返回。
     const contract = guardContractWrite(toolName, e.args, charterLock.isUnlocked());
     if (contract) return contract;
-    // ② 引导闸（**路由器**，不是闸）：bash 里的裸 git 只读命令 → 零弹窗的结构化 git 工具。
-    //    判据刻意窄（只认裸形式），漏掉只是"照旧走 bash"，因此没有完备性负担，可与①同栖一个钩子。
-    //    两者共用"拦在权限弹窗之前"这个位置：被路由的调用不会让用户看到弹窗（ROADMAP 10.5.6）。
+    // ② 安全闸：危险命令（ROADMAP 10.9.2）。**只有 L1、没有 L2** ——
+    //    删除不可逆，事后没有东西可以比对、可以回滚（对照①有两层）。判据窄、边界写在 danger.ts 头注。
+    //    排在①之后：契约闸的判据更窄更确定（字面文件名），先让它给出更具体的解锁指引。
+    const danger = guardDangerousCommand(toolName, e.args);
+    if (danger) return danger;
+    // ③ 引导闸（**路由器**，不是闸）：bash 里的裸 git 只读命令 → 零弹窗的结构化 git 工具。
+    //    判据刻意窄（只认裸形式），漏掉只是"照旧走 bash"，因此没有完备性负担，可与①②同栖一个钩子。
+    //    三者共用"拦在权限弹窗之前"这个位置：被路由的调用不会让用户看到弹窗（ROADMAP 10.5.6）。
     //    为什么不靠描述文字引导：模型选通道看的是描述，而描述是**软约束**（强度 = 模型听不听话），
     //    这条线由程序在工具调用处判定，不依赖模型自觉。详见 src/git/route.ts 头注。
     return routeBashGitRead(toolName, e.args);
