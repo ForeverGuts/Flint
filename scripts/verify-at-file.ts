@@ -9,9 +9,10 @@
  * 三类都不是异常，所以只能靠断言钉住。
  *
  * 验什么（手段与行为分开钉）：
- *   ① 识别（判据第一节：位置 + 形状）—— 邮箱 / 数字前缀 / 中文标点 / 收尾标点 / 转义 / 下标
+ *   ① 识别（判据第一节：位置 + 形状）—— 邮箱 / 数字前缀 / 中文标点 / 收尾标点 / 转义 / 下标 /
+ *      **引号包裹的路径**（Windows 给带空格的路径加引号）/ **拖入的裸绝对路径**（相对路径必须不认）
  *   ② 组装（纯函数喂合成事实）—— 占位符 / 附件块形态 / fail-open / 去重 / 两种上限 /
- *      **空行只该有一个**（真跑才发现的那个回归）
+ *      **空行只该有一个**（真跑才发现的那个回归）/ **拖入形态（整条输入一个 `@` 都没有）也要能替换**
  *   ③ 转义 `@@`
  *   ④ 探针（真目录真文件）—— 统计 / 目录 / 二进制 / 太大两档 / BOM / **不递归**
  *   ⑤ 源码守护 —— 判据零 import、不碰 fs 不起进程、探针是唯一碰 fs 处、main.ts 真接线
@@ -39,6 +40,7 @@ import {
   AT_MAX_TOTAL_BYTES,
   composeAtFile,
   formatBytes,
+  looksLikeAbsPath,
   looksLikePath,
   parseAtCandidates,
   type AtProbe,
@@ -110,13 +112,63 @@ check('A13 只有收尾标点、剥完为空 → 不产生候选', paths('@...')
 
 check('A14 下标可回切原文（start/end 与 raw 一致）', (() => {
   const text = '看看 @src/a.ts 这段';
-  const c = parseAtCandidates(text)[0]!;
-  return text.slice(c.start, c.end) === c.raw && c.raw === '@src/a.ts';
+  // ⚠ 用 `?.` 而不是 `[0]!`：判据一旦不再产出候选，`[0]!` 会让**整个套件崩在这里** ——
+  //    红是红了，但红得不干净（后面几十条根本没跑，变异脚本只能报"未命中预期"）。
+  //    断言应当"红得整齐"：缺候选就这一条 ❌，其余照常跑完。
+  const c = parseAtCandidates(text)[0];
+  return text.slice(c?.start, c?.end) === c?.raw && c?.raw === '@src/a.ts';
 })());
 
 check('A15 形状判据：含 / \\ . 才算"像路径"',
   looksLikePath('src/a.ts') && looksLikePath('a/b') && looksLikePath('a\\b') && looksLikePath('a.ts')
   && !looksLikePath('Component') && !looksLikePath('src'));
+
+/* ── 引号包裹的路径（Windows 拖入 / 粘贴给带空格的路径加引号）── */
+
+check('A16 双引号里的路径**连着空格一起读**（引号让空格不再是断句符）；引号内两侧空白被 trim',
+  paths('看 @"C:\\a b\\c.ts" 这段').join() === 'C:\\a b\\c.ts'
+  && paths('看 @" C:\\a b\\c.ts " 这段').join() === 'C:\\a b\\c.ts');
+check('A17 单引号也认（PowerShell / POSIX shell 给的形式）',
+  paths("看 @'C:\\a b\\c.ts' 这段").join() === 'C:\\a b\\c.ts');
+check('A18 引号**算进替换范围**（正文里要连引号一起换成占位符，不留孤零零的引号）', (() => {
+  const text = '看 @"C:\\a b\\c.ts" 这段';
+  const c = parseAtCandidates(text)[0];      // `?.` 同上：缺候选时只该这一条红
+  return text.slice(c?.start, c?.end) === c?.raw && c?.raw === '@"C:\\a b\\c.ts"';
+})());
+check('A19 引号**没闭合**（打字打到一半）→ 退化成"读到空白为止"并丢掉开头那个引号',
+  paths('看 @"C:\\a b\\c.ts 这段').join() === 'C:\\a');
+check('A20 空引号 `@""` 不产生候选', paths('看 @"" 这段').length === 0);
+check('A21 引号短语**两条通路的闸在不同阶段**：`@` 通路会先认下来（形状闸在组装段 → 没读到就静默，'
++ '见 B28），裸通路在识别段就挡住（它没有"用户主动点名"这个前提，只能靠形状）',
+  paths('他说 @"hello world" 这句').join() === 'hello world'
+  && paths('他说 "hello world" 这句').length === 0);
+
+/* ── 拖入的裸绝对路径（前面没有 `@`）── */
+
+check('A22 裸盘符路径 → 是候选（拖入的主要形态）',
+  paths('看看 C:\\proj\\a.ts 这段').join() === 'C:\\proj\\a.ts');
+check('A23 裸 UNC（`\\\\server\\share`）与裸 POSIX 根（`/var/log/x`）都认',
+  paths('看 \\\\srv\\share\\a.ts 和 /var/log/a.log').join() === '\\\\srv\\share\\a.ts,/var/log/a.log');
+check('A24 裸**相对路径不认** —— 这条取舍是整条判据的关键（正文里提相对路径是常见行文，认了会凭空多附件）',
+  paths('看看 src/a.ts 写错了没，还有 ./b.ts 和 c.ts').length === 0);
+check('A25 裸路径的位置判据：紧跟在词字符后不认（`abcC:\\a.ts` 不是拖入）',
+  paths('abcC:\\a.ts').length === 0 && paths('（C:\\a.ts）').join() === 'C:\\a.ts');
+check('A26 `@@` 也护得住裸路径（位置判据把"前面是 `@`"挡在外，同一条性质）',
+  paths('@@C:\\a.ts').length === 0 && paths('@@src/a.ts').length === 0);
+check('A27 收尾标点在两种形态下都剥掉路径、且**替换范围**口径不同：裸路径把标点留在正文里，'
++ '引号形态连标点带引号一起吃（否则正文会剩一个孤零零的引号）', (() => {
+  const bare = '看 C:\\a\\b.ts.';
+  const c1 = parseAtCandidates(bare)[0];      // `?.` 同上
+  const quoted = '看 @"C:\\a b.ts." 这段';
+  const c2 = parseAtCandidates(quoted)[0];
+  return c1?.path === 'C:\\a\\b.ts' && bare.slice(c1.start, c1.end) === 'C:\\a\\b.ts'
+    && c2?.path === 'C:\\a b.ts' && quoted.slice(c2.start, c2.end) === '@"C:\\a b.ts."';
+})());
+check('A28 `looksLikeAbsPath` 正反两组：盘符 / UNC / POSIX 真，相对路径与裸文件名假',
+  looksLikeAbsPath('C:\\a.ts') && looksLikeAbsPath('c:/a.ts') && looksLikeAbsPath('\\\\srv\\s\\a.ts')
+  && looksLikeAbsPath('/var/a.log')
+  && !looksLikeAbsPath('src/a.ts') && !looksLikeAbsPath('./a.ts') && !looksLikeAbsPath('a.ts')
+  && !looksLikeAbsPath('looks.like/path'));
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    ② 组装：纯函数喂合成事实
@@ -197,6 +249,49 @@ check('B20 无候选 → 文本**逐字**不变且 changed=false', none.changed 
 const mismatch = composeAtFile('看看 @src/a.ts', parseAtCandidates('看看 @src/a.ts'), []);
 check('B21 探针少给一格（数组错位）→ 当"没读到"处理，不抛、不错位',
   mismatch.changed === true && mismatch.text.includes('【没读到的引用】'));
+
+/* ── 拖入形态（裸绝对路径）：整条输入一个 `@` 都没有 ── */
+
+const drag = withFacts('看看 C:\\proj\\a.ts 这段', [okProbe('C:\\proj\\a.ts', 'DRAG')]);
+check('B22 拖入 → 路径换成占位符、附件进块、changed=true（整条输入里本来一个 `@` 都没有）',
+  drag.changed && drag.text.startsWith('看看 [引用 1：C:\\proj\\a.ts] 这段')
+  && drag.text.includes('引用 1/1：C:\\proj\\a.ts') && drag.text.includes(AT_HEADER));
+
+check('B23 拖入失败 → 报「没读到」，且报的是**原文**（不凭空给它补一个 `@`）', (() => {
+  const o = withFacts('看看 C:\\proj\\nope.ts 这段', [missProbe('C:\\proj\\nope.ts')]);
+  return o.text.includes('- C:\\proj\\nope.ts：找不到这个路径') && o.text.includes('@') === false;
+})());
+
+check('B24 带引号的引用被替换时**连引号一起吃掉**（正文里不留孤零零的引号）', (() => {
+  const o = withFacts('看 "C:\\p\\a b.ts" 这段', [okProbe('C:\\p\\a b.ts', 'X')]);
+  return o.text.split('\n\n')[0] === '看 [引用 1：C:\\p\\a b.ts] 这段';
+})());
+
+check('B25 `@` 与拖入指向同一文件 → 去重成一个附件，两处占位符同号', (() => {
+  const text = '看 C:\\p\\a.ts 和 @C:/p/a.ts 这两处';
+  const o = composeAtFile(text, parseAtCandidates(text), [
+    okProbe('C:\\p\\a.ts', 'A', { resolved: 'C:\\p\\a.ts' }),
+    okProbe('C:/p/a.ts', 'A', { resolved: 'C:\\p\\a.ts' }),   // 原文不同、解析后同一个文件
+  ]);
+  return (o.text.match(/引用 1\/1/g) ?? []).length === 1
+    && (o.text.match(/\[引用 1：/g) ?? []).length === 2;
+})());
+
+check('B26 拖入与 `@` 混用 → 编号按出现顺序（拖入的也可以是 1 号）', (() => {
+  const text = '看 C:\\p\\a.ts 和 @src/b.ts';
+  const o = composeAtFile(text, parseAtCandidates(text), [okProbe('C:\\p\\a.ts', 'A'), okProbe('src/b.ts', 'B')]);
+  return o.text.startsWith('看 [引用 1：C:\\p\\a.ts] 和 [引用 2：src/b.ts]');
+})());
+
+check('B27 拖入一个**目录**（探针说"这是个目录"）→ 不进块、不占编号，但**要报**（拖入的失败不能静默）', (() => {
+  const o = withFacts('看 C:\\proj\\sub 这段', [missProbe('C:\\proj\\sub', '这是个目录，不是文件（要列目录请用 ls）')]);
+  return o.text.includes('【没读到的引用】') && o.text.includes('这是个目录')
+    && o.text.includes('[引用 1：') === false;
+})());
+
+check('B28 引号里不是路径（`@"hello world"`）→ 读不到也**静默**：整句逐字不动（形状闸对引号形态同样成立）',
+  (() => { const o = withFacts('他说 @"hello world" 这句', [missProbe('hello world')]);
+    return o.changed === false && o.text === '他说 @"hello world" 这句'; })());
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    ③ 转义 `@@`
@@ -290,6 +385,26 @@ try {
   const noAt = resolveAtFile('完全没有引用的输入', tmp);
   check('D12 输入不含 @ → 不碰 fs、原样返回（C9：不进启动关键路径，也不在无关输入上花 IO）',
     noAt.changed === false && noAt.text === '完全没有引用的输入');
+
+  /* ── 拖入形态走真文件（带空格的路径要真带上引号才能读）── */
+
+  const spaced = path.join(tmp, 'drag probe.ts');
+  fs.writeFileSync(spaced, 'DRAGSPACE\n第二行');
+
+  const quoted = resolveAtFile(`看 @"${spaced}" 这段`, tmp);
+  check('D13 真·带空格的文件 + 引号（拖入形态）→ 读到内容；标题里是**干净的路径**，正文不留引号',
+    quoted.text.includes('DRAGSPACE') && quoted.text.includes('引用 1/1：')
+    && quoted.text.startsWith('看 [引用 1：') && quoted.text.includes('drag probe.ts] 这段')
+    && quoted.text.includes('"] 这段') === false, quoted.text.split('\n')[0]);
+
+  const bareReal = resolveAtFile(`看 ${path.join(tmp, 'sub', 'a.ts')} 这段`, tmp);
+  check('D14 真·拖入（裸绝对路径、整条输入一个 `@` 都没有）→ 也读到内容'
+  + '（这条同时是"短路只看 `@`"那个坑的回归）',
+    bareReal.text.includes('line1\nline2\nline3') && bareReal.text.startsWith('看 [引用 1：'));
+
+  const bareDir = resolveAtFile(`看 ${path.join(tmp, 'sub')} 这个目录`, tmp);
+  check('D15 拖入一个目录 → 报"这是个目录"（拖入的失败**看得见**，不静默吞掉）',
+    bareDir.text.includes('【没读到的引用】') && bareDir.text.includes('这是个目录'));
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
@@ -324,9 +439,24 @@ check('E8 用户可见文案里没有"模板串被反引号截断"的隐患：�
   AT_HEADER.includes('`') === false);
 check(`E9 个数上限**钉在 5**（它是写进 DECISION_LOG 的策略数，不能被子类改常量悄悄放大）`,
   AT_MAX_REFS === 5, String(AT_MAX_REFS));
+// ⚠ 下面两条是**手段类**断言（钉结构不钉行为），共用一段"识别段函数体"的切片。
+//   行为侧的对应断言是 A14/A16~A28（识别）与 B22~B27（组装）。
+const parseBody = srcJudge.slice(
+  srcJudge.indexOf('export function parseAtCandidates'),
+  srcJudge.indexOf('export function looksLikePath'),
+);
+
+// ⚠ E10 原来写成"匹配整条语句"的正则（`if (text[i + 1] === '@') { i++; continue; }`）——
+//   变异测试**照绿穿过去了**：那次变异把条件并成 `if (text[i] === '@' && text[i + 1] === '@')`，
+//   语句整体变了样，正则认不出来。这类断言全部要问一句"换一种等价写法还认不认"。
+//   所以改成宽式：**识别段里不许出现任何"看下一个字符是不是 `@`"的动作** —— 因为 `@@` 的安全性
+//   由"`@` 在 STOP 里 + `@` 不在 BEFORE_OK 里"推导得来，一旦有人开始往后看，那两条就没人守了。
 check('E10 `@@` 的安全性来自"位置判据 + `@` 在 STOP 里"，**不来自**识别段里某个专门分支'
-  + '（变异证明那条分支是死代码，已删）',
-  /if \(text\[i \+ 1\] === '@'\) \{ i\+\+; continue; \}/.test(srcJudge) === false);
++ '（变异证明那条分支是死代码，已删；断言写成宽式，免得换个写法就穿过去）',
+  /\btext\s*\[\s*i\s*\+\s*1\s*\]\s*===\s*'@'/.test(parseBody) === false);
+
+check('E11 两条通路（`@` 与裸路径）共用同一份收路径实现：识别段里不该再出现 STOP / TRAILING_JUNK 的直接使用',
+  parseBody.includes('takePath(') && !parseBody.includes('STOP') && !parseBody.includes('TRAILING_JUNK'));
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    ⑥ 行为证明：真 Runtime、真 onInput 链路
@@ -398,6 +528,17 @@ try {
   await rt4.prompt('看 @target.ts');
   check('F5b 换了 cwd 之后**立刻按新目录判**（证明没把 cwd 抓死在闭包里）',
     seen4.includes('export const TARGET = 1;') === false && seen4.includes('@target.ts'));
+
+  // F6：拖入形态（整条输入一个 `@` 都没有）也要真的走到附件 ——
+  //     这条是"短路只看 `@`"那个坑的行为侧回归：判据写错时纯函数侧一片绿，只有真链路照得出来。
+  const rt5 = makeRuntime();
+  let seen5 = '(没跑到)';
+  rt5.onInput(atFileInputHandler(() => dir2));
+  rt5.onInput((text) => { seen5 = text; return { action: 'handled' }; });
+  await rt5.prompt(`看 ${path.join(dir2, 'target.ts')} 这段`);
+  check('F6 真 Runtime：拖入形态（无 `@`）也注入附件，且正文里是它换来的占位符',
+    seen5.includes('export const TARGET = 1;') && seen5.includes(AT_HEADER)
+    && seen5.startsWith('看 [引用 1：'), seen5.slice(0, 60));
 } finally {
   fs.rmSync(dir2, { recursive: true, force: true });
 }
