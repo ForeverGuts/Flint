@@ -72,6 +72,11 @@
 │                   · grants.ts **工作区授权持久化**（10.9.1 落地前半）—— `/workspace allow --save` 之后重启仍生效，
 │                     落盘 `~/.flint/permissions.json`（按项目键分区）；**读一次**（启动读进内存快照 → 运行期不读盘，
 │                     掐掉"模型改文件给自己发授权"那条通路）· **读不懂当没有**且**拒写**（免得抹掉别的项目条目）· **写失败报出来**
+│                   · audit.ts **审计留痕的统一落点**（10.9.4）—— 拦下 / 拒绝 / 放行 / 收回四类**边界决定**各落一条进
+│                     `events.jsonl`（`kind=system`、`tags` 带 `audit`，**不新开文件**）；三个调用方（钩子链 / `askPermission` /
+│                     `/workspace` 命令）各只剩一行，闸名·标签·截断只有一份定义。**只记边界决定**（正常调用流水已全量记，
+│                     再记是双份噪音）· **拉通道**（**刻意不注入提示词**：被审计的一方若实时看到自己被拦了几次，留痕就成了
+│                     行为训练信号）· **落盘失败静默**（旁路不许反噬主流程），但授权类失败如实写进 `reason`（谎报比漏记更坏）
 │ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
 │ commands/         CommandServiceImpl + 15 个内置命令（含 /memory /events /charter /projects /workspace）
 │ diagnostics/      DiagnosticsServiceImpl

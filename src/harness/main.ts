@@ -34,7 +34,9 @@ import { atFileInputHandler } from '../input/probe.js';import { renderRegistrati
 import { charterLock, guardContractWrite } from '../project/charter.js';
 import { guardDangerousCommand } from '../permission/danger.js';
 import { guardWorkspaceWrite } from '../permission/workspace.js';
+import { recordGateDeny } from '../permission/audit.js';
 import { routeBashGitRead } from '../git/route.js';
+import type { HookDeny } from '../loop/tool-hooks.js';
 import {
   POSTCHECK_FILE,
   parsePostcheckConfig,
@@ -66,6 +68,60 @@ interface CreateRuntimeOptions {
 
 interface CreateRuntimeResult {
   runtime: Runtime;
+}
+
+/**
+ * 核心钩子链（`before_tool_call`）的**唯一实现**。
+ *
+ * 为什么抽成独立函数：它此前只活在 `main()` 的闭包里，于是"四道闸的实际次序""是谁拒的"
+ * "审计记了什么"这三件事**只能靠读 main.ts 的源码文本**来钉（文本断言既不懂语义、又容易
+ * 被重排骗过）。抽出来之后套件能拿真事件喂它、逐条打靶，而**行为一字未变**：判据全是纯函数，
+ * `charterUnlocked` 由参数注入（原来读 `charterLock` 单例），这里没有进程级状态，可以反复调用。
+ *
+ * ⚠ 四道闸的**书写顺序 = 执行顺序**（命中即返回），这个顺序本身就是设计：判据更窄更确定的
+ *   排前面，先让它们给出更具体的理由。既有套件（verify-danger G3）钉着这个文本顺序 ——
+ *   重排之前先想清楚为什么这么排。
+ *
+ * 审计落点就在这里（ROADMAP 10.9.4）：**命中即记一条再原样返回**。落点选在链上而不是
+ * `agent-loop`，是因为只有这里知道"是哪一道闸拒的"（loop 那边只拿到一句 reason 文本）。
+ */
+export function coreBeforeToolCall(event: unknown, charterUnlocked: boolean): HookDeny | undefined {
+  const e = event as { name?: unknown; args?: unknown };
+  // 空串直接传给闸（fail-open 口径各自负责）；"显示成 (未知工具)" 是审计侧的事，
+  // 不许反过来改判据看到的值 —— 两件事各归各。
+  const toolName = typeof e.name === 'string' ? e.name : '';
+
+  /** 命中即记审计、再原样返回拒绝结果（记什么 / 为什么这么记，见 permission/audit.ts 头注） */
+  const deny = (source: string, tag: string, d: HookDeny): HookDeny => {
+    recordGateDeny({ source, tag, toolName, args: e.args, reason: d.reason });
+    return d;
+  };
+
+  // ① 安全闸：契约锁。完备性要求高（漏一次 = 目标被偷改），故排在前面、命中即返回。
+  const contract = guardContractWrite(toolName, e.args, charterUnlocked);
+  if (contract) return deny('契约锁', 'charter', contract);
+  // ② 安全闸：危险命令（ROADMAP 10.9.2）。**只有 L1、没有 L2** ——
+  //    删除不可逆，事后没有东西可以比对、可以回滚（对照①有两层）。判据窄、边界写在 danger.ts 头注。
+  //    排在①之后：契约闸的判据更窄更确定（字面文件名），先让它给出更具体的解锁指引。
+  const danger = guardDangerousCommand(toolName, e.args);
+  if (danger) return deny('危险命令', 'danger', danger);
+  // ③ 边界闸：工作区外写保护（ROADMAP 10.9.3）。write / edit 的**目标路径**落在 cwd
+  //    之外 → 拒。只有 L1（外写是效果、事后没有基线可比对，同②）。放行只能由用户敲
+  //    `/workspace allow <目录>`——刻意不接权限子系统：非 TTY 下弹窗自动放行会让边界静默失效。
+  //    排在②之后：前两道判据更窄更确定（字面文件名 / 灾难形态），先让它们给出更具体的理由。
+  //    只认 write/edit：bash 的目标路径与读写语义判不出来，刻意不进（边界写在 workspace.ts 头注）。
+  const workspace = guardWorkspaceWrite(toolName, e.args);
+  if (workspace) return deny('工作区外写', 'workspace', workspace);
+  // ④ 引导闸（**路由器**，不是闸）：bash 里的裸 git 只读命令 → 零弹窗的结构化 git 工具。
+  //    判据刻意窄（只认裸形式），漏掉只是"照旧走 bash"，因此没有完备性负担，可与①②③同栖一个钩子。
+  //    三/四个闸共用"拦在权限弹窗之前"这个位置：被路由的调用不会让用户看到弹窗（ROADMAP 10.5.6）。
+  //    为什么不靠描述文字引导：模型选通道看的是描述，而描述是**软约束**（强度 = 模型听不听话），
+  //    这条线由程序在工具调用处判定，不依赖模型自觉。详见 src/git/route.ts 头注。
+  //    它同样记一条审计：语义上不是"拒绝"而是"改道"，但"这次调用没有按原样执行"这个事实
+  //    恰恰是查账时要看的（tag=route 与三道闸区分得开）。
+  const route = routeBashGitRead(toolName, e.args);
+  if (route) return deny('改道 git 工具', 'route', route);
+  return undefined;
 }
 
 export async function main(checkResult: CheckResult): Promise<void> {
@@ -179,31 +235,10 @@ export async function main(checkResult: CheckResult): Promise<void> {
   // 因为钩子的 after_tool_call 是只读观察、改不了工具结果（见 charter.ts 的「第二处入口」）。
   // 注册时机在装载扩展**之前**：emitHook 取"最后一个非 undefined"结果，核心钩子先入列，
   // 扩展返回 undefined 时不会覆盖它的 deny。
-  events.on('before_tool_call', (event) => {
-    const e = event as { name?: unknown; args?: unknown };
-    const toolName = typeof e.name === 'string' ? e.name : '';
-    // ① 安全闸：契约锁。完备性要求高（漏一次 = 目标被偷改），故排在前面、命中即返回。
-    const contract = guardContractWrite(toolName, e.args, charterLock.isUnlocked());
-    if (contract) return contract;
-    // ② 安全闸：危险命令（ROADMAP 10.9.2）。**只有 L1、没有 L2** ——
-    //    删除不可逆，事后没有东西可以比对、可以回滚（对照①有两层）。判据窄、边界写在 danger.ts 头注。
-    //    排在①之后：契约闸的判据更窄更确定（字面文件名），先让它给出更具体的解锁指引。
-    const danger = guardDangerousCommand(toolName, e.args);
-    if (danger) return danger;
-    // ③ 边界闸：工作区外写保护（ROADMAP 10.9.3）。write / edit 的**目标路径**落在 cwd
-    //    之外 → 拒。只有 L1（外写是效果、事后没有基线可比对，同②）。放行只能由用户敲
-    //    `/workspace allow <目录>`——刻意不接权限子系统：非 TTY 下弹窗自动放行会让边界静默失效。
-    //    排在②之后：前两道判据更窄更确定（字面文件名 / 灾难形态），先让它们给出更具体的理由。
-    //    只认 write/edit：bash 的目标路径与读写语义判不出来，刻意不进（边界写在 workspace.ts 头注）。
-    const workspace = guardWorkspaceWrite(toolName, e.args);
-    if (workspace) return workspace;
-    // ④ 引导闸（**路由器**，不是闸）：bash 里的裸 git 只读命令 → 零弹窗的结构化 git 工具。
-    //    判据刻意窄（只认裸形式），漏掉只是"照旧走 bash"，因此没有完备性负担，可与①②③同栖一个钩子。
-    //    三/四个闸共用"拦在权限弹窗之前"这个位置：被路由的调用不会让用户看到弹窗（ROADMAP 10.5.6）。
-    //    为什么不靠描述文字引导：模型选通道看的是描述，而描述是**软约束**（强度 = 模型听不听话），
-    //    这条线由程序在工具调用处判定，不依赖模型自觉。详见 src/git/route.ts 头注。
-    return routeBashGitRead(toolName, e.args);
-  });
+  // 链的本体在文件上方（coreBeforeToolCall）——抽出去**只为让验证套件能真跑它**：
+  // 装配后的实际次序、是谁拒的、审计记了什么都能逐条打靶，而不是只能对本文件做文本断言。
+  // 注册时机（装载扩展之前）与"核心钩子先入列、扩展返回 undefined 不覆盖 deny"两条不变。
+  events.on('before_tool_call', (event) => coreBeforeToolCall(event, charterLock.isUnlocked()));
 
   // 装载用户扩展（段落 + hook + watcher）—— 自动扫描 src/extensions/ 下三类目录
   const ext = await loadExtensions(events);

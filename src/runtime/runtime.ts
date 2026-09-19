@@ -25,6 +25,7 @@ import { readProjectSnapshot } from '../project/snapshot.js';
 import { commandRegistry, renderCommandsSection } from '../project/commands.js';
 import { renderStackSection, stackRegistry } from '../project/stack.js';
 import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
+import { recordPermissionChoice } from '../permission/audit.js';
 
 /* ── 工作记忆：真相源是 `taskStore`（src/todo/store.ts） ──
    改造前这里有个模块级函数：每次请求读 TASK.md、数复选框、全勾选即删。那套是"文件即状态"。
@@ -885,10 +886,20 @@ export class Runtime {
    * 非 TTY 直接选第一项 = 允许一次（自动放行，无 stdout 噪音）。
    */
   private async askPermission(toolName: string, detail: string): Promise<'allow' | 'deny' | 'always'> {
-    const choice = (await this.select(
+    const picked = await this.select(
       PERMISSION_OPTIONS,
       permissionTitle(toolName, detail, process.stdin.isTTY === true),
-    )) ?? 'deny';   // Ctrl+C 取消 = 不做这件事，与"拒绝"同义
+    );
+    const choice = picked ?? 'deny';   // Ctrl+C 取消 = 不做这件事，与"拒绝"同义
+    // 审计留痕（ROADMAP 10.9.4）：这里只把"用户选了什么"交出去（undefined = 弹窗被取消）——
+    // 记哪几种、为什么不记一次性的"允许"，判据在 permission/audit.ts（唯一落点，三处调用方共用）。
+    // 下面那串三元**只是为了把 string 收窄成字面量联合**给审计用；取值判断与最后那行 return
+    // 逐字等价（'always' / 'allow' / 其余算拒绝），不改任何行为。
+    recordPermissionChoice(
+      toolName,
+      detail,
+      choice === 'always' ? 'always' : choice === 'allow' ? 'allow' : (picked === undefined ? undefined : 'deny'),
+    );
     return choice === 'always' ? 'always' : choice === 'deny' ? 'deny' : 'allow';
   }
 

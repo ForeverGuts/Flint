@@ -35,6 +35,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Runtime } from '../../runtime/runtime.js';
 import { isFilesystemRoot } from '../../permission/danger.js';
+import { recordGrant, recordRevoke } from '../../permission/audit.js';
 import { forgetGrants, permissionsFilePath, persistGrant, persistedGrants } from '../../permission/grants.js';
 import { workspaceGrants } from '../../permission/workspace.js';
 
@@ -89,14 +90,19 @@ export function activate(runtime: Runtime): void {
         notes.push('（这个目录现在还不存在 —— 放行照样生效，稍后创建出来也算。）');
       }
 
+      let saveErr: string | undefined;
       if (save) {
-        const err = persistGrant(process.cwd(), abs);
-        notes.push(err === undefined
+        saveErr = persistGrant(process.cwd(), abs);
+        notes.push(saveErr === undefined
           ? `✅ 已记入长期放行（重启后仍生效）：${permissionsFilePath()}`
           // 写盘失败**必须说出来**：不说的话用户会以为已经长期化了，
           // 而"以为存上了、其实没存"是最坏的一种静默（他不会再检查一遍）。
-          : `⚠ 长期放行**没存上**，重启后不会生效：${err}`);
+          : `⚠ 长期放行**没存上**，重启后不会生效：${saveErr}`);
       }
+      // 审计留痕（ROADMAP 10.9.4）：**授权已经生效**（上面那行 `allow` 就是生效点），
+      // 故无条件记 —— 万一 save 没存上，影响的是"长期化"而不是"这次放行发生过"，
+      // 那种情况由 recordGrant 写在 reason 里，不吞掉也不谎报（落点与判据见 permission/audit.ts）。
+      recordGrant(abs, save, saveErr);
 
       notes.push('write / edit 现在可以写这个目录及其子树里的文件了。');
       notes.push(USAGE);
@@ -114,6 +120,9 @@ export function activate(runtime: Runtime): void {
         const parts = [`本会话 ${had} 个目录`];
         if (removed.length > 0) parts.push(`盘上长期条目 ${removed.length} 个`);
         lines.push(`🔒 已收回全部放行：${parts.join(' + ')}。`);
+        // 审计留痕（ROADMAP 10.9.4）：只在**真的撤销了东西**时记 —— 一次什么都没撤销的
+        // clear 不改变任何账目，记它只是噪音（与"审计只记边界决定"同一条）。
+        recordRevoke(had, removed.length, error);
       }
       lines.push('write / edit 回到"只能写工作区之内"。');
       if (error !== undefined) {

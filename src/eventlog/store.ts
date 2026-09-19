@@ -22,7 +22,7 @@
  *   每条事件一行 JSON（与 sessions/*.jsonl、trace.jsonl 同一范式），字段：
  *     kind     decision / experience / incident（叙事，record_event 写）
  *              | tool_call（机器流水，span 自动捕获写，落 tool-calls.jsonl）
- *              | system（机器里程碑，确定性钩子自动写：任务归档 / 压缩发生）
+ *              | system（机器里程碑，确定性钩子自动写：任务归档 / 压缩发生 / 授权与拦截）
  *     title    一句话书签；context/decision/reason/outcome 叙事四段（可选，空则缺省不写键）
  *     tags     检索标签；turnId 关联当时的执行轮次
  *   修正 = 追加新条目，绝不改写旧行（与 Log/ 追加日志同一纪律：历史条目冻死）。
@@ -63,6 +63,36 @@ export interface EventEntry {
   /** 关联的执行轮次（tool_call 条目由 span 带入；复盘完整过程时回 trace.jsonl 按它翻） */
   turnId?: string;
 }
+
+/**
+ * 审计条目的输入（ROADMAP 10.9.4）。
+ *
+ * 刻意**只收结构化字段、不收整句**：title 由 store 按 `动作 + 主语 + 来源` 拼，
+ * 于是同一动作在日志里永远长同一个样子（检索与 grep 都靠这个形状稳定；
+ * 让调用方各写各的句子，第二天就会出现"拦截了 write""write 被拦""禁止 write"三种写法）。
+ */
+export interface AuditInput {
+  /** 动作：deny 被闸拦下 / grant 开出放行 / revoke 撤销放行 / refuse 用户拒绝 */
+  action: 'deny' | 'grant' | 'revoke' | 'refuse';
+  /** 主语：被拦的工具名 / 被放行的目录 / 被撤销的那件事 */
+  subject: string;
+  /** 来源（人话，如「工作区外写」）；缺省时标题不带括号 */
+  source?: string;
+  /** 目标：这次动作指向的那个值（工具参数里的关键项） */
+  target?: string;
+  /** 理由 / 说明：拒因原文，或这次放行的性质 */
+  reason?: string;
+  /** 额外检索标签（如 'workspace' / 'charter'），便于按来源过滤 */
+  tag?: string;
+}
+
+/** 动作词（写进标题的那一个字）—— 只在审计条目里用，与 kind 无关 */
+const AUDIT_VERBS: Record<AuditInput['action'], string> = {
+  deny: '拦截',
+  grant: '放行',
+  revoke: '撤销',
+  refuse: '拒绝',
+};
 
 /** 叙事条目的输入（id/time 由 store 生成，调用方不碰） */
 export interface NarrativeInput {
@@ -219,6 +249,45 @@ export class EventStore {
       title: '对话历史已压缩（旧上下文被摘要替代）',
       ...(digest ? { context: `摘要快照: ${digest}` } : {}),
       tags: ['compaction'],
+    };
+    this.entries.push(entry);
+    this.appendLine(entry, file);
+  }
+
+  /**
+   * 确定性钩子 ③：**授权与拦截的审计留痕**（ROADMAP 10.9.4，R8 指定的形状 ——
+   * 「新增 recordXxx 复用 appendLine 即可」）。
+   *
+   * 与 ①② 同一条纪律（旁路观测、落盘失败静默、绝不反噬主流程），但**记什么刻意不同**：
+   * ①② 记的是正常流程里的里程碑，本条只记**"本可以不做、却发生了"的动作** ——
+   * 工具被闸拦下、用户开出长期放行、撤销放行、用户在弹窗上拒绝。**正常放行的调用不记**：
+   * tool-calls.jsonl 流水已经全量记了每一次调用（**含被拦的那些**——钩子拒了工具不执行，
+   * 但 start/end 事件成对发过，span 照样收束），审计再记一遍就是双份噪音。
+   *
+   * 为什么值得单开一类：流水只记"有一次调用、它失败了"，**不记为什么**（哪道闸、什么理由、
+   * 拦的是哪个目标）；而授权动作（`/workspace allow`）此前**完全无痕** —— 磁盘上只有一张
+   * 当前状态的表，看不出某条是什么时候、以什么名义进来的。出了事要查的恰好就是这两样。
+   *
+   * **模型看不到它**：落点是 events.jsonl（拉通道），只被 `/events`、`search_events`、
+   * `pull_events` 按需取走，**不会自动进提示词**。这一点是刻意的：审计是给**人**查账的，
+   * 不是给被审计的一方当实时反馈 —— 能立刻看到"自己刚被拦了几次"，留痕就成了行为训练信号。
+   *
+   * 与 recordToolCall 同口径的截断：目标摘要 200 字符，**不新增泄露面**（流水本来就在记
+   * 同一条 bash 命令串的同长度摘要）。
+   */
+  recordAudit(input: AuditInput, file: string): void {
+    const subject = clip(input.subject.replace(/\s+/g, ' ').trim(), 80);
+    const suffix = input.source !== undefined && input.source.trim() !== '' ? `（${input.source.trim()}）` : '';
+    const target = opt(input.target, 200);
+    const reason = opt(input.reason, 200);
+    const entry: EventEntry = {
+      id: nextEntryId(),
+      time: new Date().toISOString(),
+      kind: 'system',
+      title: clip(`${AUDIT_VERBS[input.action]} ${subject}${suffix}`, 120),
+      ...(target ? { context: `目标: ${target}` } : {}),
+      ...(reason ? { outcome: reason } : {}),
+      tags: ['audit', input.action, ...(input.tag !== undefined && input.tag !== '' ? [input.tag] : [])],
     };
     this.entries.push(entry);
     this.appendLine(entry, file);
