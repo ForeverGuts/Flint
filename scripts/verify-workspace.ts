@@ -47,17 +47,19 @@ import {
 } from '../src/permission/workspace.js';
 import { routeBashGitRead } from '../src/git/route.js';
 import { activate as activateWorkspace } from '../src/commands/builtin/workspace.js';
+import { enterSandbox } from './lib/sandbox.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const isWin = process.platform === 'win32';
 
-// ⚠ **必须把授权持久化文件重定向到临时目录**（ROADMAP 10.9.1）：`/workspace clear` 现在
-//   会**连盘一起清**，而 F14/F15 就在敲它 —— 不重定向的话，跑一次套件就会把**用户真实的**
-//   `~/.flint/permissions.json` 里本项目那一份长期放行删掉，一次静默的数据丢失。
-//   与 `FLINT_PROJECTS_FILE`（verify-projects）同一手法：**用的时候现读环境变量**，
-//   所以在这里（import 之后）设也来得及。
-process.env.FLINT_PERMISSIONS_FILE = path.join(
-  fs.mkdtempSync(path.join(os.tmpdir(), 'ws-perm-')), 'permissions.json');
+// ⚠ **必须进沙箱**（ROADMAP 10.9.1）：`/workspace clear` 现在会**连盘一起清**，而 F14/F15
+//   就在敲它 —— 不重定向的话，跑一次套件就会把**用户真实的** `~/.flint/permissions.json`
+//   里本项目那一份长期放行删掉，一次静默的数据丢失。
+//   ⚠ 2026-09-19 补正：本套件原先**只挡了授权文件那半边**，cwd 没换 —— 于是 ⑥ 段每敲一次
+//   `allow` / `clear` 就往**本仓库的** `.flint/events.jsonl` 写一条审计（7 轮约 84 条，
+//   里面还有 `放行 C:\`、`放行 <家目录>` 这类边界用例），真账本被测试产物倒满。
+//   现在三个落点（账本 / 授权 / 项目登记）统一由 `scripts/lib/sandbox.ts` 兜住。
+enterSandbox('flint-workspace-');
 
 let passed = 0;
 let failed = 0;

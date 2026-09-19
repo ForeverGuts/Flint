@@ -48,6 +48,43 @@ export const CALLS_FILE = '.flint/tool-calls.jsonl';
 export const NARRATIVE_KINDS = ['decision', 'experience', 'incident'] as const;
 export type EventKind = (typeof NARRATIVE_KINDS)[number] | 'tool_call' | 'system';
 
+/**
+ * 类型徽章的**中文名** —— `/events` 的类型标记与"翻译"都取自这里（**唯一一份**）。
+ * 为什么要有它：`[system]` / `[tool_call]` 这类词是写给程序看的，人读起来就是暗号，
+ * 而查账这件事的读者是**人**（`/events`）。`EventKind` 一变，这张表必须跟着变
+ * （verify-events 有一条"表与枚举一一对应"的断言专门盯这件事）。
+ */
+export const KIND_LABELS: Record<EventKind, string> = {
+  decision: '决策', experience: '经验', incident: '事故', system: '系统', tool_call: '工具',
+};
+
+/**
+ * 标签的**中文注解** —— **开放集合**：表里没有的原样输出（**绝不猜、绝不改写**）。
+ * 只收"机器自己写的那几种"（各处 `recordXxx` 的 tags）；`record_event` 打的标签随用户意。
+ * 渲染成 `审计(audit)` 这种"中文(机器值)"：查账的人读中文，**而机器值必须留着** ——
+ * `tag=audit` 是用户要敲回去的，把 token 抹掉就没法"按这个标签再查一次"了。
+ */
+export const TAG_LABELS: Record<string, string> = {
+  tool: '工具', task: '任务', archive: '归档', compaction: '压缩',
+  audit: '审计', deny: '拦截', grant: '放行', revoke: '撤销', refuse: '拒绝',
+  charter: '契约锁', danger: '危险命令', workspace: '工作区', route: '改道',
+};
+
+/**
+ * 中文类型名 → 机器值（`normalizeKind('事故') === 'incident'`；认不出的**原样返回**）。
+ *
+ * 为什么只给 kind 做反查、**标签刻意不做**：`EventKind` 是**封闭枚举**（5 个，代码定的），
+ * 反查不会歧义；标签是**开放集合** —— 用户完全可以自己打一个就叫"工作区"的标签，
+ * 那时把 `tag=工作区` 改写成 `workspace` 就是**篡改他的查询意图**（去查了另一样东西）。
+ * 收在这**一处**，`/events`、`search_events`、`pull_events` 三个入口一起受益。
+ */
+export function normalizeKind(v: string): string {
+  const t = v.trim();
+  if (t === '') return '';
+  for (const [machine, label] of Object.entries(KIND_LABELS)) if (label === t) return machine;
+  return t;
+}
+
 export interface EventEntry {
   id: string;
   /** ISO 时间（落盘即定，展示原样输出） */
@@ -313,7 +350,8 @@ export class EventStore {
   search(opts: { kind?: string; tag?: string; keyword?: string; limit?: number }): EventEntry[] {
     const kw = (opts.keyword ?? '').toLowerCase();
     const tag = (opts.tag ?? '').trim();
-    const kind = (opts.kind ?? '').trim();
+    // 类型走 `normalizeKind`：中文名（事故/决策/…）与机器值等价。**只 kind 做反查**，理由见函数头注。
+    const kind = normalizeKind(opts.kind ?? '');
     const limit = opts.limit ?? 10;
     const source = kind === 'tool_call' ? this.calls : this.entries;
     const hits = [...source].reverse().filter((e) => {
@@ -386,13 +424,28 @@ export class EventStore {
  * @param e 事件条目
  * @param n 可选序号（检索结果带序号，方便模型引用"第 2 条"）
  */
+/** 标签的中文注解：`audit` → `审计(audit)`；表里没有的原样返回（开放集合，绝不猜） */
+const glossTag = (t: string): string => {
+  const label = TAG_LABELS[t];
+  return label === undefined ? t : `${label}(${t})`;
+};
+
+/**
+ * 一条事件的行内排版 —— **终端与工具共用这一处**（单一排版实现纪律，见 verify-eventlog 的 H7）。
+ *
+ * 翻译也在这里，因为它是"同一个输出给同一批读者"的一部分：类型徽章走 `KIND_LABELS`
+ * （`[system]` → `[系统]`），标签走 `glossTag`（`audit` → `审计(audit)`）。
+ * 不另开一个"给人看的渲染器"：那样两边迟早分家，而分家之后 `/events` 与
+ * `search_events` 对同一条事件的记号会对不上——查账的人与模型说的就不是一回事了。
+ */
 export function formatEvent(e: EventEntry, n?: number): string {
-  const head = `${n !== undefined ? `[${n}] ` : ''}${e.time.slice(0, 16).replace('T', ' ')} [${e.kind}] ${e.title}`;
+  const head = `${n !== undefined ? `[${n}] ` : ''}${e.time.slice(0, 16).replace('T', ' ')} `
+    + `[${KIND_LABELS[e.kind] ?? e.kind}] ${e.title}`;
   const fields: Array<[string, string | undefined]> = [
     ['背景', e.context], ['决策', e.decision], ['理由', e.reason], ['结果', e.outcome],
   ];
   const lines = [head, ...fields.filter(([, v]) => v).map(([k, v]) => `    ${k}: ${v}`)];
-  if (e.tags.length > 0) lines.push(`    标签: ${e.tags.join(', ')}`);
+  if (e.tags.length > 0) lines.push(`    标签: ${e.tags.map(glossTag).join(', ')}`);
   if (e.turnId) lines.push(`    轮次: ${e.turnId}`);
   return lines.join('\n');
 }

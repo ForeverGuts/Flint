@@ -19,12 +19,20 @@
  *      `runtime.askPermission`** —— 光测 audit.ts 那个函数测不到"接线有没有接对"
  *      （接线错了就是记错账，正是本套件要治的病）
  *   ⑦ 拉通道守护 —— 提示词组装层零 eventStore 引用（模型不会自动看到审计）
- *   ⑧ 源码守护 —— 落点唯一（只有 audit.ts 调 recordAudit）、调用方各自不再自己拼条目
+ *   ⑧ 源码守护 —— 落点唯一（只有 audit.ts 调 recordAudit）、调用方各自不再自己拼条目、
+ *      **会写账本的套件必须先进沙箱**（J1：写入方向对了，落点还得对）
+ *   ⑨ 端到端 —— 一次被拦的调用只留一条账，且查得到
+ *   ⑩ 净网引擎 —— `collect-stats.mjs` 的"账本逐套对账"（跑完 `.flint/` 必须一字未变）。
+ *      它是**网**：抓的是 J1 够不着的那一类（经 Runtime 内部钩子间接写账本的套件）
  *
  * 一条自保（写在最前面、**不计项数**）：钩子链的落点是**相对路径** `.flint/events.jsonl`
  * ——那是**项目资产**，不换 cwd 就会把测试条目塞进本仓库的事件库。所以本套件先 chdir 到
  * 临时目录，跑完再 chdir 回来。同理，授权落点也要重定向（否则 `allow --save` 会写进用户
  * 真实的 `~/.flint/permissions.json`）。任一条不成立就 exit(1)，不继续跑。
+ * 这一整套重定向 + 自证 + 退出清理**已经收口到 `scripts/lib/sandbox.ts`** —— 因为
+ * 2026-09-19 查出 `verify-grants` / `verify-workspace` 各自的"半个自保"漏了 cwd 那半边
+ * （它们只挡了授权文件，账本照样被写进真项目，累计 123 条）。收口之后谁漏了都会被
+ * J1 那条源码守护点名。
  *
  * 运行：node node_modules/tsx/dist/cli.mjs scripts/verify-audit.ts
  * 退出码：failed > 0 → 1
@@ -47,28 +55,17 @@ import { activate as activateWorkspace } from '../src/commands/builtin/workspace
 import { Runtime } from '../src/runtime/runtime.js';
 import { PromptEventEmitter } from '../src/runtime/events.js';
 import { CHARTER_FILE } from '../src/project/charter.js';
-import { permissionsFilePath, resetGrantsFileCache } from '../src/permission/grants.js';
+import { resetGrantsFileCache } from '../src/permission/grants.js';
+import { enterSandbox } from './lib/sandbox.js';
+import { diffLedger, snapshotLedger } from './collect-stats.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-audit-'));
-const CWD0 = process.cwd();
-const PERM = path.join(TMP, 'permissions.json');
-process.env.FLINT_PERMISSIONS_FILE = PERM;
-process.chdir(TMP);
-
-/* ── 自保（不计项数）：任何写入之前先确认 cwd 与授权落点都被重定向 ── */
-if (process.cwd() !== TMP || !process.cwd().startsWith(os.tmpdir())
-  || permissionsFilePath() !== PERM || !PERM.startsWith(TMP)) {
-  console.error(`❌ cwd / 授权落点没有重定向到临时目录（cwd=${process.cwd()}，落点=${permissionsFilePath()}），`
-    + '拒绝继续：本套件会真写事件库与授权文件，跑下去会污染本项目与用户真实的长期放行。');
-  process.exit(1);
-}
-
-process.on('exit', () => {
-  try { process.chdir(CWD0); } catch { /* 回不去也不影响结论 */ }
-  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 擦不动就留着 */ }
-});
+/* ── 自保（不计项数）：全部在 `scripts/lib/sandbox.ts` 里 ──
+   三个落点（账本 / 授权 / 项目登记）一起重定向 + 自证，任一条不成立它自己 exit(1)。 */
+const sb = enterSandbox('flint-audit-');
+const TMP = sb.dir;
+const PERM = sb.permissionsFile;
 
 let passed = 0;
 let failed = 0;
@@ -463,6 +460,32 @@ check('H8 三条落点都在 audit.ts 里且各只导出一处实现',
   && (auditSrc.match(/export function recordRevoke/g) ?? []).length === 1
   && (auditSrc.match(/export function recordPermissionChoice/g) ?? []).length === 1);
 
+// ── J1 隔离守护：会写账本的套件，必须先进沙箱 ──
+// 为什么需要这一条：H1-H8 只保证"条目从哪个函数写出来"（落点唯一），**不保证它写到哪儿去**。
+// 2026-09-19 的 123 条污染正是从这个缺口漏的：写入方（audit.ts）全都合规，**跑它的套件**没换 cwd。
+// 判据 = 套件文本里只要出现任何一个"账本写入口"，就必须出现 `enterSandbox(`。
+// ⚠ 先剥注释：本仓"源码文本断言误伤注释"已记到第八次形态（见 verify-workspace 的 G13/G14）。
+// ⚠ **它的射程只到"直接引用写入口的套件"**，够不着"通过 Runtime 内部钩子间接写"的那一类
+//   （`runtime.ts` 压缩时调 `recordCompaction`、todo 归档调 `recordTaskArchive`）——
+//   2026-09-19 抓到 `verify-compaction-usage` 就是这一类，而它文本里根本没有那几个符号。
+//   那一类由 `collect-stats.mjs` 的"账本逐套对账"兜（跑完全量 `npm run verify` 就点名）。
+//   也正因为如此，候选符号只能取"套件会 import 的名字"：像 `recordCompaction` /
+//   `recordToolCall` 这种被 verify-eventlog 当**字符串字面量**引用的，收进来就是假阳性。
+const stripComments = (s: string): string => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const LEDGER_ENTRY_POINTS = [
+  'builtin/workspace.js', // /workspace allow|clear → recordGrant / recordRevoke
+  'coreBeforeToolCall', // 钩子链 → recordGateDeny
+  'recordAudit', 'recordGateDeny', 'recordGrant', 'recordRevoke', 'recordPermissionChoice',
+];
+const suiteNames = fs.readdirSync(path.join(ROOT, 'scripts')).filter((n) => /^verify-.+\.ts$/.test(n));
+const strippedSuites = new Map(suiteNames.map((n) => [n, stripComments(readSrc(`scripts/${n}`))]));
+const ledgerWriters = suiteNames
+  .filter((n) => LEDGER_ENTRY_POINTS.some((s) => strippedSuites.get(n)!.includes(s)));
+const unguarded = ledgerWriters.filter((n) => !strippedSuites.get(n)!.includes('enterSandbox('));
+check('J1 每个"会写账本"的套件都先隔离进沙箱（写入口对了，落点还得对）',
+  unguarded.length === 0 && ledgerWriters.length >= 3,
+  `未隔离：${JSON.stringify(unguarded)}（扫描到 ${ledgerWriters.length} 个写者）`);
+
 /* ═══ 收尾对照：一次真实拦截只留一条账 ═══ */
 console.log('\n── ⑨ 端到端：一次被拦的调用只留一条账，且查得到 ──');
 const beforeAll = eventStore.count();
@@ -471,6 +494,35 @@ const afterAll = auditsSince(beforeAll);
 check('I1 真链跑一次 → 恰好多一条审计', afterAll.length === 1, String(afterAll.length));
 check('I2 它会出现在 /events 与检索里（拉通道拿得到）',
   eventStore.search({ keyword: '工作区外写' }).some((e) => e.tags.includes('audit')));
+
+/* ═══ ⑩ 净网引擎：跑完账本必须一字未变 ═══ */
+// 判据本体在 `scripts/collect-stats.mjs`，由 `npm run verify` 逐套对账（**不计入合计**，与文档
+// 数字同属"第二把尺"）。这里钉它的**纯函数引擎**——否则"网"自己一条断言都没有，坏了没人知道。
+// 为什么需要这张网：J1 只能看见"直接引用写入口"的套件；2026-09-19 抓到的第三个污染源
+// （`verify-compaction-usage`，经 Runtime 内部的 `recordCompaction` 写）就躲在 J1 的射程外。
+console.log('\n── ⑩ 净网：账本逐套对账的引擎 ──');
+const netRoot = path.join(TMP, 'net-probe');
+fs.mkdirSync(path.join(netRoot, '.flint'), { recursive: true });
+const netFile = path.join(netRoot, '.flint', 'events.jsonl');
+check('J2 目录不存在 → 空快照（不抛：刚 clone 下来还没有 `.flint/` 是正常态）',
+  snapshotLedger(path.join(TMP, 'no-such-dir')).size === 0);
+const snap0 = snapshotLedger(netRoot);
+check('J3 空目录 → 空快照，且"同一状态"下对账无差异（不然每次全量都会假报）',
+  snap0.size === 0 && diffLedger(snap0, snapshotLedger(netRoot)).length === 0);
+fs.writeFileSync(netFile, 'a\n');
+check('J4 套件凭空造出账本 → 报"新增"',
+  diffLedger(snap0, snapshotLedger(netRoot)).join('|') === '新增 events.jsonl',
+  diffLedger(snap0, snapshotLedger(netRoot)).join('|'));
+const snap1 = snapshotLedger(netRoot);
+fs.appendFileSync(netFile, 'b\n');
+check('J5 就地追加（审计正是这么写的）→ 报"被改写"',
+  diffLedger(snap1, snapshotLedger(netRoot)).join('|') === 'events.jsonl 被改写',
+  diffLedger(snap1, snapshotLedger(netRoot)).join('|'));
+const snap2 = snapshotLedger(netRoot);
+fs.rmSync(netFile);
+check('J6 账本被删 → 也报（"少了一条"与"多了一条"一样是污染）',
+  diffLedger(snap2, snapshotLedger(netRoot)).join('|') === '删除 events.jsonl',
+  diffLedger(snap2, snapshotLedger(netRoot)).join('|'));
 
 console.log(`\n结果：${passed} 通过 / ${failed} 失败（共 ${passed + failed} 项）`);
 if (failed > 0) process.exit(1);

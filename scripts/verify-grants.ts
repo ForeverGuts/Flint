@@ -29,6 +29,11 @@
  * 不重定向的话，⑤ 里的 `clear` 用例会把**用户真实的** `~/.flint/permissions.json` 里
  * 本项目那一份长期放行删掉 —— 一次静默的数据丢失。失败就 `exit(1)`，不继续跑。
  *
+ * ⚠ 2026-09-19 补正：本套件原先的自保**只挡了授权文件那半边**，cwd 没换 —— 于是 ⑤ 里每次
+ * `allow` / `clear` 都往**本仓库的** `.flint/events.jsonl` 塞审计条目（11 轮跑出约 45 条），
+ * 真账本被测试产物倒满。现在三个落点（账本 / 授权 / 项目登记）统一由
+ * `scripts/lib/sandbox.ts` 兜住；漏了会被 verify-audit 的 J1 点名。
+ *
  * 运行：node node_modules/tsx/dist/cli.mjs scripts/verify-grants.ts
  * 退出码：failed > 0 → 1
  */
@@ -49,25 +54,15 @@ import {
   resetGrantsFileCache,
 } from '../src/permission/grants.js';
 import { activate as activateWorkspace } from '../src/commands/builtin/workspace.js';
+import { enterSandbox } from './lib/sandbox.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-grants-'));
-const PERM = path.join(TMP, 'permissions.json');
-process.env.FLINT_PERMISSIONS_FILE = PERM;
-process.env.FLINT_PROJECTS_FILE = path.join(TMP, 'projects.jsonl');
-
-/* ── 自保（不计项数）：任何写入之前先确认落点被重定向了 ── */
-if (permissionsFilePath() !== PERM || !PERM.startsWith(TMP)) {
-  console.error(`❌ 落点未重定向到临时目录（当前 = ${permissionsFilePath()}），拒绝继续：`
-    + '本套件会清清盘，跑下去会删掉用户真实的长期放行。');
-  process.exit(1);
-}
-
-/** 临时目录与临时文件在退出时擦掉（挂 exit，不写文末 —— 中途 throw 也要擦） */
-process.on('exit', () => {
-  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 擦不动就留着，不影响结论 */ }
-});
+/* ── 自保（不计项数）：全部在 `scripts/lib/sandbox.ts` 里 ──
+   三个落点一起重定向 + 自证 + 退出清理；任一条不成立它自己 exit(1)。 */
+const sb = enterSandbox('flint-grants-');
+const TMP = sb.dir;
+const PERM = sb.permissionsFile;
 
 let passed = 0;
 let failed = 0;

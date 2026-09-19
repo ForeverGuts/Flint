@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { registerBuiltinTools } from '../src/tools/builtin.js';
-import { EVENTS_FILE, EventStore, eventStore, formatEvent } from '../src/eventlog/store.js';
+import { EVENTS_FILE, EventStore, eventStore, formatEvent, KIND_LABELS, NARRATIVE_KINDS, normalizeKind } from '../src/eventlog/store.js';
 import { TaskStore } from '../src/todo/store.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { PromptEventEmitter } from '../src/runtime/events.js';
@@ -328,7 +328,7 @@ console.log('\n⑥ record_event / search_events 工具端到端');
     });
     check('F2 record_event 返回 [OK]、带 id 与计数、回显排版',
       r1.startsWith('[OK]') && r1.includes('事件已存档 (ev_') && r1.includes('事件库现有 1 条')
-      && r1.includes('[incident]') && r1.includes('背景: console.log'), r1.split('\n').slice(0, 3).join(' / '));
+      && r1.includes('[事故]') && r1.includes('背景: console.log'), r1.split('\n').slice(0, 3).join(' / '));
 
     check('F3 tags 中英文逗号都认（拆成 3 个标签）',
       evs.all()[0].tags.length === 3 && evs.all()[0].tags.includes('纪律'));
@@ -363,6 +363,11 @@ console.log('\n⑥ record_event / search_events 工具端到端');
       s5.startsWith('[NO_MATCH]') && s5.includes('共 2 条'));
     const s6 = await search({ limit: 1 });
     check('F14 limit 截断（最新 1 条）', s6.includes('命中 1 条') && s6.includes('权限弹窗'));
+    // 归一化收在 `store.search()` 里，三个入口（/events · search_events · pull_events）一起受益；
+    // 所以必须从**工具入口**也验一次 —— 只在命令层归一化的话，工具这条路是没盖到的
+    const s7 = await search({ kind: '事故' });
+    check('F15 中文类型名走**工具入口**也认（归一化在 store.search，不只在命令层）',
+      s7.includes('命中 1 条') && s7.includes('stdout') && !s7.includes('组件树'), s7.split('\n')[0]);
 
     // 确定性钩子端到端：todo 工具走完整流程，归档时刻自动补记（不经模型）
     const base = evs.count();
@@ -470,27 +475,77 @@ console.log('\n⑦ /events 命令');
 
   const all = reg!.fn('');
   check('G2 无参数：只显叙事+system（tool_call 行已被路由进流水索引）、最新在前、带排版',
-    all.includes('显示 3/3 条') && !all.includes('工具 bash 调用')
-    && all.includes('[decision]') && all.includes('标签: ui'), all);
-  check('G2b kind=tool_call 从流水索引出（历史流水照旧能查）',
-    reg!.fn('kind=tool_call').includes('工具 bash 调用') && reg!.fn('kind=tool_call').includes('tool-calls.jsonl'));
+    all.includes('显示 第 1–3 条，共 3 条') && !all.includes('工具 bash 调用')
+    && all.includes('[决策]') && all.includes('标签: ui'), all);
+  const tc = reg!.fn('kind=tool_call');
+  check('G2b kind=tool_call 从流水索引出，且表头的"共几条"指的是**流水那本库**（不是叙事库）',
+    tc.includes('工具 bash 调用') && tc.includes('tool-calls.jsonl')
+    && tc.includes('（流水共 1 条）') && !tc.includes('（全库 3 条）'), tc);
 
   check('G3 kind= 过滤', reg!.fn('kind=incident').includes('事故二') && !reg!.fn('kind=incident').includes('决策一'));
   check('G4 tag= 过滤', reg!.fn('tag=rpc').includes('事故二') && !reg!.fn('tag=rpc').includes('经验三'));
   check('G5 q= 关键词过滤', reg!.fn('q=经验').includes('经验三') && !reg!.fn('q=经验').includes('事故二'));
   check('G6 未识别的词当关键词（q= 与裸词等价）',
     reg!.fn('经验').includes('经验三') && reg!.fn('经验').includes('q=经验'));
-  check('G7 limit= 截断', reg!.fn('limit=2').includes('显示 2/3 条'));
+  check('G7 limit= 截断', reg!.fn('limit=2').includes('显示 第 1–2 条，共 3 条'));
   check('G8 limit 非数字回退默认（不炸）',
-    reg!.fn('limit=abc').includes('显示 3/3 条'));
+    reg!.fn('limit=abc').includes('显示 第 1–3 条，共 3 条'));
   check('G9 kind= 过滤只出该类型', reg!.fn('kind=decision').includes('决策一') && !reg!.fn('kind=decision').includes('事故二'));
   const combo = reg!.fn('tag=ui q=三');
   check('G10 tag+q 组合只出交集', combo.includes('经验三') && !combo.includes('决策一'), combo);
   check('G11 无命中：如实说没有并提示检查过滤词',
     reg!.fn('q=不存在词').includes('无匹配事件'));
 
+  /* ── 翻页（offset）：坐标是"跳过多少条"，页脚给可直接粘回去的下一批 ── */
+  const p1 = reg!.fn('offset=1');
+  check('G12 offset=1 翻到第二页：范围与序号都跟着走（序号是**全库位置**，不是"本页第几条"）',
+    p1.includes('显示 第 2–3 条，共 3 条') && p1.includes('[2] ') && !p1.includes('[1] '), p1);
+  const p2 = reg!.fn('offset=2');
+  check('G13 只剩一条时不说"第 3–3 条"（单条就说第 N 条）',
+    p2.includes('显示 第 3 条，共 3 条') && p2.includes('[3] '), p2);
+  const p3 = reg!.fn('offset=1 limit=1');
+  // ⚠ 光断表头不够：`offset=1 limit=1` 的"第 2 条"是拿 offset 算出来的，**就算切片仍从最新开始**
+  //   表头也照样写着"第 2 条"（页脚也一样）。所以这里必须断**实际翻到的是哪一条**。
+  check('G14 页脚给出可直接粘回去的下一批命令，且真的翻到了那一条（不是只改表头）',
+    p3.includes('显示 第 2 条，共 3 条')
+    && p3.includes('更早的还有 1 条 → /events offset=2 limit=1')
+    && p3.includes('事故二') && !p3.includes('经验三'), p3);
+  check('G15 页脚只在还有更早的条目时才出现（到最后一批就不再吊着人）',
+    !reg!.fn('offset=2').includes('更早的还有'));
+  const p4 = reg!.fn('offset=99');
+  check('G16 offset 越界：如实说已到末尾并解释 offset 是什么（不是含糊的"无匹配"）',
+    p4.includes('已到末尾') && p4.includes('offset=99') && !p4.includes('无匹配事件'), p4);
+  check('G17 offset 非数字 / 负数都归 0（不炸、也不从末尾数起）',
+    reg!.fn('offset=abc').includes('显示 第 1–3 条') && reg!.fn('offset=-5').includes('显示 第 1–3 条'));
+  const p5 = reg!.fn('tag=ui limit=1');
+  check('G18 过滤时表头把"命中几条"与"全库几条"分开说，且页脚把过滤词一个不落地带上',
+    p5.includes('tag=ui，显示 第 1 条 / 命中 2 条（全库 3 条）')
+    && p5.includes('/events tag=ui offset=1 limit=1'), p5);
+
+  /* ── 翻译：机器词 → 人话（唯一一份表在 store.ts，渲染也只有 formatEvent 一处） ── */
+  check('G19 类型徽章翻成中文（`[system]` 这类机器词是暗号，查账的是人）',
+    all.includes('[决策]') && reg!.fn('kind=incident').includes('[事故]')
+    && reg!.fn('kind=experience').includes('[经验]'));
+  check('G20 中文类型名与机器值等价（`kind=事故` 就是 `kind=incident`）',
+    reg!.fn('kind=事故').includes('事故二') && !reg!.fn('kind=事故').includes('决策一'));
+  check('G21 类型表与封闭枚举一一对应（新增 EventKind 却忘了补中文名 → 这条红）',
+    NARRATIVE_KINDS.every((k) => KIND_LABELS[k] !== undefined)
+    && Object.keys(KIND_LABELS).length === NARRATIVE_KINDS.length + 2,
+    Object.keys(KIND_LABELS).join(','));
+  // 标签注解：中文在前、**机器值必须留着**（`tag=audit` 是用户要敲回去的）。
+  // 而"表里没有的标签"一律原样 —— 用户自己打个叫"工作区"的标签时，不许被改写成 workspace
+  // （那是**篡改查询意图**，也是"标签不做反查"那条决策在渲染侧的样子）。
+  const tagHead = formatEvent({
+    id: 'ev_x', time: '2026-09-19T00:00:00.000Z', kind: 'system', title: 't',
+    tags: ['audit', 'grant', 'ui', '工作区'],
+  });
+  check('G22 标签注解成 `中文(机器值)`；不认识的（含用户自打的"工作区"）**原样保留**',
+    tagHead.includes('标签: 审计(audit), 放行(grant), ui, 工作区'), tagHead);
+  check('G23 `normalizeKind` 只反查封闭枚举：认不出的原样返回、空串还是空串',
+    normalizeKind('事故') === 'incident' && normalizeKind('incident') === 'incident'
+    && normalizeKind('故事') === '故事' && normalizeKind('  ') === '');
+
   // 恢复单例现场（测试前有内容就灌回去，没有就清空）
-  const restore = new EventStore();
   const rf = P('restore-ev.jsonl');
   fs.writeFileSync(rf, saved.map((e) => JSON.stringify(e)).join('\n') + (saved.length ? '\n' : ''));
   eventStore.loadFromFile(rf);

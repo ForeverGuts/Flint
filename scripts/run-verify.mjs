@@ -12,6 +12,10 @@
  * 含生成区）。它**不算一套套件、也不计入合计**——否则"总项数对不对"会取决于"有没有把
  * 校验自己算进去"，成了自指。漂移只影响退出码，单独汇报。
  *
+ * 末尾还有**第二把尺**：`.flint/` 的逐套对账（`ledgerDrift`，实现见 `collect-stats.mjs`）
+ * ——**跑完账本必须一字未变**。它同样不算套件、不计入合计，漂移只影响退出码。
+ * 起因：2026-09-19 查出两个套件把测试产物写进了真账本，累计 123 条，而全套断言全绿。
+ *
  * 注意本进程**只读**：修正文档要显式跑 `npm run docs:sync`（见 autogen.mjs 头部 ③）。
  *
  * 运行：node scripts/run-verify.mjs   （或 npm run verify）
@@ -31,7 +35,7 @@ try {
   process.exit(1);
 }
 
-const { rows, suites, tsSuites, totalPass, totalFail, bad, unparsed } = stats;
+const { rows, suites, tsSuites, totalPass, totalFail, bad, unparsed, ledgerDrift } = stats;
 
 const width = Math.max(...rows.map((r) => r.name.length));
 console.log('\n套件'.padEnd(width + 8) + '通过 / 失败   退出码');
@@ -65,4 +69,16 @@ if (docs.drift.length === 0) {
   console.log('（生成区那几处可跑 `npm run docs:sync` 自动修；手写处要自己改）');
 }
 
-process.exit(bad > 0 || totalFail > 0 || docs.drift.length > 0 ? 1 : 0);
+// 账本对账：**跑完 `.flint/` 必须一字未变**。
+// 与文档数字同属"第二把尺"（不是套件、不计入合计）。起因：2026-09-19 查出两个套件把测试
+// 产物写进了真账本，累计 123 条，而**全套断言全绿** —— 脏数据没人看得见。
+if (ledgerDrift.length === 0) {
+  console.log('账本：套件跑完 .flint/ 一字未变。');
+} else {
+  console.log(`\n账本：${ledgerDrift.length} 套把测试产物写进了 .flint/ ——`);
+  for (const d of ledgerDrift) for (const line of d.drift) console.log(`  ❌ ${d.name}: ${line}`);
+  console.log('（这是项目资产被污染。修法是让那套开头调 scripts/lib/sandbox.ts 的 enterSandbox()，'
+    + '别手工删条目了事 —— 不堵源头，下次跑还会脏。）');
+}
+
+process.exit(bad > 0 || totalFail > 0 || docs.drift.length > 0 || ledgerDrift.length > 0 ? 1 : 0);

@@ -12,11 +12,18 @@
  *   ③ runtime 接线（真 Runtime + 真存储）：主轮压缩用量入 totalUsage 并广播 usage 事件；
  *      fork 摘要路径（compactNow）同样入账
  *   ④ 源码守护：契约字段与接线点在源码文本上钉住
+ *
+ * 一条自保（不计项数）：③ 段跑的是**真 Runtime**，压缩一发生 `runtime.ts` 就会调
+ * `eventStore.recordCompaction(..., EVENTS_FILE)` —— 而账本是**相对 cwd**的 `.flint/events.jsonl`。
+ * 2026-09-19 由 run-verify 的"账本逐套对账"点名（本套件是它抓到的**第三个**污染源）：
+ * 不隔离的话，每跑一次就往**本仓库的真账本**里塞一条"对话历史已压缩"。
+ * 见 `scripts/lib/sandbox.ts`。
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { enterSandbox } from './lib/sandbox.js';
 import { JsonlSessionStorage } from '../src/session/jsonl-storage.js';
 import { CompactionServiceImpl } from '../src/context/compaction.js';
 import { Runtime } from '../src/runtime/runtime.js';
@@ -28,6 +35,9 @@ import { createChat } from '../src/llm/stream-helper.js';
 import * as ts from '../src/types.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/* ── 自保（不计项数）：全部在 `scripts/lib/sandbox.ts` 里（③ 段会真跑压缩 → 真写账本）── */
+enterSandbox('flint-compaction-usage-');
 
 let passed = 0;
 let failed = 0;

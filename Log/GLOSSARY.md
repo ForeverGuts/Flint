@@ -595,6 +595,21 @@ LLM 调用抽象接口，位于 `src/llm/types.ts`。两个方法：`chat(messag
 
 参见：[DeepSeek Provider](#deepseek-provider)、[EventStream](#eventstream推拉通道)
 
+### 账本对账（Ledger Reconciliation）
+**跑完全部验证套件之后，`.flint/` 必须一字未变** —— 第二把尺（2026-09-19 加）。
+
+**它治什么病**：套件跑测试会真的往"项目资产"里写东西，而**断言全绿、脏数据没人看得见**。真查出过：`verify-grants` / `verify-workspace` 各跑一遍就往真账本里塞十几条审计（累计 123 条，里面还有边界用例的字面），而**没有任何一条断言会回头看账本变没变**。
+
+**引擎**：`collect-stats.mjs` 的 `snapshotLedger(ROOT)`（递归走 `.flint/`，每个文件记 `字节数:sha1前12位`）与 `diffLedger(before, after)`（报"新增 / 被改写 / 删除"）；`run-verify.mjs` **逐套**前后快照，漂移就点名（`❌ verify-workspace.ts: events.jsonl 被改写`）并计入退出码。
+
+**为什么"逐套"而不是"只比首尾"**：只比首尾会让"张三写脏、李四清干净"这种互补污染漏掉，而且出了脏数据也说不出是谁写的。
+
+**它与[套件沙箱](#套件沙箱suite-sandbox)的分工**：沙箱是**闸**（写之前拦，只拦得住"记得调它"的套件）、对账是**网**（跑完之后逐套点名，连闸不认识的那类也抓得到）。第三个污染源 `verify-compaction-usage.ts` 就是这么抓出来的 —— 它经 `Runtime` 内部的 `recordCompaction` 写账本，套件文本里根本没有那几个符号。**判据不重叠，所以缺一不可。**
+
+**两条已知边界**：① 对账**只在全量跑时生效** —— 单跑一套时只有它自己的沙箱在挡，忘了调 `enterSandbox` 的套件单跑照样写脏，要等下一次 `npm run verify` 才被点名；② 它比的是 `.flint/` **整体**快照，所以**同时在另一个终端开着 flint 干活**时账本会变、那一套会被误指（假红，重跑即消）。
+
+参见：[套件沙箱（Suite Sandbox）](#套件沙箱suite-sandbox) · [审计留痕（Audit Trail）](#审计留痕audit-trail)（第一个被对账抓出问题的消费者）· 完整决策（六条）见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-19-suite-sandbox)
+
 ## M
 
 ### Mode（运行模式）
@@ -833,6 +848,19 @@ NOOP **不是跳过这段代码，是跳过打卡**：回调照常执行，只�
 卫生由 `verify-docs.mjs` 第 ③ 段钉三条：同一份文件内**不重复**（重复会让跳转静默落到第一处）、命名守 `log-<日期>-<短名>` 形状、且**非空**（前两条在"一个都没扫到"时会空转全绿）。
 
 参见：`ARCHITECTURE_LOG_RULES.md`（"新条目必须带 id"的约定）· [ARCHITECTURE_LOG.md](./ARCHITECTURE_LOG.md#log-2026-09-11-doc-number-check) · `scripts/verify-docs.mjs` 第 ③ 段
+
+### 套件沙箱（Suite Sandbox）
+`scripts/lib/sandbox.ts` 的 `enterSandbox(prefix)`（2026-09-19 加）：会往"项目资产"里写东西的验证套件，代码体第一件事就是调它。
+
+**它做四步**：`mkdtempSync` → 三个落点一起重定向（账本 `.flint/` / 授权 `~/.flint/permissions.json` / 项目登记）→ `chdir` 进临时目录 → **自证**（cwd 与两个环境变量确实都指过去了，任一条不成立就 `exit 1`）。退出时搬回 cwd 并删临时目录。
+
+**为什么必须 `chdir`、光设环境变量不行**：账本落点 `EVENTS_FILE = '.flint/events.jsonl'` 是**模块加载时就定死的相对路径** —— 它是相对 cwd 的，而 `import` 语句**先于**套件代码体执行，等套件跑起来它早绑好了；它也不读环境变量。`chdir` 是**写入那一刻**才参与解析的，只有它来得及。
+
+**为什么"自证"这一步不能省**：四步里任何一步失效，表现都是"**测试照绿、账本照脏**" —— 而脏是**事后**才发现的。所以必须让"没隔离成"当场炸掉，而不是静默降级。
+
+**它与[账本对账](#账本对账ledger-reconciliation)的分工**：沙箱是**闸**（事前拦）、对账是**网**（事后逐套点名）。闸只拦得住"记得调它"的套件 —— 收口成一个函数之后，"这套有没有隔离"变成一次 `grep enterSandbox`，`verify-audit.ts` 的 J1 就是拿文本扫描钉这一条。
+
+参见：[账本对账（Ledger Reconciliation）](#账本对账ledger-reconciliation) · [审计留痕（Audit Trail）](#审计留痕audit-trail) · 完整决策（六条）见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-19-suite-sandbox)
 
 ## T
 
