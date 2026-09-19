@@ -24,6 +24,7 @@ import { memoryStore } from '../memory/store.js';
 import { readProjectSnapshot } from '../project/snapshot.js';
 import { commandRegistry, renderCommandsSection } from '../project/commands.js';
 import { renderStackSection, stackRegistry } from '../project/stack.js';
+import { renderRulesSection, rulesRegistry } from '../project/rules.js';
 import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { recordPermissionChoice } from '../permission/audit.js';
 
@@ -720,6 +721,11 @@ export class Runtime {
     // 而命令表是"启动读一次"的，刷新率必须一致才不会出现两个口径）。
     // 空画像（一个模板文件都没命中）→ 空串 → 半段缺席，与其他各层同一纪律。
     const stackSection = renderStackSection(stackRegistry.get());
+    // 项目规约（10.2.1）：与画像 / 命令表**同一手法** —— 播种时（启动与切项目）找一次进注册表，
+    // 运行期只渲染不回读。理由见 project/rules.ts 文件头：规约是**人写的规矩**，会话内不该变，
+    // 而运行期回读会让模型 write AGENTS.md 就改写自己下一轮的注入内容。
+    // 没命中 → 空串 → 该节缺席，memory 层逐字与接入前相同（"没有就不注入"）。
+    const rulesSection = renderRulesSection(rulesRegistry.get());
     // 项目记忆：读内存真相源（memoryStore），有条目才注入；截断同 task 层——注入可截，投影不截
     const rawMemory = memoryStore.isEmpty() ? undefined : memoryStore.render();
     const projectMemory = rawMemory && rawMemory.length > 2000
@@ -736,6 +742,7 @@ export class Runtime {
       stack: stackSection === '' ? undefined : stackSection,
       commands: commandsSection === '' ? undefined : commandsSection,
       task: taskMemory,
+      rules: rulesSection === '' ? undefined : rulesSection,
       memory: projectMemory,
       historyCount: history.length,
     });

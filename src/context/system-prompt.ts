@@ -88,10 +88,18 @@ export class SystemPromptServiceImpl implements SystemPromptService {
       messages.push({ layer: 'project', content: parts.join('\n\n') });
     }
 
-    // ④ 项目记忆层：跨会话持久的项目约定/决策/坑（MemoryStore 渲染，压缩碰不到）。
-    //   放 skills 之后、task 之前：memory 在会话内基本不变（比 task 稳定），保持"越稳定越靠前"。
-    if (ctx.memory) {
-      messages.push({ layer: 'memory', content: `[项目记忆]（跨会话持久，适用于本项目的所有任务）\n${ctx.memory}` });
+    // ④ memory 层：**两节**，规约在前、记忆在后（ROADMAP 10.2.1）。
+    //   · 【项目规约】来自 AGENTS.md / CLAUDE.md —— **人写下的规矩**（播种时找一次，运行期不回读）；
+    //   · 【项目记忆】来自 MemoryStore —— **模型自己攒的结论**（压缩碰不到）。
+    //   两节同层（都是"本项目的约定"，且都在会话内基本不变，故都排在 task 之前、保持
+    //   "越稳定越靠前"）但**不合并**：权威来源不同，冲突时以人为准 —— 位置在前 + 节首明说，
+    //   是同一件事的两半。分开成两条消息只会多一条消息、且把一个稳定源挪出它该在的带宽。
+    //   任一节缺席就只出另一节；两节都无 → 整层缺席（维持"没有就不注入"的纪律）。
+    if (ctx.rules || ctx.memory) {
+      const parts: string[] = [];
+      if (ctx.rules) parts.push(ctx.rules);
+      if (ctx.memory) parts.push(`[项目记忆]（跨会话持久，适用于本项目的所有任务）\n${ctx.memory}`);
+      messages.push({ layer: 'memory', content: parts.join('\n\n') });
     }
 
     // ⑤ 工作记忆层：任务清单（渲染自内存真相源 TaskStore；独立于对话历史，压缩碰不到）。

@@ -7,11 +7,12 @@
  *         两份实现不会同时错，只会**各错一半**（启动装了四样、切换忘了第三样），
  *         而"少装一样"的症状是**看着一切正常**——用的是上一个项目的数据。
  *
- * 装进来的是六样（都是**进程级单例**，所以只能由一处统一负责）：
+ * 装进来的是七样（都是**进程级单例**，所以只能由一处统一负责）：
  *   taskStore       ← TASK.md（清单的投影 + 跨重启种子）
  *   memoryStore     ← .flint/memory.md（跨会话结论）
  *   eventStore      ← .flint/events.jsonl + .flint/tool-calls.jsonl（来龙去脉 + 流水索引）
  *   stackRegistry   ← 技术栈画像（存在性探测的语言 / 包管理器，ROADMAP 10.1.1）
+ *   rulesRegistry   ← 项目规约（AGENTS.md / CLAUDE.md 的首命中，ROADMAP 10.2.1）
  *   charterLock     ← 复位成**已锁**
  *   workspaceGrants ← **先清后栽**：清空后填回**本项目自己的**盘上长期放行（10.9.3 建表 + 10.9.1 持久化）
  * 外加**通讯录登记**：按准入判据决定要不要写进 ~/.flint/projects.jsonl（见下）。
@@ -84,8 +85,9 @@ import { normalizeProjectPath, projectRegistry } from '../eventlog/registry.js';
 import { charterLock } from '../project/charter.js';
 import { workspaceGrants } from '../permission/workspace.js';
 import { persistedGrants } from '../permission/grants.js';
-import { classifyProject, probeStack } from '../project/probe.js';
+import { classifyProject, probeStack, probeRules } from '../project/probe.js';
 import { detectStack, stackRegistry } from '../project/stack.js';
+import { rulesRegistry } from '../project/rules.js';
 import type { ProjectVerdict } from '../project/detect.js';
 
 /** 清单落点（cwd 根，不是 .flint/ 下——历史原因，见 todo/store.ts） */
@@ -162,6 +164,18 @@ export function seedProjectContext(opts: SeedOptions = {}): ProjectContextReport
   // 详见 detectStack 的文件头与 main.ts 里命令表播种那一段。
   stackRegistry.clear();
   stackRegistry.set(detectStack(probeStack(process.cwd())));
+
+  // 项目规约（ROADMAP 10.2.1）：与画像**同一判断** —— 它不是授权类配置而是**展示内容**
+  // （用户写的"本项目怎么做事"），切项目时应当重找：新项目有它自己的 AGENTS.md / CLAUDE.md。
+  // 界线同样是"**运行期不回读**"：会话内改了规约，要重启（或再切一次项目）才生效 ——
+  // 这条不是省 IO，是**不让模型靠 write 改写自己下一轮的注入内容**（见 project/rules.ts 文件头）。
+  //
+  // ⚠ 这里**只有一行 `set`、没有 `clear()`**，是刻意的，不是漏写：两条判据决定了要不要配一对 ——
+  //   · `set` **全量替换**（`set(null)` 就等于清空）⇒ 先清是空动作，写了会让读者以为它承重；
+  //   · 下面 `workspaceGrants.fill` 是**只加不清**（`fill` 不清空旧表）⇒ 那一对**必须**写全，
+  //     漏了 `clear()` 就会把上一个项目的放行目录带过来（静默且危险）。
+  //   一句话：**替换语义不需要先清，累加语义必须写清**。
+  rulesRegistry.set(probeRules(process.cwd()));
 
   // 目标文档的锁**不跨项目继承**：新项目一律从"已锁"开始（要改就再 /charter unlock）。
   charterLock.lock();

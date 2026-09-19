@@ -29,6 +29,7 @@ import * as path from 'node:path';
 import { normalizeProjectPath } from '../eventlog/registry.js';
 import { MANIFEST_FILES, judgeProject, type ProjectProbes, type ProjectVerdict } from './detect.js';
 import { STACK_CANDIDATES, type StackProbes } from './stack.js';
+import { clipRules, rulesCandidates, type RulesHit } from './rules.js';
 
 /**
  * 实物档案的落点 —— 任一存在，就是"flint 真在这儿工作过"。
@@ -113,4 +114,36 @@ export function probeStack(dir: string): StackProbes {
     }
   }
   return { files, packageJson };
+}
+
+/**
+ * 项目规约的探针（ROADMAP 10.2.1）—— 按 `rulesCandidates()` 给的顺序**首命中即停**，
+ * 回来一份 `RulesHit`（文件名 + 取自哪一级 + 截断后的正文）。
+ *
+ * 为什么顺序由判据给、探针只管照做：名单与优先级（先近后远、同目录内 `AGENTS.md` 先）
+ * 是**能逐条打靶的判断**（`rulesCandidates()` 是纯函数，连"走到盘根就停"都在里面），
+ * 探针的价值只在于"把它落到磁盘上" —— 与 `probeStack` / `probeProject` 同一分家理由。
+ *
+ * **两个"继续往下找"（不是错误，是判据的一部分）**：
+ *   · 文件不存在 / 读不动（权限 / 是目录 / 编码坏）→ 跳过该候选；
+ *   · 存在但**正文为空** → 同样跳过（空文件不算命中，"命中但什么都没说"比不注入更坏）。
+ * 全都没命中 → `null`，整节缺席。**任何情况都不抛** —— 它跑在每轮请求的必经之路上。
+ *
+ * 成本（回答 C9）：候选最多 6 个（3 级 × 2 名字），每个一次 `existsSync`，**至多一次**
+ * `readFileSync`（首命中即停），**不含任何子进程**。且它**不在启动关键路径上** ——
+ * `seedProjectContext()` 只在启动 / 切项目时各调一次，运行期一次都不读盘。
+ */
+export function probeRules(dir: string): RulesHit | null {
+  for (const c of rulesCandidates(dir)) {
+    if (!existsSync(c.abs)) continue;
+    let text: string | undefined;
+    try {
+      text = clipRules(readFileSync(c.abs, 'utf-8'));
+    } catch {
+      text = undefined;
+    }
+    if (text === undefined) continue; // 空文件 / 读不动：跳过，继续往下找
+    return { name: c.name, level: c.level, text };
+  }
+  return null;
 }

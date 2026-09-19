@@ -8,7 +8,11 @@
  * 这样某层变化（如摘要更新）只使该层之后的缓存失效，稳定前缀命中率高。
  */
 
-/** 系统提示词层次名（用于分层缓存 + hook 定位，发送时仅 role/content 序列化） */
+/**
+ * 系统提示词层次名（用于分层缓存 + hook 定位，发送时仅 role/content 序列化）
+ * 注：`memory` 层内含**两节** —— 项目规约（人写的，在前）+ 项目记忆（模型攒的，在后），
+ *     两者权威来源不同故分节而不合并（见 SystemPromptContext.rules）。
+ */
 export type SystemPromptLayer = 'core' | 'tools' | 'skills' | 'project' | 'memory' | 'task' | 'summary' | 'custom';
 
 /** 分层 system 消息（一层一条，顺序即发送顺序） */
@@ -56,6 +60,14 @@ export interface SystemPromptContext {
    * 它是**展示**不是门禁：只回答"跑什么"，不授权自动执行（授权只来自 .flint/postcheck.json）。
    */
   commands?: string | undefined;
+  /**
+   * 项目规约（`AGENTS.md` / `CLAUDE.md` 的首命中，渲染结果，可选）—— ROADMAP 10.2.1。
+   * **与 memory 同一层**（`layer: 'memory'`），但在同一条消息里**排在项目记忆之前**：
+   * 两者权威来源不同 —— 这份是**人写下的规矩**、那份是**模型自己攒的结论**，冲突时以人为准，
+   * 位置在前 + 节首明说"以这里为准"是同一件事的两半。
+   * 没有命中（或命中但正文为空）则不注入该节；没有它时 memory 层逐字与接入前相同。
+   */
+  rules?: string | undefined;
   /**
    * 项目记忆（MemoryStore 渲染结果，可选）—— 跨会话持久的项目约定/决策/坑。
    * 独立于对话历史，压缩碰不到；只在有记忆条目时注入。

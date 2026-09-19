@@ -59,6 +59,8 @@
 │                   · probe.ts 探测层（**全项目唯一**碰 fs / 起子进程处；`gitRoot` 是**惰性回调**，判据不碰盘、探测不判事）
 │                   · stack.ts **技术栈画像**（**判据纯函数**：存在性标记 → 语言 / 包管理器，顺序 声明 > 锁文件 > 默认；
 │                      **没有 package.json 绝不认 npm**；原料表 = detect 的 MANIFEST_FILES ∪ 探测专用，单向不回流）
+│                   · rules.ts **项目规约读取**（10.2.1，**判据纯函数**、只 import node:path：3 级 × AGENTS.md / CLAUDE.md 首命中、
+│                     **到盘根就停**、空文件不算命中；**折进 memory 层内分节**而不新开一层，播种一次、运行期不回读）
 │ git/              git 只读结构化（git.ts：op 白名单 + argv 不经 shell + 8 个 op 的解析渲染）· route.ts bash 裸 git 只读命令的路由（**不是闸**）
 │ process/          子进程**整树终止**（proctree.ts 纯策略：Windows taskkill /T · POSIX 负 pid 进程组 · 失败分类；runner.ts 执行器：异步 spawn + 超时按树杀 + 宽限期兜底）——`bash` 与改完自检**两处共用**
 │ input/            `@file` 输入引用（10.8.1）：at-file.ts 判据纯函数（零 import）· probe.ts 探针（唯一碰 fs 处）
