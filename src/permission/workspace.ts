@@ -55,8 +55,12 @@
  * **B 自己**在盘上的那一份，不是 A 的（"凡在旧项目取得的许可都不跟着搬"照旧成立）。
  *
  * ── 已知边界（不装糊涂）──
- * · **符号链接 / junction 不追**：判据只做字符串路径代数，不碰 fs（目标文件可能还不存在，
- *   不能 realpath）。`cwd/link-to-home/x` 这类形状判得出来是"内部"，实际落到外面。
+ * · **符号链接 / junction 由第二步兜底**（ROADMAP 10.9.5 补）。第一步仍只做字符串路径
+ *   代数、不碰 fs —— 那是它能喂假目录逐形状打靶的原因；**第二步** `findTraversal` 在
+ *   "声明在内"时追一次**真落点**（解析器由 `ctx.realpath` 注入，见下面 ctx 的注释）：
+ *   `cwd/link-to-out/x` 这类形状第一步判"内部"，第二步判"真落点在外面" → 拒。
+ *   ⚠ 第二步**只在注入了 `realpath` 时生效**，没注入时判据逐字退回改动前的行为 ——
+ *   既有调用点与既有 126 条断言因此零扰动（这是"加一步"而不"换判据"的代价与好处）。
  * · **`bash` 不覆盖**（见承重③）。
  * · **`~` 不展开**（与 write / edit / read 同口径）：`path: "~/x"` 写的是 **cwd 下一个名叫
  *   `~` 的目录**，不碰家目录 —— 所以它判成"内部"是**对的**，不是漏拦。
@@ -92,6 +96,16 @@ export interface WorkspaceContext {
   cwd: string;
   /** 用户已显式放行的**绝对**目录（每个都含其子树） */
   grants: readonly string[];
+  /**
+   * 追**真落点**的解析器（符号链接 / junction）—— 可选、注入式。
+   *
+   * 为什么是注入而不是本文件直接 import 一份实现：本文件的判据刻意**只依赖 node:path
+   * 与钩子契约类型**（G1/G2 钉着这条），"碰 fs"的那一半因此留在 `tools/paths.ts` 的
+   * `realPathOf`，由装配处（harness/main.ts）注入。判据本身仍是纯的 —— 套件照样能喂
+   * 一个**假解析器**逐形状打靶，与 cwd / grants 是同一个立场（判据要能被喂假数据）。
+   * **缺省不注入 = 不追**：判据退回纯代数，行为与 10.9.5 之前逐字相同。
+   */
+  realpath?: (abs: string) => string;
 }
 
 /**
@@ -140,6 +154,71 @@ export function isOutsideWorkspace(target: string, ctx: WorkspaceContext): boole
 }
 
 /**
+ * **第二步**的判据（ROADMAP 10.9.5）：**声明的**路径落在某个根里，**追出来的真落点**却出了
+ * 那个根 —— 符号链接 / junction 穿越。命中时返回**出界的那个根**（拒因要报它），否则 undefined。
+ *
+ * 三段判据，每段都有反例钉着（见 `verify-paths.ts`）：
+ *  ① **声明路径不在这个根里 → 不是它的责任**，跳到下一个根。少了这一句，就会拿 A 根去套 B 根
+ *     的路径（cwd 与某条放行目录互不包含时立刻误判）。
+ *  ② **根与目标都要先取真落点再比**。只对目标取会**假阳**：cwd 自己就是个符号链接时
+ *     （macOS 的 `/tmp` → `/private/tmp` 是常态、Windows 上把项目挂在 junction 下同理），
+ *     声明与真落点都在真实子树里，但拿去跟**没取真落点的 cwd** 比就"出界"了。
+ *  ③ 判定复用 `isUnder`（**同一份代数**，不另写一套比较）。而且 Windows 上 `path.relative`
+ *     **大小写不敏感**（2026-09-19 探针实测：`relative(MixedCase, MIXEDCASE/f)` 得 `f`），
+ *     所以解析器把大小写规范成磁盘上的写法（`realpathSync.native` 的行为）不会造成假阳。
+ *
+ * **fail-open**：没注入解析器 → 不追（返回 undefined）；解析器抛异常 → 也返回 undefined。
+ * 判据的否定方向（"出界了"）要求证据确凿，**追不动就没有证据** —— 同三道闸的立场。
+ */
+export function findTraversal(
+  declaredAbs: string,
+  ctx: WorkspaceContext,
+): string | undefined {
+  const rp = ctx.realpath;
+  if (!rp) return undefined;
+  try {
+    const realTarget = rp(declaredAbs);
+    for (const root of [ctx.cwd, ...ctx.grants]) {
+      if (!isUnder(root, declaredAbs)) continue; // ① 声明就不在这个根里，不是它的责任
+      if (!isUnder(rp(root), realTarget)) return root; // ② 两侧都取真落点再比
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * 第二步的教学拒因 —— 与 `renderWorkspaceReason` **同族不同因**，所以两者共用
+ * `WORKSPACE_MARK`：它们回答的是**同一个问题**（"这次写会不会落到工作区外"），
+ * 只是判据换了一步（声明路径 / 真落点）。
+ *
+ * 一处刻意与第一步**分开**的地方：这里的三条出路**不是**"`/workspace allow` 那个目录"
+ * —— 那条路解决不了问题（声明路径本来就在项目里，放行它没有意义），真正的出路是
+ * "中间某一段是个链接，改用真实路径"。**方向给错比不给更坏。**
+ */
+export function renderTraversalReason(
+  target: string,
+  declaredAbs: string,
+  realAbs: string,
+  root: string,
+): string {
+  return [
+    `${WORKSPACE_MARK} 这条调用没有被执行：路径**看着**在工作区里，追下去却落在外面（符号链接 / junction）。`,
+    `  声明的路径 = ${declaredAbs}`,
+    `  真落点     = ${realAbs}`,
+    `  它出界于   = ${root}`,
+    '  三条出路：',
+    '    · 目标本来就是项目里的文件 —— 中间有一段（目录或文件）是符号链接，指向了项目外面。'
+      + '先 ls 看一眼它的真实指向，再用真路径写一次；',
+    '    · 确实要写到链接指向的那个地方 —— 那就按"项目外的目录"办：把"写哪个文件、为什么"'
+      + '讲给用户听，请他执行 /workspace allow <目录>（**仅本会话有效**，含其子树）；',
+    '    · 只是要看外面的文件 —— 用 read。这道闸只管写。',
+    `  （说明：目标原文「${target}」，与上面两条实路径可能只差一个链接。它不是沙箱。）`,
+  ].join('\n');
+}
+
+/**
  * 教学拒因 —— 与 10.9.2 的 `renderDangerReason` **同形**（同族的两条拒绝读起来该像一家人）：
  * 命中什么 · 这一条**没被执行** · 三条出路 · 末段自认边界。
  *
@@ -167,7 +246,8 @@ export function renderWorkspaceReason(target: string, ctx: WorkspaceContext): st
       + '这是**唯一**的开门动作，模型自己开不了；',
     '    · 只是要看外面的文件 —— 用 read。这道闸只管写。',
     '  （说明：这道闸只管 write / edit 的**目标路径参数**；bash 的目标藏在命令串里'
-      + '（读和写长得一样），判不出来、刻意不判；符号链接也不追。它不是沙箱。）',
+      + '（读和写长得一样），判不出来、刻意不判；符号链接会追真落点另判（见本闸第二步）。'
+      + '它不是沙箱。）',
   ].join('\n');
 }
 
@@ -195,8 +275,25 @@ export function guardWorkspaceWrite(
   if (typeof target !== 'string') return undefined;
 
   const c = ctx ?? { cwd: process.cwd(), grants: workspaceGrants.list() };
-  if (!isOutsideWorkspace(target, c)) return undefined;
-  return { action: 'deny', reason: renderWorkspaceReason(target, c) };
+  const abs = path.resolve(c.cwd, target);
+
+  // 第一步：**声明的**目标路径落在工作区之外 → 拒（本闸原有的那一半，纯字符串代数）
+  if (isOutsideWorkspace(target, c)) {
+    return { action: 'deny', reason: renderWorkspaceReason(target, c) };
+  }
+
+  // 第二步（ROADMAP 10.9.5）：声明在内，但**真落点**出了那个根 —— 符号链接穿越。
+  // 顺序刻意如此：第一步更便宜、更确定、拒因更通用（"路径写到项目外去了"）；
+  // 第二步只在第一步已放行、且注入了解析器时才跑，代价（两次 fs）只落在真要写的调用上。
+  const escapedRoot = findTraversal(abs, c);
+  if (escapedRoot && c.realpath) {
+    return {
+      action: 'deny',
+      reason: renderTraversalReason(target, abs, c.realpath(abs), escapedRoot),
+    };
+  }
+
+  return undefined;
 }
 
 /**

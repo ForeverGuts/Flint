@@ -57,6 +57,7 @@ import {
   type GitOp,
 } from '../git/git.js';
 // 起子进程的两处（bash / 自检）都走统一执行器 —— 它管住的是**整棵进程树**（ROADMAP 10.6.6）
+import { resolveToolPath } from './paths.js';
 import { describeTreeKill } from '../process/proctree.js';
 import { childFailureCode, runChildInTree } from '../process/runner.js';
 
@@ -329,18 +330,22 @@ export function registerBuiltinTools(
         const { path, depth } = args;
 
         const { existsSync, statSync, readdirSync } = await import('node:fs');
+        // `resolvedPath` = 回执里印的形态（模型写的原文，反斜杠归一）；`resolvedAbs` = 这次调用
+        // **真正要碰的绝对路径**。两者分开是刻意的：解析统一走 `resolveToolPath`（ROADMAP 10.9.5
+        // 的"统一 resolve"），但报告口径不因此变成一屏绝对路径。
         const resolvedPath = path.replace(/\\/g, '/');
+        const resolvedAbs = resolveToolPath(path, process.cwd()).abs;
 
-        if (!existsSync(resolvedPath)) {
+        if (!existsSync(resolvedAbs)) {
           return toolNegative('NOT_FOUND', `目录不存在: ${resolvedPath}`);
         }
-        if (!statSync(resolvedPath).isDirectory()) {
+        if (!statSync(resolvedAbs).isDirectory()) {
           return toolNegative('NOT_DIR', `不是目录: ${resolvedPath}`);
         }
 
         // 递归列目录（目录名带 / 后缀；跳过噪音目录；限制条目数防膨胀）
         const SKIP = new Set(['.git', 'node_modules', 'dist']);
-        const ignoreRules = await loadIgnoreRules(resolvedPath);
+        const ignoreRules = await loadIgnoreRules(resolvedAbs);
         const MAX_ENTRIES = 200;
         const lines: string[] = [];
         // rel = 相对**搜索根**的路径。gitignore 的每条规则都是相对它自己所在那一层写的，
@@ -369,7 +374,7 @@ export function registerBuiltinTools(
             if (isDir) walk(`${dir}/${item.name}`, level + 1, childRel);
           }
         };
-        walk(resolvedPath, 1, '');
+        walk(resolvedAbs, 1, '');
 
         if (lines.length === 0) {
           return toolNegative('EMPTY', `目录为空或全部被过滤: ${resolvedPath}`);
@@ -397,16 +402,18 @@ export function registerBuiltinTools(
         const { path, offset, limit } = args;
 
         const { readFileSync, existsSync, statSync } = await import('node:fs');
+        // 显示用原文形态 / fs 用统一解析出来的绝对路径（见 ls handler 里那段说明）
         const resolvedPath = path.replace(/\\/g, '/');
+        const resolvedAbs = resolveToolPath(path, process.cwd()).abs;
 
-        if (!existsSync(resolvedPath)) {
+        if (!existsSync(resolvedAbs)) {
           return toolNegative('NOT_FOUND', `文件不存在: ${resolvedPath}`);
         }
-        if (!statSync(resolvedPath).isFile()) {
+        if (!statSync(resolvedAbs).isFile()) {
           return toolNegative('NOT_FILE', `不是文件: ${resolvedPath}`);
         }
 
-        const content = readFileSync(resolvedPath, 'utf-8');
+        const content = readFileSync(resolvedAbs, 'utf-8');
         const lines = content.split('\n');
         const start = Math.max(0, offset - 1);
         const count = Math.min(limit, lines.length - start);
@@ -439,17 +446,19 @@ export function registerBuiltinTools(
 
         const { writeFileSync, readFileSync, mkdirSync, existsSync } = await import('node:fs');
         const { dirname } = await import('node:path');
+        // 显示用原文形态 / fs 用统一解析出来的绝对路径（见 ls handler 里那段说明）
         const resolvedPath = path.replace(/\\/g, '/');
-        const dir = dirname(resolvedPath);
+        const resolvedAbs = resolveToolPath(path, process.cwd()).abs;
+        const dir = dirname(resolvedAbs);
 
         if (!existsSync(dir)) {
           mkdirSync(dir, { recursive: true });
         }
 
-        writeFileSync(resolvedPath, content, 'utf-8');
+        writeFileSync(resolvedAbs, content, 'utf-8');
 
         // 写回验证
-        const verified = readFileSync(resolvedPath, 'utf-8');
+        const verified = readFileSync(resolvedAbs, 'utf-8');
         if (verified !== content) {
           return toolVerifyFailed(`写入内容与读取内容不一致: ${resolvedPath}`);
         }
@@ -496,7 +505,9 @@ export function registerBuiltinTools(
     handler: async (args) => {
       try {
         const { path, oldText, newText, replaceAll } = args;
+        // 显示用原文形态 / fs 用统一解析出来的绝对路径（见 ls handler 里那段说明）
         const resolvedPath = path.replace(/\\/g, '/');
+        const resolvedAbs = resolveToolPath(path, process.cwd()).abs;
 
         // 新旧文本相同：不落盘、不报成功，直接回一句无效（省掉无谓的写与验证）
         if (oldText === newText) {
@@ -505,10 +516,10 @@ export function registerBuiltinTools(
 
         const { readFileSync, writeFileSync, existsSync, statSync } = await import('node:fs');
 
-        if (!existsSync(resolvedPath)) {
+        if (!existsSync(resolvedAbs)) {
           return toolNegative('NOT_FOUND', `文件不存在: ${resolvedPath}（新建文件请用 write）`);
         }
-        if (!statSync(resolvedPath).isFile()) {
+        if (!statSync(resolvedAbs).isFile()) {
           return toolNegative('NOT_FILE', `不是文件: ${resolvedPath}`);
         }
 
@@ -516,7 +527,7 @@ export function registerBuiltinTools(
         // 实测 Node v24.12.0 用 utf-8 读**不剥** BOM（\uFEFF 会留在串首），但这是随时可能
         // 变的行为细节，不该当设计依据——自己读字节、自己判头三字节，BOM 的保真就与 Node
         // 版本无关；写回也因此能直接按字节 equals 验证，不经二次编解码。
-        const buf = readFileSync(resolvedPath);
+        const buf = readFileSync(resolvedAbs);
         const hasBom = buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
         const decoded = buf.toString('utf-8');
         const original = hasBom ? decoded.slice(1) : decoded;
@@ -567,10 +578,10 @@ export function registerBuiltinTools(
 
         // 还原行尾与 BOM 后整体写回：未命中的部分必须与原文逐字节相同
         const payload = (hasBom ? '\uFEFF' : '') + (allCrlf ? updated.replace(/\n/g, '\r\n') : updated);
-        writeFileSync(resolvedPath, payload, 'utf-8');
+        writeFileSync(resolvedAbs, payload, 'utf-8');
 
         // 写回验证按字节比：不依赖"编码读会不会吃 BOM"这类行为细节
-        if (!readFileSync(resolvedPath).equals(Buffer.from(payload, 'utf-8'))) {
+        if (!readFileSync(resolvedAbs).equals(Buffer.from(payload, 'utf-8'))) {
           return toolVerifyFailed(`写回内容与读取内容不一致: ${resolvedPath}`);
         }
 
@@ -621,13 +632,14 @@ export function registerBuiltinTools(
 
         const { existsSync, statSync, readdirSync, readFileSync } = await import('node:fs');
         const resolvedPath = searchPath.replace(/\\/g, '/');
-        if (!existsSync(resolvedPath)) return toolNegative('NOT_FOUND', `路径不存在: ${resolvedPath}`);
+        const resolvedAbs = resolveToolPath(searchPath, process.cwd()).abs;
+        if (!existsSync(resolvedAbs)) return toolNegative('NOT_FOUND', `路径不存在: ${resolvedPath}`);
 
         const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist']);
         // 搜索根本身是文件时，用户已经把路径点名了 —— 那时不读 .gitignore、也不套任何规则
         //（gitignore.ts 界线 ④：别人说出来的路径，别替他藏）
-        const searchIsDir = statSync(resolvedPath).isDirectory();
-        const ignoreRules: IgnoreRule[] = searchIsDir ? await loadIgnoreRules(resolvedPath) : [];
+        const searchIsDir = statSync(resolvedAbs).isDirectory();
+        const ignoreRules: IgnoreRule[] = searchIsDir ? await loadIgnoreRules(resolvedAbs) : [];
         const MAX_FILE_BYTES = 2 * 1024 * 1024;   // 超大文件跳过：读进来只为搜一遍不值得
         const MAX_MATCHES = 50;                   // 与改前的 head -50 同量级，防输出膨胀
         const MAX_FILES = 5000;                   // 防误指向盘符根目录时走到天荒地老
@@ -684,8 +696,8 @@ export function registerBuiltinTools(
           }
         };
 
-        if (searchIsDir) walk(resolvedPath, '');
-        else scanFile(resolvedPath);
+        if (searchIsDir) walk(resolvedAbs, '');
+        else scanFile(resolvedAbs);
 
         // "扫了 N 个文件"必须回给模型：0 命中时它需要区分"扫了 300 个文件确实没有"
         // 与"过滤器把所有文件都排除了"——后者是它自己 include 写错了

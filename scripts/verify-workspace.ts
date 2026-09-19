@@ -320,7 +320,10 @@ check('G3 main.ts 里**四道闸**的顺序：契约 → 危险 → 工作区 �
 // G4 刻意不设：`before_tool_call` 的**注册时机**（排在 loadExtensions 之前）是全钩子块共有的
 // 性质，verify-danger 的 G4 已经逐字钉着它 —— 在这里再钉一遍就是本仓点过名的"僵尸断言"。
 check('G5 main.ts 走的是模块导出的实现（不是就地写一份箭头函数）',
-  /import \{ guardWorkspaceWrite \} from '\.\.\/permission\/workspace\.js'/.test(mainSrc));
+  // ⚠ 放宽过一次（2026-09-19，10.9.5）：判据的原意是"走导出的实现"，**不是**"import 列表恰好
+  //   一个名字"。给工作区闸注入真落点解析器之后 main.ts 多导入了 `workspaceGrants` 与
+  //   `realPathOf`，正则按**意图**写成"名字在由该模块导入的花括号里"，而不是钉死成单个名字。
+  /import \{[^}]*\bguardWorkspaceWrite\b[^}]*\} from '\.\.\/permission\/workspace\.js'/.test(mainSrc));
 check('G6 钩子适配器只有一处实现（判据不散成多份）',
   (workSrc.match(/export function guardWorkspaceWrite/g) ?? []).length === 1);
 

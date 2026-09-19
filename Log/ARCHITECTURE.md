@@ -43,6 +43,8 @@
 │                   + JsonlSessionRepo —— 会话仓库层（目录级 list/open/create/remove，core/session-repo 契约；
 │                     删除两层守卫：文件名白名单拒穿越 + Runtime 拒删当前活跃会话）
 │ tools/            ToolRegistry + spec.ts（参数规格：一份定义派生 Schema / 运行时校验 / 入参类型）
+│                   + paths.ts（10.9.5：全仓**唯一**的"相对 → 绝对"解析 + 真落点；五个路径 handler 都从它取落点，
+│                     闸那边的真落点也由它提供 —— 由装配处注入，故闸自身仍不碰 fs）
 │                   + 14 个内置工具（ls / read / write / edit / grep / bash / todo / memory / record_event / search_events / pull_events / ask / archive / git）
 │ todo/             TaskStore —— 任务清单的内存真相源（render/parse 互逆 + TASK.md 投影/种子；层级 / 依赖 / 会话内时间戳）
 │ memory/           MemoryStore —— 项目记忆的内存真相源（render/parse 互逆 + .flint/memory.md 投影/种子）
@@ -69,6 +71,8 @@
 │                   ——默认只许写 cwd 之内，判据 `isUnder` / `isOutsideWorkspace`（**`path.relative` 不是字符串前缀**）；
 │                     只认 write / edit（**`bash` 刻意排除**：读写形状无异）；开门只走用户手打的 `/workspace allow <目录>`
 │                     （**授权表与 PermissionManager 分开** —— 权限弹窗在非 TTY / RPC 下自动放行）；授权含子树不向上不向旁、切项目**先清后栽**
+│                     · **10.9.5 起这道闸是两步**：第一步按**声明路径**判（纯代数），第二步 `findTraversal` 按**真落点**判
+│                     （符号链接 / junction 穿越）——判据的解析器由 `harness/main.ts` **注入**，缺省不注入 = 不追（退回改动前行为）
 │                   · grants.ts **工作区授权持久化**（10.9.1 落地前半）—— `/workspace allow --save` 之后重启仍生效，
 │                     落盘 `~/.flint/permissions.json`（按项目键分区）；**读一次**（启动读进内存快照 → 运行期不读盘，
 │                     掐掉"模型改文件给自己发授权"那条通路）· **读不懂当没有**且**拒写**（免得抹掉别的项目条目）· **写失败报出来**

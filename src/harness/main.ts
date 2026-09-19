@@ -33,7 +33,8 @@ import { seedProjectContext } from './project-context.js';
 import { atFileInputHandler } from '../input/probe.js';import { renderRegistrationNote } from '../project/projects.js';
 import { charterLock, guardContractWrite } from '../project/charter.js';
 import { guardDangerousCommand } from '../permission/danger.js';
-import { guardWorkspaceWrite } from '../permission/workspace.js';
+import { guardWorkspaceWrite, workspaceGrants } from '../permission/workspace.js';
+import { realPathOf } from '../tools/paths.js';
 import { recordGateDeny } from '../permission/audit.js';
 import { routeBashGitRead } from '../git/route.js';
 import type { HookDeny } from '../loop/tool-hooks.js';
@@ -110,7 +111,16 @@ export function coreBeforeToolCall(event: unknown, charterUnlocked: boolean): Ho
   //    `/workspace allow <目录>`——刻意不接权限子系统：非 TTY 下弹窗自动放行会让边界静默失效。
   //    排在②之后：前两道判据更窄更确定（字面文件名 / 灾难形态），先让它们给出更具体的理由。
   //    只认 write/edit：bash 的目标路径与读写语义判不出来，刻意不进（边界写在 workspace.ts 头注）。
-  const workspace = guardWorkspaceWrite(toolName, e.args);
+  //    **两步判**（第二步 = ROADMAP 10.9.5 路径穿越）：① 声明的路径在外 → 拒；② 声明在内、
+  //    但追出来的**真落点**在外（符号链接 / junction）→ 拒。解析器在**这里**注入 ——
+  //    判据本身不碰 fs（所以能喂假目录打靶），碰 fs 的那一半在 tools/paths.ts。
+  //    cwd 与放行表**每次调用现取**：`/projects --switch` 改了 cwd、`/workspace allow` 改了
+  //    放行表之后，下一次工具调用立刻按新边界判，不需要重装钩子。
+  const workspace = guardWorkspaceWrite(toolName, e.args, {
+    cwd: process.cwd(),
+    grants: workspaceGrants.list(),
+    realpath: realPathOf,
+  });
   if (workspace) return deny('工作区外写', 'workspace', workspace);
   // ④ 引导闸（**路由器**，不是闸）：bash 里的裸 git 只读命令 → 零弹窗的结构化 git 工具。
   //    判据刻意窄（只认裸形式），漏掉只是"照旧走 bash"，因此没有完备性负担，可与①②③同栖一个钩子。
