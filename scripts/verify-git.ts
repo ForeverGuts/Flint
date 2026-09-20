@@ -865,8 +865,11 @@ check('J1 src/git/git.ts 零 import（纯函数模块，解析逻辑能脱离终
 check('J2 git.ts 不碰 fs / 不起子进程（跑命令的职责在工具层；先抹注释，免得被示例文字误伤）',
   !/node:(fs|child_process)/.test(stripComments(gitSrc))
   && !/\bexecFileSync\b/.test(stripComments(gitSrc)));
-check('J3 git 工具**不**带 requirePermission（只读，不该弹窗；写操作留给 10.5.2）',
-  /spec: \{/.test(gitToolSrc) && !gitToolSrc.includes('requirePermission'));
+// ⚠ J3 的判据必须**先抹注释**：本段切片是"从 `name: 'git',` 到下一个 `tools.register(`"，
+// 而 10.5.2 在两者之间插了一整段说明（里面就写着 `requirePermission: true`）——
+// 不抹注释的话，判红的是**说明文字**而不是代码。这正是本仓记过六次的那个坑。
+check('J3 只读的 git 工具**不**带 requirePermission（"看一眼"不该弹窗；要弹的是写侧那个工具）',
+  /spec: \{/.test(gitToolSrc) && !stripComments(gitToolSrc).includes('requirePermission'));
 check('J4 git 工具走 execFileSync（argv 数组，不经 shell）而非 execSync（命令字符串）',
   /execFileSync\('git'/.test(gitToolSrc) && !/execSync\(/.test(gitToolSrc));
 check('J5 工具层复用既有 decodeChildOutput 做编码判别（不另起一套）',

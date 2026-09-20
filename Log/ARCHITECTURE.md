@@ -39,17 +39,17 @@
 
 ┌─ 子系统实现（一目录一个，互不 import）────────────────────
 │ loop/             AgentLoopServiceImpl —— LLM 流式 + 工具执行的循环
-│                   + plan-mode.ts **计划模式**（10.4.1，`before_tool_call` 的**第 0 道闸**）：`/plan on` 之后 write / edit / bash
+│                   + plan-mode.ts **计划模式**（10.4.1，`before_tool_call` 的**第 0 道闸**）：`/plan on` 之后 write / edit / bash / git_write
 │                     一律被拒、只有**用户**打得出 `/plan off`；判据 `guardPlanMode(toolName, enabled)` 是**纯函数**且
 │                     **只看工具名**（无 fail-open 分支）；**`bash` 也受管**——与工作区闸刻意排除它相反，因为读类
-│                     另有专用工具（read / ls / grep / git 全放行），堵掉 bash 的代价近乎为零而留着就是一个 `> file` 的后门
+│                     另有专用工具（read / ls / grep / git 全放行），堵掉 bash 的代价近乎为零而留着就是一个 `> file` 的后门；**`git_write`（10.5.2）之所以是独立工具名**而不是给 `git` 多几个写 op，正是为了让这道只看名字的闸拦得住它
 │ session/          JsonlSessionStorage（entry 树 + leaf 指针 + fork；getMessages 视图裁剪）· InMemory · Mock
 │                   + JsonlSessionRepo —— 会话仓库层（目录级 list/open/create/remove，core/session-repo 契约；
 │                     删除两层守卫：文件名白名单拒穿越 + Runtime 拒删当前活跃会话）
 │ tools/            ToolRegistry + spec.ts（参数规格：一份定义派生 Schema / 运行时校验 / 入参类型）
 │                   + paths.ts（10.9.5：全仓**唯一**的"相对 → 绝对"解析 + 真落点；五个路径 handler 都从它取落点，
 │                     闸那边的真落点也由它提供 —— 由装配处注入，故闸自身仍不碰 fs）
-│                   + 14 个内置工具（ls / read / write / edit / grep / bash / todo / memory / record_event / search_events / pull_events / ask / archive / git）
+│                   + 15 个内置工具（ls / read / write / edit / grep / bash / todo / memory / record_event / search_events / pull_events / ask / archive / git / git_write）
 │ todo/             TaskStore —— 任务清单的内存真相源（render/parse 互逆 + TASK.md 投影/种子；层级 / 依赖 / 会话内时间戳）
 │ memory/           MemoryStore —— 项目记忆的内存真相源（render/parse 互逆 + .flint/memory.md 投影/种子）
 │ eventlog/         EventStore —— 历史事件库（.flint/events.jsonl 追加档案 + 检索；tool_call span 自动捕获）
@@ -65,7 +65,7 @@
 │                      **没有 package.json 绝不认 npm**；原料表 = detect 的 MANIFEST_FILES ∪ 探测专用，单向不回流）
 │                   · rules.ts **项目规约读取**（10.2.1，**判据纯函数**、只 import node:path：3 级 × AGENTS.md / CLAUDE.md 首命中、
 │                     **到盘根就停**、空文件不算命中；**折进 memory 层内分节**而不新开一层，播种一次、运行期不回读）
-│ git/              git 只读结构化（git.ts：op 白名单 + argv 不经 shell + 8 个 op 的解析渲染）· route.ts bash 裸 git 只读命令的路由（**不是闸**）
+│ git/              git 只读结构化（git.ts：op 白名单 + argv 不经 shell + 8 个 op 的解析渲染 + 分支描述单源）· write.ts **写侧纯判据**（10.5.2：add/commit/push，`--` 形状围栏 + force 三档与另一把权限键）· route.ts bash 裸 git 只读命令的路由（**不是闸**）
 │ process/          子进程**整树终止**（proctree.ts 纯策略：Windows taskkill /T · POSIX 负 pid 进程组 · 失败分类；runner.ts 执行器：异步 spawn + 超时按树杀 + 宽限期兜底）——`bash` 与改完自检**两处共用**
 │ input/            `@file` 输入引用（10.8.1）：at-file.ts 判据纯函数（零 import）· probe.ts 探针（唯一碰 fs 处）
 │                   + `atFileInputHandler(getCwd)` 工厂；挂 `runtime.onInput()`（在 prompt() 里、**命令分发之后、skill 展开之前**）

@@ -362,15 +362,20 @@ console.log('\n⑦ 源码文本断言（防回退）');
   check('G11 grep 的跳过表 = 内置默认（.git/node_modules/dist）∪ .gitignore（两半都在，缺一不可）',
     /const SKIP_DIRS = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(builtinSrc)
     && /isIgnoredByGitignore\(childRel, item\.isDirectory\(\), ignoreRules\)/.test(builtinSrc));
-  // 口径更新（2026-09-14 git 工具；2026-09-15 改完自检；**2026-09-16 ROADMAP 10.6.6**）：
+  // 口径更新（2026-09-14 git 工具；2026-09-15 改完自检；**2026-09-16 ROADMAP 10.6.6**；**2026-09-20 10.5.2**）：
   // 起进程这件事**收拢**了 —— bash 与自检原先各自直连 child_process，现在都改走
-  // process/runner.ts（异步 spawn + 超时**按进程树**杀）。builtin.ts 里只剩 git 一处。
+  // process/runner.ts（异步 spawn + 超时**按进程树**杀）。builtin.ts 里只剩 git 这一族。
   // 判据因此从"在 builtin 里数到三"变成"点两个模块的名字"：多出第三个模块，就说明又有
   // 人绕开了受控执行器 —— 而"各自直连、各自只杀 shell"正是 10.6.6 要根治的老毛病。
   // 这条**会随正当用途增加而红**，那是刻意的：每次加一处都必须回来把理由写在这里。
+  //
+  // 2026-09-20（10.5.2 写操作确认闸）：builtin.ts 里由 **1 处变 2 处** —— 新增 git_write
+  // 工具也要起 git 子进程。**理由**：读写两侧本就该是两个工具（工具身份要能回答"会不会改
+  // 用户的文件"，计划模式闸只看名字），所以调用点必然是两个；两处**同族同形**（argv 数组、
+  // execFileSync、不经 shell），没有引入新的执行路径。模块数仍是 2。
   const runnerSrc = fs.readFileSync(path.join(ROOT, 'src/process/runner.ts'), 'utf-8');
-  check('G12 起子进程只有两个模块：builtin.ts（git，argv 不经 shell）与 process/runner.ts（bash 与自检共用）',
-    (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 1
+  check('G12 起子进程只有两个模块：builtin.ts（git 读/写两个工具，argv 不经 shell，2 处调用）与 process/runner.ts（bash 与自检共用）',
+    (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 2
     && (runnerSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 1);
   check('G12b builtin.ts 里不再直接 spawnSync / execSync（那等于退回"只杀 shell、孙进程照跑"）',
     !/\b(spawnSync|execSync)\(/.test(builtinSrc));

@@ -2,26 +2,31 @@
  * /plan 命令 —— 计划模式的开关（ROADMAP 10.4.1）。
  * 调用方：commands/loader.ts 自动扫描（本目录每个导出 activate 的文件都会被加载）
  * 服务于：给用户一个**显式的模式开关** —— 开启后，模型改不动任何项目文件
- *         （write / edit / bash 被程序拒绝），只能先交方案。模型自己关不掉
+ *         （**写类工具**一律被程序拒绝），只能先交方案。模型自己关不掉
  *         （命令只能由用户输入触发，模型手里没有能碰 `planMode` 的工具）。
  *
  * 参数（空格后第一个词）：
  *   /plan          看状态 + 用法
  *   /plan on       进入计划模式（**仅本会话**）
- *   /plan off      退出计划模式，恢复 write / edit / bash
+ *   /plan off      退出计划模式，恢复写类工具
  *
  * ── 为什么是"两个动词"而不是一个 toggle ──
  * `/plan` 不带参数会切换成什么？用户在"想确认现在是不是计划模式"和"想切过去"之间
  * 有歧义。同族的 `/workspace` 用的是"裸命令 = 看状态，动词 = 动作"，本条照抄 ——
  * **一条命令的默认行为应当是最无害的那个**（看状态不改任何东西）。
  *
- * ── 为什么开模式要**说清它拦的是哪三个工具** ──
+ * ── 为什么开模式要**说清它拦的是哪几个工具** ──
  * 用户开这个模式的动机是"先别动手"，而它实际拦下的边界比直觉**窄**也**宽**：
  *   · 窄 —— `todo` / `memory` / `record_event` 照样能写（它们写的是 `.flint/` 下
  *     Agent 自己的笔记本，不是用户的代码）；
  *   · 宽 —— `bash` 一起被拦（**包括只读命令**），代价是计划期间不能跑命令，
- *     换来的是"没有一条一句话就能绕过的洞"（完整取舍见 loop/plan-mode.ts 文件头）。
+ *     换来的是"没有一条一句话就能绕过的洞"；`git_write` 同理（写侧 git）。
+ *     完整取舍见 loop/plan-mode.ts 文件头。
  * 两条都写进回执：用户按错的模型用它会得出"它明明答应不动手却还在写文件"这种误解。
+ *
+ * ⚠ 回执里的名单**从 `PLAN_BLOCKED_TOOLS` 现取**（见下面 `BLOCKED`），**不在这里重抄一遍** ——
+ * 抄一份的下场是"加了一个写类工具、名单更新了、回执还在报旧的四项"，而那种错**没人会发现**
+ * （回执看着仍然像模像样）。所以本文件里出现工具名的地方只允许是**叙述**，不是**名单**。
  *
  * ── 与 C8 的关系（把"RPC 下会不会形同虚设"当场说清）──
  * 这道闸**没有"每一步等人点头"这个环节**，所以非 TTY / RPC 下没有任何东西会被
@@ -31,12 +36,12 @@ import type { Runtime } from '../../runtime/runtime.js';
 import { PLAN_BLOCKED_TOOLS, planMode } from '../../loop/plan-mode.js';
 import { recordPlanMode } from '../../permission/audit.js';
 
-/** 用法 —— 三处回执共用，免得各写一遍走形 */
+/** 用法 —— 三处回执共用，免得各写一遍走形；**刻意不列工具名**（名单由 BLOCKED 现取） */
 const USAGE = [
   '用法：',
   '  /plan         看当前状态与用法',
   '  /plan on      进入计划模式（**仅本会话**）：只读、先出方案',
-  '  /plan off     退出计划模式，恢复 write / edit / bash',
+  '  /plan off     退出计划模式，恢复写类工具',
 ].join('\n');
 
 /** 被拦工具名单渲染一次 —— 名单只有一份实现（`plan-mode.ts`），这里只负责印出来 */
@@ -72,7 +77,7 @@ export function activate(runtime: Runtime): void {
       planMode.exit();
       if (wasOn) recordPlanMode(false);
       return [
-        wasOn ? '▶ 已退出计划模式：write / edit / bash 恢复可用。' : '本来就不在计划模式里（本次没有变化）。',
+        wasOn ? `▶ 已退出计划模式：${BLOCKED} 恢复可用。` : '本来就不在计划模式里（本次没有变化）。',
         '',
         USAGE,
       ].join('\n');
@@ -83,10 +88,10 @@ export function activate(runtime: Runtime): void {
     }
 
     return [
-      '计划模式：只读、先出方案（write / edit / bash 会被程序拒绝）。',
+      '计划模式：只读、先出方案（写类工具会被程序拒绝）。',
       `  当前状态 = ${planMode.isOn() ? '📋 开启（本会话有效）' : '关闭'}`,
       `  拦下的工具 = ${BLOCKED}`,
-      '  不拦 = ls / read / grep / git 只读、ask，以及 todo / memory / record_event'
+      '  不拦 = ls / read / grep / git（只读）、ask，以及 todo / memory / record_event'
         + '（它们写的是 .flint/ 下 Agent 自己的笔记本，不是你的代码）',
       '',
       USAGE,

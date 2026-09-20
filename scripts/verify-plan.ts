@@ -8,7 +8,7 @@
  * 所以本套件的重心是"**边界恰好落在哪**"与"**谁能碰这个开关**"，不是文案好不好看。
  *
  * 验什么（判据 / 注入 / 接线 三层分开钉）：
- *   ① 被拦工具的**名单** —— 封闭枚举恰好是 write / edit / bash；只读与"记自己的账"都不在内
+ *   ① 被拦工具的**名单** —— 封闭枚举（现为 write / edit / bash / git_write）；只读与"记自己的账"都不在内
  *   ② `guardPlanMode` —— 模式 × 工具 × **参数形状**（后者刻意全不影响结论）
  *   ③ 两段文案 —— 拒因与横幅：出路方向**不能给错**（别的闸的出路在计划模式下走不通）
  *   ④ `planMode` 会话级单例 —— enter / exit / 幂等 / reset
@@ -70,11 +70,12 @@ const stripComments = (s: string): string =>
 /* ═══ ① 被拦工具的名单 ═══ */
 console.log('── ① 被拦工具的名单（封闭枚举：恰好三条改文件的通道）──');
 
-check('A1 名单恰好是 write / edit / bash（多一个少一个都当场红）',
-  [...PLAN_BLOCKED_TOOLS].sort().join(',') === 'bash,edit,write',
+check('A1 名单恰好是 write / edit / bash / git_write（多一个少一个都当场红）',
+  [...PLAN_BLOCKED_TOOLS].sort().join(',') === 'bash,edit,git_write,write',
   [...PLAN_BLOCKED_TOOLS].sort().join(','));
-check('A2 write / edit / bash 都判为被拦',
-  isPlanBlockedTool('write') && isPlanBlockedTool('edit') && isPlanBlockedTool('bash'));
+check('A2 write / edit / bash / git_write 都判为被拦',
+  isPlanBlockedTool('write') && isPlanBlockedTool('edit') && isPlanBlockedTool('bash')
+  && isPlanBlockedTool('git_write'));
 check('A3 只读工具不在名单：ls / read / grep / git / ask',
   !isPlanBlockedTool('ls') && !isPlanBlockedTool('read') && !isPlanBlockedTool('grep')
   && !isPlanBlockedTool('git') && !isPlanBlockedTool('ask'));
@@ -132,8 +133,8 @@ const bannerHead = banner.split('\n')[0] ?? '';
 check('C9 横幅首行点明"只读、先出方案"（首行是主旨句，不是正文里随便出现"只读"二字）',
   banner.startsWith(PLAN_MARK) && bannerHead.includes('只读') && bannerHead.includes('方案'),
   `首行=${bannerHead}`);
-check('C10 横幅报出会被拒的三个工具名（write / edit / bash）',
-  banner.includes('write') && banner.includes('edit') && banner.includes('bash'));
+check('C10 横幅报出名单里的**每一个**工具名（从名单派生 —— 名单改了、文案没改，是最容易漏的那半步）',
+  [...PLAN_BLOCKED_TOOLS].every((t) => banner.includes(t)), banner);
 check('C11 横幅说出怎么退出（/plan off）', banner.includes('/plan off'));
 check('C12 横幅同样不出现其它闸的出路',
   !banner.includes('charter unlock') && !banner.includes('/workspace allow'));

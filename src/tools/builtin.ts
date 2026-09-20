@@ -1,7 +1,8 @@
 /**
  * 内置工具注册 —— Ls / Read / Write / Edit / Grep / Bash 六个核心工具，
  * 外加清单（todo）/ 记忆（memory）/ 事件库（record_event · search_events · pull_events）/
- * 分叉点提问（ask）/ 坐标归档（archive）/ git 只读查询（git）等系统级工具，共 14 个。
+ * 分叉点提问（ask）/ 坐标归档（archive）/ git 只读查询（git）/ git 写操作（git_write）
+ * 等系统级工具，共 15 个。
  * 调用方：main.ts（组装工具子系统时调用）
  * 服务于：为 LLM 提供列目录、读文件、写文件、精准改片段、搜索内容、执行命令的能力
  *         （Ls 支撑"工具增强推理"：模型先看清项目结构再动手，不凭记忆脑补）
@@ -56,6 +57,13 @@ import {
   renderTag, validateLineRange, validateTarget,
   type GitOp,
 } from '../git/git.js';
+// git 写侧（ROADMAP 10.5.2）：判据 / argv / 权限身份 / 文案全在纯函数模块里，
+// 这里只负责"起子进程 + 把结果接上"——与只读侧 `git` 的分工是**写 / 不写**，不是新 / 旧
+import {
+  GIT_WRITE_OPS, WRITE_TIMEOUT_MS, buildGitWriteArgs, checkWriteArgs, commitFollowUpArgs,
+  gitWritePermissionDetail, gitWritePermissionKey, pushFollowUpArgs,
+  renderCommitResult, renderPushResult, renderWriteFailure,
+} from '../git/write.js';
 // 起子进程的两处（bash / 自检）都走统一执行器 —— 它管住的是**整棵进程树**（ROADMAP 10.6.6）
 import { resolveToolPath } from './paths.js';
 import { describeTreeKill } from '../process/proctree.js';
@@ -299,8 +307,8 @@ function globToRegExp(glob: string): RegExp | null {
    ═══════════════════════════════════════════════════════════════════════════════ */
 
 /**
- * 注册 13 个内置工具（Ls / Read / Write / Edit / Grep / Bash / Todo / Memory / RecordEvent /
- * SearchEvents / PullEvents / Ask / Archive）。
+ * 注册全部内置工具（**清单只有一份，见本文件头** —— 在这里再抄一遍的下场是"加了工具、
+ * 这里忘了改"，而那种陈旧没人会发现）。
  * @param tools 工具子系统
  * @param store 任务清单真相源；缺省用进程级单例（runtime 也读同一个），测试可注入自己的实例。
  * @param mem 项目记忆真相源（缺省单例，测试可注入）。
@@ -1469,6 +1477,120 @@ export function registerBuiltinTools(
       } catch (e) {
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`git 执行失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
+      }
+    },
+  }));
+
+  /* ── git_write：写侧 git（暂存 / 提交 / 推送）—— ROADMAP 10.5.2 ──
+     为什么与上面那个只读 `git` **分成两个工具**（而不是给它加三个 op）：
+     "这个工具能不能改用户的文件"必须由**工具身份**回答 —— 计划模式的闸
+     （10.4.1 的 `guardPlanMode`）刻意只看工具名、不看参数，因为那是工具身份的属性。
+     塞成同一个工具的 op，那句话就变成"看 op"，于是每处判定都要各自解析一遍参数，
+     漏一处就是静默通路。这里付的代价是两个工具名，换来的是"哪句话都只说一件事"。
+
+     三条与只读侧的**刻意区别**：
+       ① `requirePermission: true` —— 只读那一侧"看一眼"本不该问，写这一侧每一次都该问；
+       ② `permissionKey` / `permissionDetail` 都自定义 —— 键要**稳定且带强制模式**
+          （普通 push 的"本次全部允许"必须覆盖不到强制推送），文案要让人看懂"推到哪"；
+       ③ `env` 注入 `GIT_TERMINAL_PROMPT=0` —— 要输密码时**直接失败**而不是挂住等人敲
+          （⚠ 必须 `...process.env` 打底：只给这一个变量会把 PATH 一起丢掉，git 就找不到了）。
+
+     与只读侧**刻意相同**的两处纪律：argv 数组 + `execFileSync`（**不经 shell**）、
+     输出经 `decodeChildOutput` 做编码判别。 */
+  tools.register(defineTool({
+    name: 'git_write',
+    description: 'git 的**写操作**：暂存 / 提交 / 推送（查仓库状态请用只读的 git 工具，别用 bash 跑 git）。op: add 把改动放进暂存区（path）/ commit 提交**已经暂存**的改动（message）/ push 推送到远端（remote 与 branch 可留空 = 走配置好的上游）。每一次写都会**单独弹权限窗问用户**；强制推送必须在 force 里显式选 lease（--force-with-lease，远端被别人推过就失败）或 overwrite（--force，会盖掉远端已有的提交）—— 它算**独立的一笔授权**，普通 push 的"本次全部允许"覆盖不到它。本工具不跳过 git 钩子（没有 --no-verify）、不替你决定 `-a`（只提交你已暂存的东西）、也不接任何交互输入（需要输密码时会直接失败，而不是挂住等你敲）。',
+    spec: {
+      op: str('操作', `要做的操作：${GIT_WRITE_OPS.join(' / ')}`),
+      path: optStr('暂存路径', 'add 用：**必填**，要暂存什么（仓库根相对或绝对路径；要暂存本目录下全部改动就写 "."）。示例: "src/tools"', ''),
+      message: optStr('提交消息', 'commit 用：**必填**，提交消息（本工具不开编辑器，空消息会被拒）。示例: "fix(git): 修正路由判据"', ''),
+      remote: optStr('远端', 'push 用：远端名或 URL，留空 = 用配置好的上游。与 branch **成对**给。示例: "origin"', ''),
+      branch: optStr('分支', 'push 用：要推的分支名，留空 = 当前分支。与 remote **成对**给。示例: "main"', ''),
+      force: optStr('强制模式', 'push 用：留空 = 只推能快进的（安全默认）；"lease" = --force-with-lease；"overwrite" = --force（会盖掉远端提交）。示例: "lease"', ''),
+    },
+    requirePermission: true,
+    permissionKey: (args) => gitWritePermissionKey(args),
+    permissionDetail: (args) => gitWritePermissionDetail(args),
+    handler: async (args) => {
+      try {
+        const check = checkWriteArgs(args);
+        if (check.params === null) return toolInvalid(check.problem ?? '参数不合法');
+        const p = check.params;
+        const argv = buildGitWriteArgs(p);
+        const { execFileSync } = await import('node:child_process');
+
+        /** 跑一条 argv（不经 shell）。失败一律走同一个"打码 + 认原因"的出口 */
+        const run = (a: string[], timeoutMs: number): { ok: true; out: Buffer } | { ok: false; text: string } => {
+          try {
+            const out = execFileSync('git', a, {
+              encoding: 'buffer',
+              timeout: timeoutMs,
+              maxBuffer: 4096 * 1024,
+              windowsHide: true,
+              env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+            });
+            return { ok: true, out };
+          } catch (e) {
+            const err = e as { code?: string; stdout?: Buffer | string; stderr?: Buffer | string; signal?: string };
+            if (err.code === 'ENOENT') {
+              return { ok: false, text: '找不到 git 程序（PATH 里没有 git）。请先安装 git 并确保它在 PATH 上。' };
+            }
+            // 超时（钩子在等输入、或网络卡住）：execFileSync 超时会杀掉子进程并抛错
+            if (err.signal !== undefined && err.signal !== null && err.signal !== '') {
+              return { ok: false, text: `git ${p.op} 超过 ${timeoutMs / 1000} 秒被中止`
+                + '（钩子在等输入、或网络卡住）。真·后台执行还没做（ROADMAP 10.10.1）——'
+                + '耗时很长的操作建议先缩短范围。' };
+            }
+            // git 的原话**分头走两路**（2026-09-20 探针实测，三处都不重样）：
+            //   · push / add 的失败原因在 **stderr**（`fatal: 'nope' does not appear to be a
+            //     git repository` / `fatal: pathspec 'x' did not match any files`）；
+            //   · commit 最常见的那个失败（`nothing to commit, working tree clean`）在 **stdout**，
+            //     此时 stderr 是**空的**。
+            // 只读一路的后果很具体：模型最常撞的那次提交失败会退化成"git 没有给出任何信息"，
+            // 而真实原因（暂存区是空的）就摆在隔壁那个流里。所以两路都要收。
+            const dec = (v: Buffer | string | undefined): string =>
+              v === undefined ? '' : (Buffer.isBuffer(v) ? decodeChildOutput(v) : String(v));
+            const merged = [dec(err.stdout), dec(err.stderr)]
+              .filter((s) => s.trim() !== '').join('\n');
+            return { ok: false, text: renderWriteFailure(p.op, merged) };
+          }
+        };
+
+        const first = run(argv, WRITE_TIMEOUT_MS[p.op]);
+        if (!first.ok) return toolError(first.text);
+
+        // ── 成功之后：事实来自**一次只读复核**，不解析 git 那句本地化的输出 ──
+        //    复核那一步是本地只读（log -1 / status），超时按只读侧的口径给 15 秒
+        const FOLLOW_UP_TIMEOUT = 15_000;
+        if (p.op === 'add') {
+          return toolOk(`暂存完成：${p.path.trim()}\n`
+            + '  下一步：op=commit 提交它（本工具只提交已暂存的改动）；'
+            + '要看暂存了什么，用只读的 git(op="status")。');
+        }
+
+        if (p.op === 'commit') {
+          const second = run(commitFollowUpArgs(), FOLLOW_UP_TIMEOUT);
+          if (!second.ok) {
+            return toolOk('提交成功（commit 已经落进本仓库），但复核那一步没跑成 —— '
+              + '请用只读的 git(op="log") 确认结果。');
+          }
+          const entry = parseShow(decodeChildOutput(second.out));
+          if (entry === null) {
+            return toolOk('提交成功（commit 已经落进本仓库），但 log 的输出没读懂（形状不对），'
+              + '请用只读的 git(op="log") 确认结果。');
+          }
+          return toolOk(renderCommitResult(entry));
+        }
+
+        const second = run(pushFollowUpArgs(), FOLLOW_UP_TIMEOUT);
+        if (!second.ok) {
+          return toolOk('推送完成（push 已经执行），但复核那一步没跑成 —— '
+            + '请用只读的 git(op="status") 确认与上游的关系。');
+        }
+        return toolOk(renderPushResult(parseStatus(decodeChildOutput(second.out))));
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`git_write 执行失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
       }
     },
   }));

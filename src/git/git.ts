@@ -386,21 +386,31 @@ export function statusCodeLabel(xy: string): string {
   return '未知状态';
 }
 
+/**
+ * `[分支] …` 那一行的**唯一实现**。
+ *
+ * 两份调用方：只读的 `status`（下面 `renderStatus` 的头行）与写侧的 `push` 复核
+ * （`git_write` 推完拿这一行告诉模型"现在与上游是什么关系"）。
+ * 抽出来的理由与 `depthsOf` / `statusCodeLabel` 同一类：**同一件事的说法只有一处** ——
+ * 否则"推完之后到底同没同步"会在两处用两套话讲，而它们迟早不一致，
+ * 且不一致的形态恰好是"两边单独看都对"。
+ */
+export function renderBranchLine(s: RepoStatus): string {
+  if (s.detached) {
+    return '[分支] HEAD 处于**游离状态**（detached：不在任何分支上，此刻的提交不属于任何分支）';
+  }
+  if (s.unborn) return `[分支] ${s.branch}（这个分支还没有任何提交）`;
+  if (s.upstream === null) return `[分支] ${s.branch}（没有上游分支）`;
+  const track: string[] = [];
+  if (s.ahead > 0) track.push(`领先 ${s.ahead}`);
+  if (s.behind > 0) track.push(`落后 ${s.behind}`);
+  return `[分支] ${s.branch} → ${s.upstream}${track.length > 0 ? `（${track.join('，')}）` : ''}`;
+}
+
 export function renderStatus(s: RepoStatus): string {
   const lines: string[] = [];
 
-  if (s.detached) {
-    lines.push('[分支] HEAD 处于**游离状态**（detached：不在任何分支上，此刻的提交不属于任何分支）');
-  } else if (s.unborn) {
-    lines.push(`[分支] ${s.branch}（这个分支还没有任何提交）`);
-  } else if (s.upstream !== null) {
-    const track: string[] = [];
-    if (s.ahead > 0) track.push(`领先 ${s.ahead}`);
-    if (s.behind > 0) track.push(`落后 ${s.behind}`);
-    lines.push(`[分支] ${s.branch} → ${s.upstream}${track.length > 0 ? `（${track.join('，')}）` : ''}`);
-  } else {
-    lines.push(`[分支] ${s.branch}（没有上游分支）`);
-  }
+  lines.push(renderBranchLine(s));
 
   if (s.entries.length === 0) {
     lines.push('工作区干净：没有未提交的改动');
@@ -849,6 +859,24 @@ export interface RemoteEntry {
  */
 export function redactUrl(url: string): string {
   return url.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/@]*@/, '$1***@');
+}
+
+/**
+ * 同一口径的另一半：在**自由文本**里找凭据并打码。
+ *
+ * 为什么不是一个函数：两者的**锚定**不同，而锚定正是判据本身。
+ *   · `redactUrl` 的调用方已经知道"整串就是一个 URL"（`remote -v` 的字段），
+ *     所以它锚在 `^`、且允许凭据段里出现空白；
+ *   · 这里要在一段 git 输出里找（`To https://user:token@host/repo.git` 混在别的行之间），
+ *     所以**不锚定**、但**不许跨空白**（否则会把后面的正文一起吃掉）。
+ * 形状（`scheme://…@` → `scheme://***@`）是同一个 —— 两处都只抹凭据段，保留主机与路径，
+ * 因为模型要知道的是"远端在哪台主机上"，而凭据一旦进对话就是**不可撤回的外泄**（见上）。
+ *
+ * 用在写侧：`push` 的失败信息里必定带远端 URL（实测 `To <url>` + `failed to push some refs
+ * to '<url>'`），而那是唯一说得清 non-fast-forward 的证据，不能因为怕带凭据就不给。
+ */
+export function redactCredentialsIn(text: string): string {
+  return text.replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/@\s]*@/g, '$1***@');
 }
 
 /**

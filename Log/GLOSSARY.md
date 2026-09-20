@@ -344,9 +344,21 @@ watcher 的 ctx 里刻意不给 `on`——“旁观者改流程”在类型层�
 
 设计要点：① `target` 以 `-` 开头一律拒——它落在 `--` **之前**、是 git 的**选项位置**，`git diff --output=文件 --numstat` 能把结果写进磁盘（argv 免疫 shell 注入，但免疫不了"被当成选项"这一路）；`show` / `blame` 的 ref 走同一道闸。② 一律用 `-z`——`core.quotepath=false` 只管**转义**不管**引号**，非 `-z` 时含空格的中文路径仍被双引号包住。③ 解析口径**全部来自探针实测**而非文档（`-z` 下重命名占**两段**、空仓库跑 `log` 的 128 退出**不算故障**）。④ **`log --format` 与 `branch`/`tag --format` 是两套占位符**：前者认 `%x1f`，后者走 ref-filter 语言、认 `%1f`。（2026-09-14 初版据两个探针写成"branch 用字面 `|`"，**那是错的**：`|` 在 refname 里合法，Linux 仓库里会有带 `|` 的分支名，按它切字段会**整行串位**且不报错；2026-09-15 复测后统一改用 US。）⑤ `blame` 的 `lines` 是**白名单**（只收纯数字），且**单个数字要展开成 `N,N`**——git 的 `-L 10` 意思是"10 到文件末尾"，不展开就会悄悄多给一大段。⑥ `blame` 的日期由 `author-time + author-tz` **自己算**（porcelain 不给现成日期；必须带时区偏移，否则东八区晚上八点之后的提交会被算成"昨天"）。⑦ `remote` 的 URL **一律打码**——这是本工具唯一一处"看着只读、却可能把凭据读进模型上下文"的口子。
 
-解析与渲染在 `src/git/git.ts`（**零 import 纯函数**，可脱离终端验）；起进程、解码、截断在工具层。**写操作不在**这里（commit / push / tag 仍走 bash）。
+解析与渲染在 `src/git/git.ts`（**零 import 纯函数**，可脱离终端验）；起进程、解码、截断在工具层。**写操作不在这里**——2026-09-20 起 `add` / `commit` / `push` 由 `git_write` 这个**独立的工具名**承担（见下一节；`tag` 等其余写操作仍走 `bash`）。
 
 参见：[decodeChildOutput](#decodechildoutput子进程输出解码) · [archive（坐标归档工具）](#archive坐标归档工具)（它的"前后区别"以本工具为事实来源） · [依赖环（Dependency Cycle）](#依赖环dependency-cycle)
+
+### git_write（写侧确认闸工具）
+
+`tools/builtin.ts` 里的**第 15 个**内置工具（2026-09-20 加，ROADMAP 10.5.2）。`git` 的**写侧**对手：`op` 只有三个（`add` / `commit` / `push`），**要用户确认**（写类工具与 write / edit 同取位，**只读的 `git` 不弹窗**）。
+
+**为什么是"另一个工具名"而不是给 `git` 加几个写 op**：判"这个工具会不会改用户的文件"必须由**工具身份**回答 —— [计划模式（Plan Mode）](#计划模式plan-mode) 那道闸只看工具名、不看参数，写侧若挂在同一个名字下就拦不住。所以它进 `PLAN_BLOCKED_TOOLS` 是**多一个名字**，不是改判据。
+
+**三个设计要点**：① **选项注入靠 argv 形状挡**，不靠黑名单 —— 位置参数前一律加 `--`，`-` 开头的 target 天然被当成路径参数（探针实测：`git push -- 远端 分支` 合法、`git push -- --dry-run` 由 git 自己拒、`git commit -m --amend` 只把 `--amend` 当消息文本）；② **force-push 是另一把钥匙**：`--force` / `--force-with-lease` 会改变[授权匹配键](#permissionkey授权匹配键)（`…:overwrite` ≠ 原键），于是"本次全部允许"盖不住强推 —— 这是约束 **C7**（拦下只有"放行 / 拒绝"两态、装不下"让我确认一下"）的**降级答法**：不扩三态契约，只把"要更严的许可"表达成"另一把钥匙"；③ **不留交互式入口**：子进程环境注入 `GIT_TERMINAL_PROMPT=0`（**必须连同 `process.env` 一起展开**，只给这一个变量会让 PATH 丢掉、git 都找不到），失败文本还过凭证打码（与只读侧的凭证打码同一个正则形状）。
+
+**一条不对称**：失败原因不在同一个流上 —— `commit` 的 "nothing to commit" 走 **stdout**，`push` / `add` 的失败走 **stderr**，故回执必须**两路合并**后再渲染。渲染复用只读侧的 `renderBranchLine`，两个工具不会对同一状态说两种话。
+
+参见：[git（只读结构化工具）](#git只读结构化工具) · [git 路由（bash 里的裸只读命令自动改道）](#git-路由bash-里的裸只读命令自动改道) · [审计留痕（Audit Trail）](#审计留痕audit-trail)（拦得住之外还要查得到）
 
 ### git 路由（bash 里的裸只读命令自动改道）
 `src/git/route.ts`（2026-09-15 加，ROADMAP 10.5.6）：在 `before_tool_call` 核心钩子里把 bash 的**裸** git 只读命令（`git status` 这一档）拦下来，让模型改用 [`git` 工具](#git只读结构化工具)重发。目的**不是安全，是引导通道**——`git` 工具零弹窗、返回结构；bash 要弹窗、且只回原始文本。
