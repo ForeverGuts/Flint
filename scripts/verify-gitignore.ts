@@ -188,26 +188,34 @@ console.log('\n④ 源码守护（手段要钉死：换成任何等价实现都�
 const modSrc = stripComments(fs.readFileSync(path.join(ROOT, 'src/project/gitignore.ts'), 'utf-8'));
 const builtinRaw = fs.readFileSync(path.join(ROOT, 'src/tools/builtin.ts'), 'utf-8');
 const builtinSrc = stripComments(builtinRaw);
+// 2026-09-20（ROADMAP 10.7.1）：`grep` 的遍历搬进 `src/search/walk.ts`（与 `symbols` 共用），
+// 于是 D 段钉的那两件事**换了落点**：跳过表只有一份（在 walk.ts），`rel` 的拼法也只有一份。
+// 判据因此从"builtin 里有几处"改成"**这两个文件各有一处、总数不许多**"——换落点不等于放宽。
+const walkSrc = stripComments(fs.readFileSync(path.join(ROOT, 'src/search/walk.ts'), 'utf-8'));
 
 check('D1 gitignore.ts 零 import（纯函数，可脱离终端验）',
   !/^import\s/m.test(modSrc) && !/require\(/.test(modSrc));
-check('D2 ls 与 grep **两个**工具都接了 loadIgnoreRules（少一个就有一半路径没过滤）',
-  (builtinSrc.match(/loadIgnoreRules\(/g) ?? []).length === 3,   // 定义 1 + 调用 2
+check('D2 ls 与 grep 与 symbols **三个**工具都接了 loadIgnoreRules（少一个就有一半路径没过滤）',
+  (builtinSrc.match(/loadIgnoreRules\(/g) ?? []).length === 4,   // 定义 1 + 调用 3（ls / grep / symbols）
   String((builtinSrc.match(/loadIgnoreRules\(/g) ?? []).length));
-check('D3 ls 与 grep 都调了 isIgnoredByGitignore',
-  (builtinSrc.match(/isIgnoredByGitignore\(/g) ?? []).length === 2);
+check('D3 两处落点都在按 .gitignore 过滤：ls 自己调一次，grep 与 symbols 经 search/walk.ts 的同一处',
+  (builtinSrc.match(/isIgnoredByGitignore\(/g) ?? []).length === 1
+  && (walkSrc.match(/isIgnoredByGitignore\(/g) ?? []).length === 1,
+  `${(builtinSrc.match(/isIgnoredByGitignore\(/g) ?? []).length} / ${(walkSrc.match(/isIgnoredByGitignore\(/g) ?? []).length}`);
 check('D4 loadIgnoreRules 宽容：任何异常都退回空表（读不出来 = 没有规则，而不是让工具失败）',
   /catch \{\s*return \[\];\s*\}/.test(builtinSrc));
-check('D5 内置默认仍在 —— `.git` / `node_modules` / `dist` 是底线，不交给人手填空话',
-  /const SKIP = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(builtinSrc)
-  && /const SKIP_DIRS = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(builtinSrc));
-check('D6 两个工具的 description 都告诉了模型"会按 .gitignore 过滤"（否则它会以为文件不存在）',
+check('D5 内置默认仍在 —— `.git` / `node_modules` / `dist` 是底线，不交给人手填空话（全仓只有一份定义，在 search/walk.ts）',
+  /const SKIP_DIRS: ReadonlySet<string> = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(walkSrc)
+  && !/new Set\(\['\.git'/.test(builtinSrc));
+check('D6 三个工具的 description 都告诉了模型"会按 .gitignore 过滤"（否则它会以为文件不存在）',
   builtinRaw.includes('项目 .gitignore 里列出的路径')
-  && (builtinRaw.match(/项目 \.gitignore 里列出的路径/g) ?? []).length === 2);
+  && (builtinRaw.match(/项目 \.gitignore 里列出的路径/g) ?? []).length === 3);
 check('D7 文件名走常量，不在工具层写字面量', builtinSrc.includes('GITIGNORE_FILE'));
-check('D8 匹配时传的是**相对搜索根**的路径（rel 在 walk 里逐层拼出来）',
+check('D8 匹配时传的是**相对搜索根**的路径（rel 逐层拼出来）：ls 一处 + search/walk.ts 一处，各只有一份',
   /childRel = rel \? `\$\{rel\}\/\$\{item\.name\}` : item\.name;/.test(builtinSrc)
-  && (builtinSrc.match(/childRel = rel \?/g) ?? []).length === 2);
+  && (builtinSrc.match(/childRel = rel \?/g) ?? []).length === 1
+  && /childRel = rel \? `\$\{rel\}\/\$\{item\.name\}` : item\.name;/.test(walkSrc)
+  && (walkSrc.match(/childRel = rel \?/g) ?? []).length === 1);
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    ⑤ 行为证明 —— 真临时目录 + 真工具调用

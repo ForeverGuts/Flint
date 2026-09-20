@@ -1,10 +1,10 @@
 /**
  * 内置工具注册 —— Ls / Read / Write / Edit / Grep / Bash 六个核心工具，
  * 外加清单（todo）/ 记忆（memory）/ 事件库（record_event · search_events · pull_events）/
- * 分叉点提问（ask）/ 坐标归档（archive）/ git 只读查询（git）/ git 写操作（git_write）
- * 等系统级工具，共 15 个。
+ * 分叉点提问（ask）/ 坐标归档（archive）/ git 只读查询（git）/ git 写操作（git_write）/
+ * 符号定义检索（symbols）等系统级工具，共 16 个。
  * 调用方：main.ts（组装工具子系统时调用）
- * 服务于：为 LLM 提供列目录、读文件、写文件、精准改片段、搜索内容、执行命令的能力
+ * 服务于：为 LLM 提供列目录、读文件、写文件、精准改片段、搜索内容、查定义、执行命令的能力
  *         （Ls 支撑"工具增强推理"：模型先看清项目结构再动手，不凭记忆脑补）
  *
  * 设计原则：
@@ -43,6 +43,14 @@ import {
 import {
   GITIGNORE_FILE, GITIGNORE_MAX_BYTES, isIgnoredByGitignore, parseGitignore, type IgnoreRule,
 } from '../project/gitignore.js';
+// 代码检索（ROADMAP 10.7.1）：`grep` 与 `symbols` 共用**同一份**遍历器 —— 跳过表 /
+// `.gitignore` 规则 / 二进制与体积体检因此只有一处实现（10.7.3 那句"两处各抄一份"的教训）；
+// 本文件里只剩两个 handler 各自决定"收哪些文件名"与"每读到一个文件做什么"。
+// SKIP_DIRS 连 `ls` 也用同一个常量（它走的是"列目录树"，形状不同，但跳过表必须同源）
+import { SKIP_DIRS, scanPaths } from '../search/walk.js';
+import {
+  SYMBOL_MAX_HITS, isCodeFile, renderSymbolReport, scanSymbols, type SymbolEntry,
+} from '../search/symbols.js';
 import {
   ROADMAP_FILE, findCycles, isParent, nextCoord, parentOf, parseRoadmap, resolveStatuses, setStatus,
   spliceCoordTable, unmetDeps, type Coord,
@@ -245,7 +253,8 @@ async function withPostcheck(base: string): Promise<string> {
 
 /**
  * 读**搜索根**那一层的 `.gitignore` 并编译成跳过规则 —— 跳过表 = 内置默认 ∪ `.gitignore`
- * （ROADMAP 10.7.3；这里刻意不碰 ls/grep 里那份硬编码清单，两侧合起来才是完整的表）。
+ * （ROADMAP 10.7.3）。三个读者共用它：`ls`、`grep`、`symbols`
+ *（10.7.1 之后"内置默认"那一半收进了 `search/walk.ts` 的 `SKIP_DIRS`，此处只管 `.gitignore` 那一半）。
  *
  * 三条刻意的选择：
  *   ① **宽容到"任何异常都返回空表"** —— 文件不存在、不可读、超长，统统当作"没有规则"，
@@ -352,7 +361,7 @@ export function registerBuiltinTools(
         }
 
         // 递归列目录（目录名带 / 后缀；跳过噪音目录；限制条目数防膨胀）
-        const SKIP = new Set(['.git', 'node_modules', 'dist']);
+        // 跳过表走共享常量 SKIP_DIRS（与内容扫描同一份，见 search/walk.ts）—— 这里不抄第二份
         const ignoreRules = await loadIgnoreRules(resolvedAbs);
         const MAX_ENTRIES = 200;
         const lines: string[] = [];
@@ -373,7 +382,7 @@ export function registerBuiltinTools(
           });
           for (const item of items) {
             if (lines.length >= MAX_ENTRIES) return;
-            if (item.name.startsWith('.') || SKIP.has(item.name)) continue;
+            if (item.name.startsWith('.') || SKIP_DIRS.has(item.name)) continue;
             const isDir = item.isDirectory();
             const childRel = rel ? `${rel}/${item.name}` : item.name;
             if (isIgnoredByGitignore(childRel, isDir, ignoreRules)) continue;
@@ -638,82 +647,47 @@ export function registerBuiltinTools(
         const includeRe = glob ? globToRegExp(glob) : null;
         if (glob && includeRe === null) return toolInvalid(`include 过滤模式无法编译: ${glob}`);
 
-        const { existsSync, statSync, readdirSync, readFileSync } = await import('node:fs');
+        const { existsSync, statSync } = await import('node:fs');
         const resolvedPath = searchPath.replace(/\\/g, '/');
         const resolvedAbs = resolveToolPath(searchPath, process.cwd()).abs;
         if (!existsSync(resolvedAbs)) return toolNegative('NOT_FOUND', `路径不存在: ${resolvedPath}`);
 
-        const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist']);
-        // 搜索根本身是文件时，用户已经把路径点名了 —— 那时不读 .gitignore、也不套任何规则
-        //（gitignore.ts 界线 ④：别人说出来的路径，别替他藏）
+        // 搜索根本身是文件时，用户已经把路径点名了 —— 那时不读 .gitignore、也不套任何过滤
+        //（gitignore.ts 界线 ④：别人说出来的路径，别替他藏）。这一条由遍历器保证：
+        // accept 只在 root 是目录时生效（见 search/walk.ts 承重②之后的同名注释）。
         const searchIsDir = statSync(resolvedAbs).isDirectory();
-        const ignoreRules: IgnoreRule[] = searchIsDir ? await loadIgnoreRules(resolvedAbs) : [];
-        const MAX_FILE_BYTES = 2 * 1024 * 1024;   // 超大文件跳过：读进来只为搜一遍不值得
         const MAX_MATCHES = 50;                   // 与改前的 head -50 同量级，防输出膨胀
-        const MAX_FILES = 5000;                   // 防误指向盘符根目录时走到天荒地老
-        const PROBE_BYTES = 8192;                 // 二进制判定的探测窗口
 
         const hits: string[] = [];
-        let scanned = 0, skippedBinary = 0, skippedBig = 0, hitCap = false;
+        let hitCap = false;
 
-        const scanFile = (file: string): void => {
-          if (hitCap || scanned >= MAX_FILES) return;
-          let buf: Buffer;
-          try {
-            buf = readFileSync(file);
-          } catch {
-            return;   // 无权限 / 占用中 → 跳过该文件，不该让整个搜索失败
-          }
-          if (buf.length > MAX_FILE_BYTES) { skippedBig++; return; }
-          // 二进制判定：头部窗口内有 NUL 字节即视为二进制（与 ripgrep 同一思路）。
-          // 不跳过的话，一个 .png 能贡献几百行乱码命中，把 50 个名额全吃光。
-          // 注意 Buffer.indexOf 的第三参是 encoding 而非结束位置，限定窗口只能先 subarray
-          //（subarray 越界会自动夹到长度，不必自己 Math.min）
-          if (buf.subarray(0, PROBE_BYTES).indexOf(0) !== -1) { skippedBinary++; return; }
-          scanned++;
-          const lines = buf.toString('utf-8').split('\n');
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].endsWith('\r') ? lines[i].slice(0, -1) : lines[i];
-            if (!re.test(line)) continue;
-            hits.push(`${file}:${i + 1}:${line}`);
-            if (hits.length >= MAX_MATCHES) { hitCap = true; return; }
-          }
-        };
-
-        // rel = 相对**搜索根**的路径，理由同 ls 的 walk：gitignore 的规则相对它所在的那一层，
-        // 锚定与"任意深度"两种语义都靠它才判得对。目录被命中就整棵子树不再往下走，
-        // 于是"父目录被排除后，里面的文件救不回来"这条 git 语义在这里天然成立。
-        const walk = (dir: string, rel: string): void => {
-          if (hitCap || scanned >= MAX_FILES) return;
-          let items;
-          try {
-            items = readdirSync(dir, { withFileTypes: true });
-          } catch {
-            return;
-          }
-          items.sort((a, b) => a.name.localeCompare(b.name));   // 排序让输出稳定，断言才可复现
-          for (const item of items) {
-            if (hitCap) return;
-            if (item.name.startsWith('.') || SKIP_DIRS.has(item.name)) continue;
-            const full = `${dir}/${item.name}`;
-            const childRel = rel ? `${rel}/${item.name}` : item.name;
-            if (isIgnoredByGitignore(childRel, item.isDirectory(), ignoreRules)) continue;
-            if (item.isDirectory()) { walk(full, childRel); continue; }
-            if (includeRe && !includeRe.test(item.name)) continue;
-            scanFile(full);
-          }
-        };
-
-        if (searchIsDir) walk(resolvedAbs, '');
-        else scanFile(resolvedAbs);
+        // 遍历形状、跳过表（内置默认 ∪ .gitignore）、二进制与体积体检全部在 `search/walk.ts`
+        //（ROADMAP 10.7.1 起 `symbols` 共用同一份）。这里只写"每读到一个文件做什么"：
+        // 一行行试正则，命中够了就返回 false 喊停。
+        const scan = scanPaths({
+          root: resolvedAbs,
+          isDir: searchIsDir,
+          ignoreRules: searchIsDir ? await loadIgnoreRules(resolvedAbs) : [],
+          accept: includeRe ? (name) => includeRe.test(name) : undefined,
+          onFile: (file, _rel, buf) => {
+            const lines = buf.toString('utf-8').split('\n');
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i].endsWith('\r') ? lines[i].slice(0, -1) : lines[i];
+              if (!re.test(line)) continue;
+              hits.push(`${file}:${i + 1}:${line}`);
+              if (hits.length >= MAX_MATCHES) { hitCap = true; return false; }
+            }
+            return true;   // 这个文件搜完了，继续下一个
+          },
+        });
 
         // "扫了 N 个文件"必须回给模型：0 命中时它需要区分"扫了 300 个文件确实没有"
         // 与"过滤器把所有文件都排除了"——后者是它自己 include 写错了
         const stats = [
-          `已扫 ${scanned} 个文件`,
+          `已扫 ${scan.scanned} 个文件`,
           hitCap ? `命中达上限 ${MAX_MATCHES} 已停止` : '',
-          skippedBinary ? `跳过 ${skippedBinary} 个二进制` : '',
-          skippedBig ? `跳过 ${skippedBig} 个超大文件` : '',
+          scan.skippedBinary ? `跳过 ${scan.skippedBinary} 个二进制` : '',
+          scan.skippedBig ? `跳过 ${scan.skippedBig} 个超大文件` : '',
         ].filter(Boolean).join('，');
 
         if (hits.length === 0) {
@@ -729,6 +703,63 @@ export function registerBuiltinTools(
         // 执行失败报 error 而非 negative：前者计入失败、会触发重复失败保护，
         // 后者被当成"有效否定"悄悄放过。把两者混为一谈正是改前那个洞
         return toolError(`搜索失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
+      }
+    },
+  }));
+
+  /* ── Symbols：符号定义检索（ROADMAP 10.7.1） ── */
+  tools.register(defineTool({
+    name: 'symbols',
+    description: '按名字查找符号的**定义位置**（函数 / 类 / 接口 / 类型 / 常量 / 结构体 / 枚举…），返回"路径:行号: 种类 — 该行内容"。比在 `grep` 里现猜语法省事（各语言的定义写法已内置），且按名字**精确比对** —— 搜 "foo" 不会把 "foobar" 带出来。⚠ 它按语法形状识别、不是编译器：**没找到不等于这个符号不存在**，那种情况改用 grep。跳过 .git/node_modules/dist、项目 .gitignore 里列出的路径、二进制与超大文件。',
+    spec: {
+      name: str('符号名', '要查找的符号名，按**原样精确**比对（区分大小写）。示例: "parseSpec" 或 "SYMBOL_SHAPES"'),
+      path: optStr('搜索路径', '搜索路径，文件或目录。默认当前目录。示例: "src/" 或 "src/tools/spec.ts"', '.'),
+    },
+    handler: async (args) => {
+      try {
+        const { name, path: searchPath } = args;
+
+        const { existsSync, statSync } = await import('node:fs');
+        const resolvedPath = searchPath.replace(/\\/g, '/');
+        const resolvedAbs = resolveToolPath(searchPath, process.cwd()).abs;
+        if (!existsSync(resolvedAbs)) return toolNegative('NOT_FOUND', `路径不存在: ${resolvedPath}`);
+
+        const searchIsDir = statSync(resolvedAbs).isDirectory();
+        const hits: SymbolEntry[] = [];
+        let truncated = false;
+
+        // 与 grep 共用同一份遍历器（跳过表 / .gitignore / 二进制体检只有一处实现）。
+        // `accept` 用代码扩展名名单，而它**只在走目录时生效** —— 点名一个 .md 也照读：
+        // 用户已经把路径说出来了，别替他藏；那条路上形状表本就是跨语言并集，读得动。
+        const scan = scanPaths({
+          root: resolvedAbs,
+          isDir: searchIsDir,
+          ignoreRules: searchIsDir ? await loadIgnoreRules(resolvedAbs) : [],
+          accept: isCodeFile,
+          onFile: (file, _rel, buf) => {
+            const found = scanSymbols(buf.toString('utf-8'), file, name, SYMBOL_MAX_HITS - hits.length);
+            for (const hit of found) hits.push({ file, hit });
+            if (hits.length >= SYMBOL_MAX_HITS) { truncated = true; return false; }
+            return true;   // 这个文件看完了，继续下一个
+          },
+        });
+
+        // 0 命中**不是有效否定**：本工具是启发式的，所以这里一律走 toolOk，
+        // 由正文说清"为什么这可能不是全部"并给出替代手段（文案在 symbols.ts，套件直接打靶）。
+        return toolOk(renderSymbolReport({
+          name,
+          pathLabel: resolvedPath,
+          hits,
+          scanned: scan.scanned,
+          filtered: scan.filtered,
+          skippedBinary: scan.skippedBinary,
+          skippedBig: scan.skippedBig,
+          truncated,
+          singleFile: !searchIsDir,
+        }));
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`符号检索失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
       }
     },
   }));

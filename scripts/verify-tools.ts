@@ -74,6 +74,9 @@ const bash = async (args: Record<string, unknown>): Promise<string> =>
 const IS_WIN = process.platform === 'win32';
 
 const builtinSrc = fs.readFileSync(path.join(ROOT, 'src/tools/builtin.ts'), 'utf-8');
+// 2026-09-20（ROADMAP 10.7.1）：`grep` 与 `symbols` 共用的遍历器落在 `src/search/walk.ts` ——
+// G11 因此要看两个文件（跳过表的定义在 walk.ts、builtin 里不许有第二份）。
+const walkSrc = fs.readFileSync(path.join(ROOT, 'src/search/walk.ts'), 'utf-8');
 const loopSrc = fs.readFileSync(path.join(ROOT, 'src/loop/agent-loop.ts'), 'utf-8');
 const coreSrc = fs.readFileSync(path.join(ROOT, 'src/core/tools.ts'), 'utf-8');
 
@@ -325,9 +328,27 @@ console.log('\n⑦ 源码文本断言（防回退）');
   // 解释"改前为什么坏"的注释里写着那串 `grep -rn ... 2>/dev/null | head -50`，
   // 于是三条断言全红，而代码其实已经对了。**断言代码行为时**要钉调用形态、不要钉散文里的用词；
   // 但下面 G3/G4/G5 是防文案回退的，天生只能钉用词，代价是改一个字就红（2026-09-05 补注）
-  const grepBlock = builtinSrc.slice(builtinSrc.indexOf("name: 'grep'"), builtinSrc.indexOf('/* ── Bash'));
-  check('G0 切片本身有效（否则下面三条是空转的假绿）',
-    grepBlock.length > 500 && !grepBlock.includes("name: 'bash'"), `切到 ${grepBlock.length} 字符`);
+  //
+  // 切法（2026-09-20 改成"按工具定义行切"）：原来终点写死 `/* ── Bash`，因为那时 grep 之后
+  // 紧跟的就是 Bash。10.7.1 新插进来的 `symbols` 落在两者**之间**，于是切片**悄悄把 symbols
+  // 段也吃了进去** —— G1/G2/G3/G11 的射程全都不再等于它们的名字。这不是假想：
+  // 变异实测，把 grep 改成走别的别名（不再经共享遍历器），G11 **照样绿**，因为 symbols 段里
+  // 也有一个 `scanPaths(`。所以改成认**工具定义行**（`    name: 'x',`）、取"grep 到下一个工具"
+  // —— 以后谁往中间插工具，切片射程都不会再漂。G0 顺带把两侧边界钉住。
+  const toolDefRe = /^    name: '([a-z_]+)',$/gm;
+  const toolDefs: { name: string; at: number }[] = [];
+  for (let m = toolDefRe.exec(builtinSrc); m !== null; m = toolDefRe.exec(builtinSrc)) {
+    toolDefs.push({ name: m[1], at: m.index });
+  }
+  const grepIdx = toolDefs.findIndex((d) => d.name === 'grep');
+  const grepBlock = grepIdx === -1
+    ? ''
+    : builtinSrc.slice(toolDefs[grepIdx].at,
+      grepIdx + 1 < toolDefs.length ? toolDefs[grepIdx + 1].at : undefined);
+  check('G0 切片本身有效（否则下面几条是空转的假绿）——射程恰好是 grep 这一个工具，不吃邻居',
+    toolDefs.length === 16 && grepBlock.length > 500
+    && !grepBlock.includes("name: 'bash'") && !grepBlock.includes("name: 'symbols'"),
+    `切到 ${grepBlock.length} 字符，工具定义行 ${toolDefs.length} 个`);
   // 断言用**调用形态**（带括号）而非裸标识符：解释性注释里会写"Windows 上 execSync 走
   // cmd.exe"这种散文，裸标识符会被它误伤（本条第一版就是这么红的，而代码当时已经对了）
   check('G1 grep 段内不再调 execSync、不再 import child_process（彻底不 shell 出去，不再依赖系统装没装 grep）。**这条钉的是手段**：正则读源码文本，换成任何等价的纯 Node 实现都会红——"搜得到/搜不到"的行为面由 ①②③ 段钉',
@@ -359,9 +380,18 @@ console.log('\n⑦ 源码文本断言（防回退）');
   // 把它们放回来，`.git` / `node_modules` / `dist` 也不进结果（安全底线不交给人手填空话）。
   // 所以这条从"只有清单"改成"清单 ∪ 规则"两半都钉。（两侧**一致**这件事由
   // `verify-gitignore.ts` 的 D5 单独钉，这里不重复。）
-  check('G11 grep 的跳过表 = 内置默认（.git/node_modules/dist）∪ .gitignore（两半都在，缺一不可）',
-    /const SKIP_DIRS = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(builtinSrc)
-    && /isIgnoredByGitignore\(childRel, item\.isDirectory\(\), ignoreRules\)/.test(builtinSrc));
+  //
+  // 2026-09-20（ROADMAP 10.7.1）：这两半的**落点搬家了** —— 从 builtin.ts 的 grep 段搬进
+  // `src/search/walk.ts`，因为 `grep` 与 `symbols` 共用同一个遍历器（"跳过表写两处"正是
+  // 10.7.3 当初批过的老毛病）。判据随之从"builtin 里有这两行"改成"**只有一份，且在 walk.ts；
+  // grep 段经 `scanPaths` 取用、自己不再抄**"—— 换落点不是放宽：反方向那一半（builtin 里
+  // 不许再出现第二份）一起钉上了。
+  check('G11 grep 的跳过表 = 内置默认（.git/node_modules/dist）∪ .gitignore，且只有一份（search/walk.ts），grep 段经 scanPaths 取用',
+    /const SKIP_DIRS: ReadonlySet<string> = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(walkSrc)
+    && /isIgnoredByGitignore\(childRel, item\.isDirectory\(\), ignoreRules\)/.test(walkSrc)
+    && /scanPaths\(/.test(grepBlock)
+    && !/new Set\(\['\.git'/.test(builtinSrc)
+    && !/isIgnoredByGitignore\(/.test(grepBlock));
   // 口径更新（2026-09-14 git 工具；2026-09-15 改完自检；**2026-09-16 ROADMAP 10.6.6**；**2026-09-20 10.5.2**）：
   // 起进程这件事**收拢**了 —— bash 与自检原先各自直连 child_process，现在都改走
   // process/runner.ts（异步 spawn + 超时**按进程树**杀）。builtin.ts 里只剩 git 这一族。
