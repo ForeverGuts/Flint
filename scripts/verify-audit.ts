@@ -13,7 +13,8 @@
  *   ① 目标摘要纯函数 —— path/command 取值顺序、各异常形状、截断口径
  *   ② 条目形状 —— kind / 标题拼法 / tags / **缺省就不写键** / 真落盘
  *   ③ 落盘失败**静默**（内存索引仍然收下）
- *   ④ 四道闸的**身份** —— 真跑 `coreBeforeToolCall`：谁拒的、tag 对不对、一次只记一条、放行不记
+ *   ④ 各道闸的**身份** —— 真跑 `coreBeforeToolCall`：谁拒的、tag 对不对、一次只记一条、放行不记。
+ *      2026-09-20 起含**第 0 道闸**（计划模式，10.4.1）：它的审计身份在这里，判据本身在 `verify-plan.ts`
  *   ⑤ 命令层 —— `allow` / `--save` / `clear` 记什么；只看与空 clear **不记**
  *   ⑥ 权限弹窗 —— 拒绝与「本次全部允许」记、**允许一次不记**；**并真跑一遍
  *      `runtime.askPermission`** —— 光测 audit.ts 那个函数测不到"接线有没有接对"
@@ -51,6 +52,7 @@ import {
   targetDigest,
 } from '../src/permission/audit.js';
 import { coreBeforeToolCall } from '../src/harness/main.js';
+import { PLAN_MARK } from '../src/loop/plan-mode.js';
 import { activate as activateWorkspace } from '../src/commands/builtin/workspace.js';
 import { Runtime } from '../src/runtime/runtime.js';
 import { PromptEventEmitter } from '../src/runtime/events.js';
@@ -191,11 +193,13 @@ try {
 check('C1 落点不可写 → 不抛（只是这份没进档案）', !threw);
 check('C2 内存索引仍然收下了它（当轮还查得到）', eventStore.count() === beforeC + 1);
 
-/* ═══ ④ 四道闸的身份（真跑钩子链）═══ */
-console.log('\n── ④ 四道闸的身份（真跑 coreBeforeToolCall）──');
-const runGate = (name: unknown, args: unknown, unlocked = false) => {
+/* ═══ ④ 各道闸的身份（真跑钩子链）═══ */
+console.log('\n── ④ 各道闸的身份（真跑 coreBeforeToolCall）──');
+// 第 3 个参数 = 契约锁是否解锁、第 4 个 = 计划模式是否开启（ROADMAP 10.4.1）。
+// 两者都由参数注入而不是直读单例 —— 于是本节的每条用例都能单独摆出它要的那个状态。
+const runGate = (name: unknown, args: unknown, unlocked = false, planEnabled = false) => {
   const m = eventStore.count();
-  const deny = coreBeforeToolCall({ name, args }, unlocked);
+  const deny = coreBeforeToolCall({ name, args }, unlocked, planEnabled);
   return { deny, audits: auditsSince(m) };
 };
 
@@ -243,7 +247,7 @@ check('D10 裸 git 只读 → 记为「改道 git 工具」/ tag route（改道�
   gRoute.deny !== undefined && gRoute.audits[0]?.title === '拦截 bash（改道 git 工具）'
   && gRoute.audits[0]?.tags.includes('route') === true,
   `${String(gRoute.audits[0]?.title)} / ${String(gRoute.audits[0]?.tags.join(','))}`);
-check('D10b 改道理由同样只留首行（路由不在四道闸里，但它也写审计）',
+check('D10b 改道理由同样只留首行（路由不是闸，但它也写审计）',
   typeof gRoute.audits[0]?.outcome === 'string' && gRoute.audits[0]!.outcome!.startsWith('「')
   && secondLineMark(gRoute.deny?.reason ?? '') !== ''
   && !gRoute.audits[0]!.outcome!.includes(secondLineMark(gRoute.deny?.reason ?? '')),
@@ -257,6 +261,31 @@ check('D13 工具名不是字符串 → 不崩、不记', gUnknown.deny === unde
 const gUnlocked = runGate('write', { path: CHARTER_FILE }, true);
 check('D14 契约锁已解锁 → 放行且不记（解锁与否只由 charterLock 说）',
   gUnlocked.deny === undefined && gUnlocked.audits.length === 0);
+
+// ── 计划模式那道闸的身份（ROADMAP 10.4.1，2026-09-20 新入列的第 0 道闸）──
+// 为什么放在这里而不是另开一套件重复一遍：审计的"身份"判据只有一份
+// （谁拒的 / tag 对不对 / 一次记几条 / 拒因截不截），分散到两处就是同一个判据两份实现。
+// 计划模式**判据本身**（拦哪三个工具、出路怎么写、模式单例）由 `verify-plan.ts` 打靶。
+const gPlan = runGate('write', { path: path.join(TMP, 'plan-inside.txt') }, false, true);
+check('D16 计划模式命中 → 来源「计划模式」/ tag plan',
+  gPlan.deny !== undefined && gPlan.audits[0]?.title === '拦截 write（计划模式）'
+  && gPlan.audits[0]?.tags.includes('plan') === true,
+  `${String(gPlan.audits[0]?.title)} / ${String(gPlan.audits[0]?.tags.join(','))}`);
+check('D17 计划模式的拒因也是多行信 → 审计同样只留首行',
+  typeof gPlan.audits[0]?.outcome === 'string' && gPlan.audits[0]!.outcome!.startsWith(PLAN_MARK)
+  && secondLineMark(gPlan.deny?.reason ?? '') !== ''
+  && !gPlan.audits[0]!.outcome!.includes(secondLineMark(gPlan.deny?.reason ?? '')),
+  `${String(gPlan.audits[0]?.outcome)} / 探针=${secondLineMark(gPlan.deny?.reason ?? '')}`);
+// 次序的**行为**打靶（模式闸排最前）：同时踩中契约闸，记下来的必须是排前面那道。
+// 这条不只是"顺序对不对"——它证明的是**出路给得对不对**：用户在计划模式下按契约闸的指引
+// 去 /charter unlock 是白跑一趟（解锁了照样被模式闸拦），所以先说话的必须是模式闸。
+const gPlanFirst = runGate('write', { path: CHARTER_FILE }, false, true);
+check('D18 模式闸排在最前：同时踩中契约闸时记的是「计划模式」（其余闸的出路在计划模式下走不通）',
+  gPlanFirst.audits[0]?.title === '拦截 write（计划模式）', String(gPlanFirst.audits[0]?.title));
+// "加一步"而不"换判据"：模式关着时，同一条调用逐字退回改动前的行为（放行 + 不记）。
+const gPlanOff = runGate('write', { path: path.join(TMP, 'plan-off.txt') }, false, false);
+check('D19 模式关着 → 同一条调用放行且不记（缺省参数 = 零扰动）',
+  gPlanOff.deny === undefined && gPlanOff.audits.length === 0);
 
 // 次序的**行为**打靶：一道命令同时踩中两道闸时，记下来的必须是**排前面**那道。
 // （单闸用例照不出次序 —— 这也是为什么光靠"各闸各测一条"不够。）
@@ -436,6 +465,7 @@ const readSrc = (p: string) => fs.readFileSync(path.join(ROOT, p), 'utf-8');
 const mainSrc = readSrc('src/harness/main.ts');
 const rtSrc = readSrc('src/runtime/runtime.ts');
 const wsSrc = readSrc('src/commands/builtin/workspace.ts');
+const planCmdSrc = readSrc('src/commands/builtin/plan.ts');
 const auditSrc = readSrc('src/permission/audit.ts');
 
 check('H1 main.ts 不自己拼条目，只调统一落点',
@@ -444,9 +474,17 @@ check('H2 runtime.ts 走统一落点',
   !rtSrc.includes('recordAudit(') && rtSrc.includes('recordPermissionChoice('));
 check('H3 命令层走统一落点',
   !wsSrc.includes('recordAudit(') && wsSrc.includes('recordGrant(') && wsSrc.includes('recordRevoke('));
+// H3b：计划模式命令层（ROADMAP 10.4.1）走**同一条**纪律 —— 它也只调统一落点。
+// 为什么与 H3 分两条而不是合成一条：两者治的是**不同的功能**，合成之后哪一半坏了
+// 报出来的是同一句话，而"哪一半坏了"正是这类断言唯一有用的信息。
+check('H3b 计划模式命令层走统一落点（/plan 只调 recordPlanMode，不自己拼条目）',
+  !planCmdSrc.includes('recordAudit(') && planCmdSrc.includes('recordPlanMode('));
 const gateTags = [...mainSrc.matchAll(/deny\('[^']+', '([^']+)',/g)].map((mm) => mm[1]!);
-check('H4 四道闸各有一个 tag 且互不相同（不许两道闸共用一个来源名）',
-  gateTags.length === 4 && new Set(gateTags).size === 4, gateTags.join(','));
+// 2026-09-20：从四道闸涨到**五道**（+计划模式，ROADMAP 10.4.1）。
+// 这条断言是"名单式"的：新增一道闸忘了改它，它会当场红 —— 这正是想要的
+// （"闸多了一道"是要人看见的事，不该静默）。
+check('H4 五道闸各有一个 tag 且互不相同（不许两道闸共用一个来源名）',
+  gateTags.length === 5 && new Set(gateTags).size === 5, gateTags.join(','));
 const srcFiles = walk(path.join(ROOT, 'src')).filter((f) => f.endsWith('.ts'));
 check('H5 全仓只有 audit.ts 调 eventStore.recordAudit（落点唯一）',
   srcFiles.every((f) => path.resolve(f) === path.resolve(ROOT, 'src/permission/audit.ts')
@@ -454,11 +492,12 @@ check('H5 全仓只有 audit.ts 调 eventStore.recordAudit（落点唯一）',
 check('H6 audit.ts 只往叙事库写，不碰 tool_call 流水（两本账各归各）', !auditSrc.includes('CALLS_FILE'));
 check('H7 审计条目**不带 turnId**（钩子载荷里没有它；要复盘按时间窗回流水翻）',
   !auditSrc.includes('turnId'));
-check('H8 三条落点都在 audit.ts 里且各只导出一处实现',
+check('H8 落点都在 audit.ts 里且各只导出一处实现',
   (auditSrc.match(/export function recordGateDeny/g) ?? []).length === 1
   && (auditSrc.match(/export function recordGrant/g) ?? []).length === 1
   && (auditSrc.match(/export function recordRevoke/g) ?? []).length === 1
-  && (auditSrc.match(/export function recordPermissionChoice/g) ?? []).length === 1);
+  && (auditSrc.match(/export function recordPermissionChoice/g) ?? []).length === 1
+  && (auditSrc.match(/export function recordPlanMode/g) ?? []).length === 1);
 
 // ── J1 隔离守护：会写账本的套件，必须先进沙箱 ──
 // 为什么需要这一条：H1-H8 只保证"条目从哪个函数写出来"（落点唯一），**不保证它写到哪儿去**。
@@ -474,8 +513,10 @@ check('H8 三条落点都在 audit.ts 里且各只导出一处实现',
 const stripComments = (s: string): string => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const LEDGER_ENTRY_POINTS = [
   'builtin/workspace.js', // /workspace allow|clear → recordGrant / recordRevoke
+  'builtin/plan.js', // /plan on|off → recordPlanMode（2026-09-20，10.4.1）
   'coreBeforeToolCall', // 钩子链 → recordGateDeny
   'recordAudit', 'recordGateDeny', 'recordGrant', 'recordRevoke', 'recordPermissionChoice',
+  'recordPlanMode',
 ];
 const suiteNames = fs.readdirSync(path.join(ROOT, 'scripts')).filter((n) => /^verify-.+\.ts$/.test(n));
 const strippedSuites = new Map(suiteNames.map((n) => [n, stripComments(readSrc(`scripts/${n}`))]));

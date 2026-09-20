@@ -37,6 +37,7 @@ import { guardWorkspaceWrite, workspaceGrants } from '../permission/workspace.js
 import { realPathOf } from '../tools/paths.js';
 import { recordGateDeny } from '../permission/audit.js';
 import { routeBashGitRead } from '../git/route.js';
+import { guardPlanMode, planMode } from '../loop/plan-mode.js';
 import type { HookDeny } from '../loop/tool-hooks.js';
 import {
   POSTCHECK_FILE,
@@ -79,14 +80,32 @@ interface CreateRuntimeResult {
  * 被重排骗过）。抽出来之后套件能拿真事件喂它、逐条打靶，而**行为一字未变**：判据全是纯函数，
  * `charterUnlocked` 由参数注入（原来读 `charterLock` 单例），这里没有进程级状态，可以反复调用。
  *
- * ⚠ 四道闸的**书写顺序 = 执行顺序**（命中即返回），这个顺序本身就是设计：判据更窄更确定的
- *   排前面，先让它们给出更具体的理由。既有套件（verify-danger G3）钉着这个文本顺序 ——
+ * ⚠ 五道闸的**书写顺序 = 执行顺序**（命中即返回），这个顺序本身就是设计 ——
+ *   但**两条排序理由不同，别用一条去推另一条**：
+ *     · 模式闸（计划模式）排最前，理由不是"判据更窄"（它的判据其实**最宽**：按工具名一票拦），
+ *       而是**其余各闸的出路在计划模式下都不成立** —— 模型若拿到"请让用户 /charter unlock"
+ *       或"请让用户 /workspace allow"，用户照做之后它**照样被计划模式拦着**，那就是把模型
+ *       与用户一起引向一条走不通的路（"方向给错比不给更坏"，同 10.9.5 的拒因分工）。
+ *     · 其余四道照旧按"判据更窄更确定的排前面"，先让它们给出更具体的理由。
+ *   既有套件（verify-danger G3）钉着契约 → 危险 → 路由三者的相对次序 ——
  *   重排之前先想清楚为什么这么排。
  *
  * 审计落点就在这里（ROADMAP 10.9.4）：**命中即记一条再原样返回**。落点选在链上而不是
  * `agent-loop`，是因为只有这里知道"是哪一道闸拒的"（loop 那边只拿到一句 reason 文本）。
  */
-export function coreBeforeToolCall(event: unknown, charterUnlocked: boolean): HookDeny | undefined {
+export function coreBeforeToolCall(
+  event: unknown,
+  charterUnlocked: boolean,
+  /**
+   * 计划模式是否开启（ROADMAP 10.4.1）。
+   *
+   * **缺省 `false`** —— 与 10.9.5 的 `ctx.realpath` 同一个手法："加一步"而不"换判据"，
+   * 既有调用点（含各套件里按老签名调的两参版本）因此**零扰动**，行为逐字退回改动前。
+   * 真实取值由装配处传 `planMode.isOn()`，本函数**不直读单例** —— 理由同 `charterUnlocked`：
+   * 状态是参数，这个函数才没有进程级状态、能反复喂假值打靶。
+   */
+  planEnabled: boolean = false,
+): HookDeny | undefined {
   const e = event as { name?: unknown; args?: unknown };
   // 空串直接传给闸（fail-open 口径各自负责）；"显示成 (未知工具)" 是审计侧的事，
   // 不许反过来改判据看到的值 —— 两件事各归各。
@@ -97,6 +116,15 @@ export function coreBeforeToolCall(event: unknown, charterUnlocked: boolean): Ho
     recordGateDeny({ source, tag, toolName, args: e.args, reason: d.reason });
     return d;
   };
+
+  // ⓪ 模式闸：计划模式（ROADMAP 10.4.1）。判据只有两问 —— 模式开着吗、工具名在名单里吗 ——
+  //    **刻意不看参数**（"能不能改用户文件"由工具身份决定，不由这次的参数决定），
+  //    所以它没有其余各闸那些"形状判不出来"的余地，也不存在 fail-open 分支。
+  //    排最前：见上方头注 —— 其余闸的出路在计划模式下**都不成立**，先说话的那个必须能给出
+  //    真正走得通的出路。C8 担忧的"RPC 下形同虚设"在这里不成立：本闸**没有人工确认环节**，
+  //    非 TTY 下没有任何东西可被自动放行（完整论证见 loop/plan-mode.ts 文件头）。
+  const plan = guardPlanMode(toolName, planEnabled);
+  if (plan) return deny('计划模式', 'plan', plan);
 
   // ① 安全闸：契约锁。完备性要求高（漏一次 = 目标被偷改），故排在前面、命中即返回。
   const contract = guardContractWrite(toolName, e.args, charterUnlocked);
@@ -248,7 +276,10 @@ export async function main(checkResult: CheckResult): Promise<void> {
   // 链的本体在文件上方（coreBeforeToolCall）——抽出去**只为让验证套件能真跑它**：
   // 装配后的实际次序、是谁拒的、审计记了什么都能逐条打靶，而不是只能对本文件做文本断言。
   // 注册时机（装载扩展之前）与"核心钩子先入列、扩展返回 undefined 不覆盖 deny"两条不变。
-  events.on('before_tool_call', (event) => coreBeforeToolCall(event, charterLock.isUnlocked()));
+  // `planMode.isOn()` **每次调用现取**（与工作区闸现取 cwd 同一个理由）：`/plan on|off`
+  // 改了模式之后，下一次工具调用立刻按新模式判，不需要重装钩子。
+  events.on('before_tool_call', (event) =>
+    coreBeforeToolCall(event, charterLock.isUnlocked(), planMode.isOn()));
 
   // 装载用户扩展（段落 + hook + watcher）—— 自动扫描 src/extensions/ 下三类目录
   const ext = await loadExtensions(events);

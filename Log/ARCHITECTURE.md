@@ -39,6 +39,10 @@
 
 ┌─ 子系统实现（一目录一个，互不 import）────────────────────
 │ loop/             AgentLoopServiceImpl —— LLM 流式 + 工具执行的循环
+│                   + plan-mode.ts **计划模式**（10.4.1，`before_tool_call` 的**第 0 道闸**）：`/plan on` 之后 write / edit / bash
+│                     一律被拒、只有**用户**打得出 `/plan off`；判据 `guardPlanMode(toolName, enabled)` 是**纯函数**且
+│                     **只看工具名**（无 fail-open 分支）；**`bash` 也受管**——与工作区闸刻意排除它相反，因为读类
+│                     另有专用工具（read / ls / grep / git 全放行），堵掉 bash 的代价近乎为零而留着就是一个 `> file` 的后门
 │ session/          JsonlSessionStorage（entry 树 + leaf 指针 + fork；getMessages 视图裁剪）· InMemory · Mock
 │                   + JsonlSessionRepo —— 会话仓库层（目录级 list/open/create/remove，core/session-repo 契约；
 │                     删除两层守卫：文件名白名单拒穿越 + Runtime 拒删当前活跃会话）
@@ -79,12 +83,12 @@
 │                     落盘 `~/.flint/permissions.json`（按项目键分区）；**读一次**（启动读进内存快照 → 运行期不读盘，
 │                     掐掉"模型改文件给自己发授权"那条通路）· **读不懂当没有**且**拒写**（免得抹掉别的项目条目）· **写失败报出来**
 │                   · audit.ts **审计留痕的统一落点**（10.9.4）—— 拦下 / 拒绝 / 放行 / 收回四类**边界决定**各落一条进
-│                     `events.jsonl`（`kind=system`、`tags` 带 `audit`，**不新开文件**）；三个调用方（钩子链 / `askPermission` /
-│                     `/workspace` 命令）各只剩一行，闸名·标签·截断只有一份定义。**只记边界决定**（正常调用流水已全量记，
+│                     `events.jsonl`（`kind=system`、`tags` 带 `audit`，**不新开文件**）；四个调用方（钩子链 / `askPermission` /
+│                     `/workspace` 命令 / `/plan` 命令）各只剩一行，闸名·标签·截断只有一份定义。**只记边界决定**（正常调用流水已全量记，
 │                     再记是双份噪音）· **拉通道**（**刻意不注入提示词**：被审计的一方若实时看到自己被拦了几次，留痕就成了
 │                     行为训练信号）· **落盘失败静默**（旁路不许反噬主流程），但授权类失败如实写进 `reason`（谎报比漏记更坏）
 │ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
-│ commands/         CommandServiceImpl + 15 个内置命令（含 /memory /events /charter /projects /workspace）
+│ commands/         CommandServiceImpl + 16 个内置命令（含 /memory /events /charter /projects /workspace /plan）
 │ diagnostics/      DiagnosticsServiceImpl
 │ config/           ConfigManager（配置分层 + 供应商注册表 + 模型列表预热/新鲜期）
 │ llm/              createProvider() 工厂 → AnthropicProvider（provider === 'anthropic'）

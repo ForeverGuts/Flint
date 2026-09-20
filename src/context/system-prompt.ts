@@ -102,15 +102,29 @@ export class SystemPromptServiceImpl implements SystemPromptService {
       messages.push({ layer: 'memory', content: parts.join('\n\n') });
     }
 
-    // ⑤ 工作记忆层：任务清单（渲染自内存真相源 TaskStore；独立于对话历史，压缩碰不到）。
-    //   runtime 只在 hasUnchecked 时才把它传进来，所以这一层出现 = 必有未完成项。
-    // 计划驱动：追加续传提示——系统发信号，core-section【工作记忆】教模型用 todo 响应，两边对暗号
-    if (ctx.task) {
-      const hasUnchecked = hasUncheckedTask(ctx.task);
-      const resumeHint = hasUnchecked
-        ? '\n\n[续传提示] 上方任务清单存在未完成项：从第一个未完成项继续执行，不要从头重做；完成一步后用 todo op:"done" 标记它。'
-        : '';
-      messages.push({ layer: 'task', content: `## 当前任务（工作记忆）\n${ctx.task}${resumeHint}` });
+    // ⑤ 工作记忆层：**两节**，任务清单在前、计划模式横幅在后（ROADMAP 10.4.1）。
+    //   · 【当前任务】渲染自内存真相源 TaskStore（独立于对话历史，压缩碰不到），
+    //     由 runtime 在 hasUnchecked 时才传进来；计划驱动：追加续传提示 —— 系统发信号，
+    //     core-section【工作记忆】教模型用 todo 响应，两边对暗号；
+    //   · 【计划模式横幅】由 runtime 在模式开启时传进来（**与任务清单无关** ——
+    //     清单空着也照样在计划模式里）。⚠ 因此这一层**出现 ≠ 必有未完成项**了，
+    //     旧注释那句"这一层出现 = 必有未完成项"随之作废：判"有没有未完成项"要问
+    //     `hasUnchecked()` / `hasUncheckedTask(render())`，**不许拿"task 层在不在"当代理**
+    //     （那样会在"计划模式 + 空清单"时判反）。
+    //   两节同层（都是"此刻该干什么"的运行状态）但**不合并**：来源与刷新率都不同 ——
+    //   清单随工具变更、横幅随模式开关，任一缺席就只出另一节；两节都无 → 整层缺席
+    //   （维持"没有就不注入"的纪律）。
+    if (ctx.task || ctx.plan) {
+      const parts: string[] = [];
+      if (ctx.task) {
+        const hasUnchecked = hasUncheckedTask(ctx.task);
+        const resumeHint = hasUnchecked
+          ? '\n\n[续传提示] 上方任务清单存在未完成项：从第一个未完成项继续执行，不要从头重做；完成一步后用 todo op:"done" 标记它。'
+          : '';
+        parts.push(`## 当前任务（工作记忆）\n${ctx.task}${resumeHint}`);
+      }
+      if (ctx.plan) parts.push(ctx.plan);
+      messages.push({ layer: 'task', content: parts.join('\n\n') });
     }
 
     // ⑥ 摘要层：有压缩摘要才加，放最末（变化最大，最不影响前缀）

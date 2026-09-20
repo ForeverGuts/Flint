@@ -174,3 +174,24 @@ export function recordPermissionChoice(
     tag: 'permission',
   }, EVENTS_FILE);
 }
+
+/**
+ * 计划模式的开关（`/plan on|off`，从命令层调）—— ROADMAP 10.4.1。
+ *
+ * 为什么这算"边界决定"而不是噪音：它改的是**Agent 在本次会话里被允许做什么**
+ * （从"可以写"改成"一律不许写"），与"放行一个目录"是同一类动作，只是方向相反
+ * （那是收窄一次、这是收窄整段时间）。而它**只在真正切换时**由命令层记一次 ——
+ * 每次工具被拦**不在这里记**，那一条走 `recordGateDeny`（tag=plan），
+ * 两者的读者不同：一条回答"谁能动手"、一条回答"它试过什么"。
+ */
+export function recordPlanMode(on: boolean): void {
+  eventStore.recordAudit({
+    action: on ? 'refuse' : 'grant',
+    subject: '计划模式',
+    source: on ? '进入' : '退出',
+    reason: on
+      ? '用户开启计划模式：write / edit / bash 在本会话内一律被程序拒绝，直到 /plan off'
+      : '用户退出计划模式：write / edit / bash 恢复可用',
+    tag: 'plan',
+  }, EVENTS_FILE);
+}

@@ -313,8 +313,13 @@ check('G1 判据零**项目**依赖（import 只指向 node: 内置与钩子契�
     .every((line) => /from '(node:|\.\.\/loop\/tool-hooks\.js')/.test(line)));
 check('G2 判据不碰 fs、不起进程（纯函数：目标文件可能还不存在）',
   !/child_process|node:fs|readFileSync|existsSync|mkdirSync/.test(workCode));
-check('G3 main.ts 里**四道闸**的顺序：契约 → 危险 → 工作区 → git 路由',
-  mainSrc.indexOf('guardContractWrite(') < mainSrc.indexOf('guardDangerousCommand(')
+// 2026-09-20：链条从四道涨到**五道** —— 最前面多了**模式闸**（计划模式，ROADMAP 10.4.1）。
+// 它排最前的理由与其余四道**不同**（不是"判据更窄"，恰恰相反它最宽）：其余各闸的出路在
+// 计划模式下都不成立，先说话的必须能给出真的走得通的那条路。完整理由见 src/loop/plan-mode.ts。
+// 这一条是全仓**唯一**钉完整次序的断言（verify-danger 的 G3 只钉其中一段，不再重复加长）。
+check('G3 main.ts 里**五道闸**的顺序：计划模式 → 契约 → 危险 → 工作区 → git 路由',
+  mainSrc.indexOf('guardPlanMode(') < mainSrc.indexOf('guardContractWrite(')
+  && mainSrc.indexOf('guardContractWrite(') < mainSrc.indexOf('guardDangerousCommand(')
   && mainSrc.indexOf('guardDangerousCommand(') < mainSrc.indexOf('guardWorkspaceWrite(')
   && mainSrc.indexOf('guardWorkspaceWrite(') < mainSrc.indexOf('routeBashGitRead('));
 // G4 刻意不设：`before_tool_call` 的**注册时机**（排在 loadExtensions 之前）是全钩子块共有的

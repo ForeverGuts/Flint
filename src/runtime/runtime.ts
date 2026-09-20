@@ -25,6 +25,7 @@ import { readProjectSnapshot } from '../project/snapshot.js';
 import { commandRegistry, renderCommandsSection } from '../project/commands.js';
 import { renderStackSection, stackRegistry } from '../project/stack.js';
 import { renderRulesSection, rulesRegistry } from '../project/rules.js';
+import { planMode, renderPlanBanner } from '../loop/plan-mode.js';
 import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { recordPermissionChoice } from '../permission/audit.js';
 
@@ -726,6 +727,12 @@ export class Runtime {
     // 而运行期回读会让模型 write AGENTS.md 就改写自己下一轮的注入内容。
     // 没命中 → 空串 → 该节缺席，memory 层逐字与接入前相同（"没有就不注入"）。
     const rulesSection = renderRulesSection(rulesRegistry.get());
+    // 计划模式横幅（10.4.1）：**每轮现取**（它是个会中途变的状态，不像规约那样"会话内不该变"）。
+    // 为什么值得每轮注入、而不是等它撞一次墙：这正是 10.2.1 的立场 —— 把当前规则放进视野，
+    // 比事后纠正便宜。不注入的话，模型每轮都要先白试 write / edit / bash 三次才知道自己在
+    // 计划模式（三次被拒 = 三轮白烧），而钩子那边拦得住、却拦不出"它一开始就知道"。
+    // 位置：折进 task 层（见 context/system-prompt.ts），不新开一层（同 10.1.1 / 10.2.1 的判断）。
+    const planBanner = planMode.isOn() ? renderPlanBanner() : undefined;
     // 项目记忆：读内存真相源（memoryStore），有条目才注入；截断同 task 层——注入可截，投影不截
     const rawMemory = memoryStore.isEmpty() ? undefined : memoryStore.render();
     const projectMemory = rawMemory && rawMemory.length > 2000
@@ -743,6 +750,7 @@ export class Runtime {
       commands: commandsSection === '' ? undefined : commandsSection,
       task: taskMemory,
       rules: rulesSection === '' ? undefined : rulesSection,
+      plan: planBanner,
       memory: projectMemory,
       historyCount: history.length,
     });
