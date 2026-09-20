@@ -2,7 +2,7 @@
  * 内置工具注册 —— Ls / Read / Write / Edit / Grep / Bash 六个核心工具，
  * 外加清单（todo）/ 记忆（memory）/ 事件库（record_event · search_events · pull_events）/
  * 分叉点提问（ask）/ 坐标归档（archive）/ git 只读查询（git）/ git 写操作（git_write）/
- * 符号定义检索（symbols）等系统级工具，共 16 个。
+ * 符号定义检索（symbols）/ 引用查找（refs）等系统级工具，共 17 个。
  * 调用方：main.ts（组装工具子系统时调用）
  * 服务于：为 LLM 提供列目录、读文件、写文件、精准改片段、搜索内容、查定义、执行命令的能力
  *         （Ls 支撑"工具增强推理"：模型先看清项目结构再动手，不凭记忆脑补）
@@ -51,6 +51,11 @@ import { SKIP_DIRS, scanPaths } from '../search/walk.js';
 import {
   SYMBOL_MAX_HITS, isCodeFile, renderSymbolReport, scanSymbols, type SymbolEntry,
 } from '../search/symbols.js';
+// 引用查找（ROADMAP 10.7.2）：与 symbols 互补 —— 那边找"定义在哪"，这边找"被用在哪"。
+// 判据同样零 import 纯函数，遍历共用 walk.ts；两者的 0 命中都不是有效否定，理由见各自文件头
+import {
+  REFERENCE_MAX_HITS, renderReferenceReport, scanReferences, type ReferenceEntry,
+} from '../search/references.js';
 import {
   ROADMAP_FILE, findCycles, isParent, nextCoord, parentOf, parseRoadmap, resolveStatuses, setStatus,
   spliceCoordTable, unmetDeps, type Coord,
@@ -760,6 +765,62 @@ export function registerBuiltinTools(
       } catch (e) {
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`符号检索失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
+      }
+    },
+  }));
+
+  /* ── Refs：引用查找（ROADMAP 10.7.2） ── */
+  tools.register(defineTool({
+    name: 'refs',
+    description: '按名字查找符号**被用在哪些地方**（调用 / 使用 / 导入 / 定义），返回"路径:行号: 类别 — 该行内容"，并按类别给出条数分布。与 `symbols`（找定义）互补：改一个函数前用它看波及面。按**全词**匹配 —— 搜 "run" 不会把 "runAll" 或 "rerun" 带出来，这是它比 grep 省一遍筛的地方。⚠ 它不做作用域分析：**同名不同物会一并列出**，且没找到不等于没人用（反射 / 字符串拼接 / 跨语言调用都看不见）。跳过 .git/node_modules/dist、项目 .gitignore 里列出的路径、二进制与超大文件。',
+    spec: {
+      name: str('符号名', '要查找的符号名，按**原样精确**全词比对（区分大小写）。示例: "scanPaths" 或 "SKIP_DIRS"'),
+      path: optStr('搜索路径', '搜索路径，文件或目录。默认当前目录。示例: "src/" 或 "src/tools/builtin.ts"', '.'),
+    },
+    handler: async (args) => {
+      try {
+        const { name, path: searchPath } = args;
+
+        const { existsSync, statSync } = await import('node:fs');
+        const resolvedPath = searchPath.replace(/\\/g, '/');
+        const resolvedAbs = resolveToolPath(searchPath, process.cwd()).abs;
+        if (!existsSync(resolvedAbs)) return toolNegative('NOT_FOUND', `路径不存在: ${resolvedPath}`);
+
+        const searchIsDir = statSync(resolvedAbs).isDirectory();
+        const hits: ReferenceEntry[] = [];
+        let truncated = false;
+
+        // 与 grep / symbols 共用同一份遍历器（跳过表 / .gitignore / 二进制体检只有一处实现）。
+        // `accept` 同样用代码扩展名名单，且只在走目录时生效 —— 点名的文件从不套过滤
+        const scan = scanPaths({
+          root: resolvedAbs,
+          isDir: searchIsDir,
+          ignoreRules: searchIsDir ? await loadIgnoreRules(resolvedAbs) : [],
+          accept: isCodeFile,
+          onFile: (file, _rel, buf) => {
+            const found = scanReferences(buf.toString('utf-8'), file, name, REFERENCE_MAX_HITS - hits.length);
+            for (const hit of found) hits.push({ file, hit });
+            if (hits.length >= REFERENCE_MAX_HITS) { truncated = true; return false; }
+            return true;
+          },
+        });
+
+        // 0 命中同 symbols：**不是有效否定**（反射 / 动态拼接 / 跨语言调用都看不见），
+        // 所以一律 toolOk，由正文说清边界并给出替代手段
+        return toolOk(renderReferenceReport({
+          name,
+          pathLabel: resolvedPath,
+          hits,
+          scanned: scan.scanned,
+          filtered: scan.filtered,
+          skippedBinary: scan.skippedBinary,
+          skippedBig: scan.skippedBig,
+          truncated,
+          singleFile: !searchIsDir,
+        }));
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`引用查找失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
       }
     },
   }));

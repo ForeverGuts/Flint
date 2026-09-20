@@ -580,9 +580,11 @@ console.log('\n⑥ 源码守护（手段钉死：换成等价实现也要知道�
     !/^import\s/m.test(symSrc) && !/require\(/.test(symSrc));
   check('G2 symbols.ts 不碰 fs、不起进程（它是判据不是探针）',
     !/node:fs|child_process|readFileSync|readdirSync|existsSync/.test(symSrc));
-  check('G3 search/ 下只有两个模块，且碰 fs 的只有 walk.ts',
+  // 10.7.2 加了 references.ts（引用查找的判据）后这里从两个模块变三个：
+  // 判据仍是"碰 fs 的只有 walk.ts 那一份"——模块数是手段，单一探针才是意图
+  check('G3 search/ 下三个模块（symbols / references 判据 + walk 探针），且碰 fs 的只有 walk.ts',
     fs.readdirSync(path.join(ROOT, 'src/search')).filter((f) => f.endsWith('.ts')).sort().join(',')
-      === 'symbols.ts,walk.ts'
+      === 'references.ts,symbols.ts,walk.ts'
     && !/node:fs/.test(symSrc) && /node:fs/.test(walkSrc));
   check('G4 grep 段与 symbols 段都不自己读文件（"读文件 + 体检"只有 walk.ts 那一份）', (() => {
     const blocks = [builtinCode('grep'), builtinCode('symbols')];
@@ -590,8 +592,10 @@ console.log('\n⑥ 源码守护（手段钉死：换成等价实现也要知道�
       && (walkSrc.match(/export function readForScan\(/g) ?? []).length === 1;
   })());
 
-  check('G5 grep 与 symbols **两个** handler 都走同一份 scanPaths（不许各写一份遍历）',
-    (builtinSrc.match(/scanPaths\(/g) ?? []).length === 2,
+  // 10.7.2 加了第三个消费者 refs —— 数字跟着长是刻意的：这条钉的是"不许各写一份遍历"，
+  // 每加一个走内容扫描的工具都必须回到这里把理由写清（同 verify-tools G12 的口径）
+  check('G5 grep / symbols / refs **三个** handler 都走同一份 scanPaths（不许各写一份遍历）',
+    (builtinSrc.match(/scanPaths\(/g) ?? []).length === 3,
     String((builtinSrc.match(/scanPaths\(/g) ?? []).length));
   check('G6 跳过表字面量只此一处（walk.ts），builtin 里不再抄第二份 —— 10.7.3 那笔旧账',
     !/new Set\(\['\.git'/.test(builtinSrc)
@@ -619,7 +623,7 @@ console.log('\n⑥ 源码守护（手段钉死：换成等价实现也要知道�
     return at !== '' && (at.match(/toolNegative\(/g) ?? []).length === 1
       && /toolNegative\('NOT_FOUND'/.test(at);
   })());
-  check('G15 模块头工具数改到 16（不是"悄悄多一个"）', /共 16 个/.test(builtinRaw));
+  check('G15 模块头工具数改到 17（不是"悄悄多一个"）', /共 17 个/.test(builtinRaw));
 
   /** 切出某个工具的注册段（到下一个 tools.register 为止）—— 与 verify-git-write 同一手法 */
   function builtinCode(tool: string): string {

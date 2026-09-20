@@ -195,8 +195,8 @@ const walkSrc = stripComments(fs.readFileSync(path.join(ROOT, 'src/search/walk.t
 
 check('D1 gitignore.ts 零 import（纯函数，可脱离终端验）',
   !/^import\s/m.test(modSrc) && !/require\(/.test(modSrc));
-check('D2 ls 与 grep 与 symbols **三个**工具都接了 loadIgnoreRules（少一个就有一半路径没过滤）',
-  (builtinSrc.match(/loadIgnoreRules\(/g) ?? []).length === 4,   // 定义 1 + 调用 3（ls / grep / symbols）
+check('D2 ls 与 grep 与 symbols 与 refs **四个**工具都接了 loadIgnoreRules（少一个就有一半路径没过滤）',
+  (builtinSrc.match(/loadIgnoreRules\(/g) ?? []).length === 5,   // 定义 1 + 调用 4（ls / grep / symbols / refs）
   String((builtinSrc.match(/loadIgnoreRules\(/g) ?? []).length));
 check('D3 两处落点都在按 .gitignore 过滤：ls 自己调一次，grep 与 symbols 经 search/walk.ts 的同一处',
   (builtinSrc.match(/isIgnoredByGitignore\(/g) ?? []).length === 1
@@ -207,9 +207,9 @@ check('D4 loadIgnoreRules 宽容：任何异常都退回空表（读不出来 = 
 check('D5 内置默认仍在 —— `.git` / `node_modules` / `dist` 是底线，不交给人手填空话（全仓只有一份定义，在 search/walk.ts）',
   /const SKIP_DIRS: ReadonlySet<string> = new Set\(\['\.git', 'node_modules', 'dist'\]\);/.test(walkSrc)
   && !/new Set\(\['\.git'/.test(builtinSrc));
-check('D6 三个工具的 description 都告诉了模型"会按 .gitignore 过滤"（否则它会以为文件不存在）',
+check('D6 四个工具的 description 都告诉了模型"会按 .gitignore 过滤"（否则它会以为文件不存在）',
   builtinRaw.includes('项目 .gitignore 里列出的路径')
-  && (builtinRaw.match(/项目 \.gitignore 里列出的路径/g) ?? []).length === 3);
+  && (builtinRaw.match(/项目 \.gitignore 里列出的路径/g) ?? []).length === 4);
 check('D7 文件名走常量，不在工具层写字面量', builtinSrc.includes('GITIGNORE_FILE'));
 check('D8 匹配时传的是**相对搜索根**的路径（rel 逐层拼出来）：ls 一处 + search/walk.ts 一处，各只有一份',
   /childRel = rel \? `\$\{rel\}\/\$\{item\.name\}` : item\.name;/.test(builtinSrc)

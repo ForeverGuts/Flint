@@ -490,8 +490,8 @@ check('G19 分支行只有一份实现：write.ts 引用 git.ts 的 renderBranch
   /renderBranchLine/.test(writeCode) && !/\[分支\]/.test(writeCode));
 check('G20 不自己抄一份「凭据打码」（复用 git.ts 的 redactCredentialsIn）',
   /redactCredentialsIn/.test(writeCode) && !/:\/\/\)\[\^\/@/.test(writeCode));
-check('G21 builtin.ts 的模块头把工具数改到 16（不是"悄悄多一个"）',
-  /共 16 个/.test(read('src/tools/builtin.ts')),
+check('G21 builtin.ts 的模块头把工具数改到 17（不是"悄悄多一个"）',
+  /共 17 个/.test(read('src/tools/builtin.ts')),
   '模块头里那句"共 N 个"没跟着改 —— 它是给人读的清单，陈旧了没人会发现');
 
 console.log('');

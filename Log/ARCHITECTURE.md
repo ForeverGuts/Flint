@@ -49,7 +49,7 @@
 │ tools/            ToolRegistry + spec.ts（参数规格：一份定义派生 Schema / 运行时校验 / 入参类型）
 │                   + paths.ts（10.9.5：全仓**唯一**的"相对 → 绝对"解析 + 真落点；六个路径 handler 都从它取落点，
 │                     闸那边的真落点也由它提供 —— 由装配处注入，故闸自身仍不碰 fs）
-│                   + 16 个内置工具（ls / read / write / edit / grep / symbols / bash / todo / memory / record_event / search_events / pull_events / ask / archive / git / git_write）
+│                   + 17 个内置工具（ls / read / write / edit / grep / symbols / refs / bash / todo / memory / record_event / search_events / pull_events / ask / archive / git / git_write）
 │ search/           逐文件内容扫描（10.7.1）：walk.ts 遍历器（scanPaths / readForScan / SKIP_DIRS）—— grep 与 symbols
 │                   **共用同一份**"走目录 + 跳过表 + .gitignore + 二进制/体积体检"（ls 复用同一份跳过表，但保留
 │                     自己"列目录树"的遍历形状）；symbols.ts 符号定义识别（零 import 纯判据：跨语言并集形状表 + 跨行注释扫描）

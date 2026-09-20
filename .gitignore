@@ -17,8 +17,9 @@ Thumbs.db
 .qoder/settings.local.json
 .claude/settings.local.json
 
-# AI 工具本机工作目录（Agent 记忆 / 技能 / 会话数据，不随仓库共享）
+# AI 工具本机工作目录（Agent 记忆 / 技能 / 会话数据 / 目标契约，不随仓库共享）
 .workbuddy/
+.pi/
 
 # Agent 测试 / 草稿产物（按 Agent 分目录存放；不随仓库共享）
 # 约定：每个 Agent 只写自己名下的目录，根目录不再出现散落的 _* 临时文件

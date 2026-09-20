@@ -352,8 +352,8 @@ check('F2 `resolveToolPath` 只有一处实现（"统一 resolve"的前提）',
 check('F3 `realPathOf` 只有一处实现', (pathsCode.match(/export function realPathOf/g) ?? []).length === 1);
 check('F4 用 `realpathSync.native` 而不是普通版（只有它规范大小写，探针实测）',
   pathsCode.includes('realpathSync.native(') && !/realpathSync\((?!.*native)/.test(pathsCode));
-check('F5 六个路径工具都接了统一解析（read / write / edit / ls / grep / symbols）',
-  (builtinCode.match(/resolveToolPath\(/g) ?? []).length === 6);
+check('F5 七个路径工具都接了统一解析（read / write / edit / ls / grep / symbols / refs）',
+  (builtinCode.match(/resolveToolPath\(/g) ?? []).length === 7);
 check('F6 解析出来的绝对路径**真的喂给了 fs**（不是算了不用）',
   builtinCode.includes('readFileSync(resolvedAbs') && builtinCode.includes('writeFileSync(resolvedAbs')
   && builtinCode.includes('existsSync(resolvedAbs)'));
