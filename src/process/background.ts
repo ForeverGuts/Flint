@@ -7,13 +7,15 @@
  * 经 tool 结果回读，**绝不直写 stdout**。
  *
  * 退出清理挂点 = 模块自注册 `process.on('exit')`（同步 `spawnSync taskkill /T /F`）。
- * 运行时 `runtime.stop()` 仍为空 TODO；SIGINT/SIGTERM/异常崩溃全部汇入进程退出，
- * 注册一次覆盖所有路径、最小侵入（不动 main.ts）。
+ *
+ * `runtime.stop()` **刻意不接**（改前这里挂着一条没说清的待办标记，那是欠着的账）：
+ * SIGINT / SIGTERM / 未捕获异常 / 正常退出**全部**汇入"进程退出"这一个事件，在这里
+ * 注册一次就覆盖所有路径；在 stop() 里再挂一次是**重复清理**，而且 stop **不一定被
+ * 调到**（崩溃时恰恰不会）—— 靠它反而更不可靠。不动 main.ts 也是刻意的（最小侵入）。
  */
 
 import { createRequire } from 'node:module';
-import { planTreeKill, spawnDetached } from './proctree.js';
-import { describeTreeKill } from './proctree.js';
+import { describeTreeKill, planTreeKill, spawnDetached } from './proctree.js';
 import { decodeChildOutput } from './runner.js';
 
 const require = createRequire(import.meta.url);
@@ -41,6 +43,11 @@ class RingBuffer {
       this.droppedBytes += last.length - this.chunks[0].length;
     }
   }
+  /** 当前字节数 —— `list` / `status` 只要这个数，用它就不必为取长度把整个缓冲
+      concat 一遍（1MB 缓冲 × 每次列任务一次拷贝，纯浪费）。 */
+  get size(): number {
+    return this.bytes;
+  }
   snapshot(): Buffer {
     return this.chunks.length === 0 ? Buffer.alloc(0) : Buffer.concat(this.chunks);
   }
@@ -62,7 +69,9 @@ export interface BackgroundTaskInfo {
   stderrBytes: number;
   droppedStdoutBytes: number;
   droppedStderrBytes: number;
-  settleForced: boolean;
+  // ⚠ 刻意**没有** `settleForced`（2026-09-21 删）：它原本恒为 `false` —— 后台任务没有
+  // "超时"这个动作（等不等结束由调用方决定），也就没有 runner.ts 那种"宽限期兜底结算"。
+  // **恒假的字段是谎话**：读它的人会以为"这一栏会有别的值"，而它永远不会。
 }
 
 interface TaskInternal {
@@ -132,7 +141,10 @@ export class BackgroundTaskStore {
     child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
       if (t.settled) return;
       t.settled = true;
-      t.status = (t.status === 'killed') ? 'killed' : (code === null && signal !== null ? 'exited' : 'exited');
+      // ⚠ 改前这里写的是 `(code === null && signal !== null ? 'exited' : 'exited')` ——
+      //   **两个分支相同**，等于把 `code`/`signal` 算了一遍却什么都不影响（死三元）。
+      //   死代码不留：留着会让下一个改动者以为"被信号杀掉"在这里有单独处理，顺着去补。
+      t.status = t.status === 'killed' ? 'killed' : 'exited';
       t.exitCode = code;
       t.signal = signal ? String(signal) : null;
       t.endedAtMs = Date.now();
@@ -146,9 +158,8 @@ export class BackgroundTaskStore {
         id: t.id, command: t.command, status: t.status, pid: t.pid,
         exitCode: t.exitCode, signal: t.signal, spawnErrorCode: t.spawnErrorCode,
         startedAtMs: t.startedAtMs, endedAtMs: t.endedAtMs,
-        stdoutBytes: t.out.snapshot().length, stderrBytes: t.err.snapshot().length,
+        stdoutBytes: t.out.size, stderrBytes: t.err.size,
         droppedStdoutBytes: t.out.droppedBytes, droppedStderrBytes: t.err.droppedBytes,
-        settleForced: false,
       });
     }
     return res.sort((a, b) => a.id - b.id);
@@ -160,9 +171,8 @@ export class BackgroundTaskStore {
       id: t.id, command: t.command, status: t.status, pid: t.pid,
       exitCode: t.exitCode, signal: t.signal, spawnErrorCode: t.spawnErrorCode,
       startedAtMs: t.startedAtMs, endedAtMs: t.endedAtMs,
-      stdoutBytes: t.out.snapshot().length, stderrBytes: t.err.snapshot().length,
+      stdoutBytes: t.out.size, stderrBytes: t.err.size,
       droppedStdoutBytes: t.out.droppedBytes, droppedStderrBytes: t.err.droppedBytes,
-      settleForced: false,
     };
   }
   output(id: number, tail?: number): { stdout: string; stderr: string; stdoutBytes: number; stderrBytes: number; droppedStdoutBytes: number; droppedStderrBytes: number; truncated: boolean } | null {
