@@ -68,14 +68,26 @@ const stripComments = (s: string): string =>
   s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 /* ═══ ① 被拦工具的名单 ═══ */
-console.log('── ① 被拦工具的名单（封闭枚举：恰好三条改文件的通道）──');
+console.log('── ① 被拦工具的名单（封闭枚举：恰好五条改东西的通道）──');
 
-check('A1 名单恰好是 write / edit / bash / git_write（多一个少一个都当场红）',
-  [...PLAN_BLOCKED_TOOLS].sort().join(',') === 'bash,edit,git_write,write',
+// 2026-09-21 补 `spawn`（ROADMAP 10.10.1）：后台起一条 shell 命令，改文件的能力与 bash
+// 等价、只是不等待结束。改前名单没有它 ⇒ 计划模式"先对齐再动手"这条纪律一换工具就绕过
+// （10.4.1 判定 bash 进名单的原话：不堵的代价是"留一句 > file 就能绕开整道闸"）。
+check('A1 名单恰好是 write / edit / bash / git_write / spawn（多一个少一个都当场红）',
+  [...PLAN_BLOCKED_TOOLS].sort().join(',') === 'bash,edit,git_write,spawn,write',
   [...PLAN_BLOCKED_TOOLS].sort().join(','));
-check('A2 write / edit / bash / git_write 都判为被拦',
+check('A2 write / edit / bash / git_write / spawn 都判为被拦',
   isPlanBlockedTool('write') && isPlanBlockedTool('edit') && isPlanBlockedTool('bash')
-  && isPlanBlockedTool('git_write'));
+  && isPlanBlockedTool('git_write') && isPlanBlockedTool('spawn'));
+// 真接线：guardPlanMode 真的把 spawn 拒掉（A1/A2 只测名单与 isPlanBlockedTool，
+// 若哪天闸改判 `PLAN_BLOCKED_TOOLS.has` 之外的地方，这两条照绿 —— 所以补一条走上闸本身的）
+check('A2b guardPlanMode 真的拒下 spawn（不是只在名单里挂着）',
+  guardPlanMode('spawn', true)?.action === 'deny'
+  && (guardPlanMode('spawn', true)?.reason ?? '').includes('spawn'));
+// `task` 刻意不进：只管本会话 spawn 建的任务（list/status/output/kill），改的是进程状态
+// 不是用户文件，与 todo / memory 同性质；计划模式下没有 spawn 建的任务，堵掉它收益为零。
+check('A2c task 刻意不在名单（管自有进程 ≈ 记自己的账，不是改用户文件）',
+  !isPlanBlockedTool('task'));
 check('A3 只读工具不在名单：ls / read / grep / git / ask',
   !isPlanBlockedTool('ls') && !isPlanBlockedTool('read') && !isPlanBlockedTool('grep')
   && !isPlanBlockedTool('git') && !isPlanBlockedTool('ask'));

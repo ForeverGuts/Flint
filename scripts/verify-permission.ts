@@ -82,10 +82,13 @@ console.log('\n① 契约与转发（加的是**可选**成员，9 处 ToolProvi
     registry.requiresPermission('ls') === false
     && registry.requiresPermission('read') === false
     && registry.requiresPermission('grep') === false);
-  check('A5 三个改类工具（write / edit / bash）都需要确认',
+  check('A5 四个改类工具（write / edit / bash / spawn）都需要确认',
     registry.requiresPermission('write') === true
     && registry.requiresPermission('edit') === true
-    && registry.requiresPermission('bash') === true);
+    && registry.requiresPermission('bash') === true
+    && registry.requiresPermission('spawn') === true);
+  check('A5b task 不弹窗（kill 只认任务 id，撤销自己启动的进程 ≈ todo.done）',
+    registry.requiresPermission('task') === false);
   check('A6 这三个都真的定义了 permissionKey（需确认却不给键，就退回整串 args JSON）',
     keyOf('write', { path: 'a.txt', content: 'x' }) !== undefined
     && keyOf('edit', { path: 'a.txt', oldText: 'x', newText: 'y' }) !== undefined

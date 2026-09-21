@@ -74,6 +74,7 @@ const bash = async (args: Record<string, unknown>): Promise<string> =>
 const IS_WIN = process.platform === 'win32';
 
 const builtinSrc = fs.readFileSync(path.join(ROOT, 'src/tools/builtin.ts'), 'utf-8');
+const runnerSrc = fs.readFileSync(path.join(ROOT, 'src/process/runner.ts'), 'utf-8');
 // 2026-09-20（ROADMAP 10.7.1）：`grep` 与 `symbols` 共用的遍历器落在 `src/search/walk.ts` ——
 // G11 因此要看两个文件（跳过表的定义在 walk.ts、builtin 里不许有第二份）。
 const walkSrc = fs.readFileSync(path.join(ROOT, 'src/search/walk.ts'), 'utf-8');
@@ -247,10 +248,11 @@ console.log('\n④ bash 子进程输出解码（外部程序 UTF-8 / 内建命�
     check('D6 解码策略不依赖平台硬编码（见 ⑦ 段源码断言）', /decodeChildOutput/.test(builtinSrc));
   }
 
+  // 2026-09-21（ROADMAP 10.10.1）：decodeChildOutput 提到 runner.ts 了，断言跟着改落点
   check('D7 解码走的是"先 UTF-8 严格解、失败再退代码页"（顺序不能反）',
-    /new TextDecoder\('utf-8', \{ fatal: true \}\)/.test(builtinSrc));
+    /new TextDecoder\('utf-8', \{ fatal: true \}\)/.test(runnerSrc));
   check('D8 回退解码器本身不可用时还有最后一层兜底，不冒到 handler 的 catch',
-    /return raw\.toString\('utf-8'\);/.test(builtinSrc));
+    /return raw\.toString\('utf-8'\);/.test(runnerSrc));
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -346,7 +348,7 @@ console.log('\n⑦ 源码文本断言（防回退）');
     : builtinSrc.slice(toolDefs[grepIdx].at,
       grepIdx + 1 < toolDefs.length ? toolDefs[grepIdx + 1].at : undefined);
   check('G0 切片本身有效（否则下面几条是空转的假绿）——射程恰好是 grep 这一个工具，不吃邻居',
-    toolDefs.length === 17 && grepBlock.length > 500
+    toolDefs.length === 19 && grepBlock.length > 500
     && !grepBlock.includes("name: 'bash'") && !grepBlock.includes("name: 'symbols'"),
     `切到 ${grepBlock.length} 字符，工具定义行 ${toolDefs.length} 个`);
   // 断言用**调用形态**（带括号）而非裸标识符：解释性注释里会写"Windows 上 execSync 走
@@ -392,18 +394,20 @@ console.log('\n⑦ 源码文本断言（防回退）');
     && /scanPaths\(/.test(grepBlock)
     && !/new Set\(\['\.git'/.test(builtinSrc)
     && !/isIgnoredByGitignore\(/.test(grepBlock));
-  // 口径更新（2026-09-14 git 工具；2026-09-15 改完自检；**2026-09-16 ROADMAP 10.6.6**；**2026-09-20 10.5.2**）：
-  // 起进程这件事**收拢**了 —— bash 与自检原先各自直连 child_process，现在都改走
-  // process/runner.ts（异步 spawn + 超时**按进程树**杀）。builtin.ts 里只剩 git 这一族。
-  // 判据因此从"在 builtin 里数到三"变成"点两个模块的名字"：多出第三个模块，就说明又有
-  // 人绕开了受控执行器 —— 而"各自直连、各自只杀 shell"正是 10.6.6 要根治的老毛病。
+  // 起进程这件事**收拢**了 —— bash / 自检 / spawn 原先各自直连 child_process，
+  // 现在都走 process/runner.ts（前台）或 process/background.ts（后台）。
+  // builtin.ts 里只剩 git 这一族。
+  // 判据因此从\"在 builtin 里数到三\"变成\"点两个模块的名字\"：多出第三个模块，就说明又有
+  // 人绕开了受控执行器 —— 而\"各自直连、各自只杀 shell\"正是 10.6.6 要根治的老毛病。
   // 这条**会随正当用途增加而红**，那是刻意的：每次加一处都必须回来把理由写在这里。
   //
   // 2026-09-20（10.5.2 写操作确认闸）：builtin.ts 里由 **1 处变 2 处** —— 新增 git_write
   // 工具也要起 git 子进程。**理由**：读写两侧本就该是两个工具（工具身份要能回答"会不会改
   // 用户的文件"，计划模式闸只看名字），所以调用点必然是两个；两处**同族同形**（argv 数组、
-  // execFileSync、不经 shell），没有引入新的执行路径。模块数仍是 2。
-  const runnerSrc = fs.readFileSync(path.join(ROOT, 'src/process/runner.ts'), 'utf-8');
+  // 2026-09-21（ROADMAP 10.10.1 后台任务）：spawn 起进程走 process/background.ts（用 require，
+  // 不经 await import），所以 G12 断言的计数**不变**（builtin 仍 2、runner 仍 1）。
+  // 若有人把 spawn 也改写成 await import 直连，G12 会红 —— 那是刻意的提醒：要回到 BackgroundTaskStore。
+  // runnerSrc 已在 ⑤ 段头部定义（D7/D8 现在钉 runner.ts 而非 builtin.ts）
   check('G12 起子进程只有两个模块：builtin.ts（git 读/写两个工具，argv 不经 shell，2 处调用）与 process/runner.ts（bash 与自检共用）',
     (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 2
     && (runnerSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 1);

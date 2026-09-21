@@ -57,7 +57,7 @@
  * · **它不是沙箱**：只对**经模型之手**的工具调用生效。用户在终端里自己敲命令，
  *   或者模型跑 `bash`（被拦了）之外的通路（比如将来新增的写类工具）都不在覆盖内。
  * · **新增写类工具时名单要跟着长** —— 名单是**封闭枚举**，漏一个就是一条静默通路。
- *   套件里有一条源码守护钉着"名单恰好是这四个"，就是给这件事留的提醒。
+ *   套件里有一条源码守护钉着"名单恰好是这五个"，就是给这件事留的提醒。
  * · 只挡"改"，不挡"读" —— 计划模式**鼓励**多读（这正是它想要的：先看清再提方案）。
  *
  * 零运行时依赖：只用本项目类型 + 纯函数。
@@ -71,13 +71,33 @@ export const PLAN_MARK = '[计划模式]';
  * 计划模式下不许执行的工具。**封闭枚举，加写类工具时必须同步这里**
  * （理由见文件头"已知边界"，套件有源码守护钉住这份名单的内容）。
  *
- * 四项的次序只是排字方便（判定是集合成员，与次序无关）。**别按"危险程度"理解它** ——
+ * 各项的次序只是排字方便（判定是集合成员，与次序无关）。**别按"危险程度"理解它** ——
  * 它记的是"这一次调用会不会改用户的东西"，而 `git_write` 与 `bash` 都算了进去：
  * 两者的共同点是"改动的目标藏在参数里"，而**工具身份已经足够说明问题**，所以不必看参数。
+ *
+ * **2026-09-21 补 `spawn`**（ROADMAP 10.10.1 后台任务）：它起的是一条 shell 命令，
+ * 改文件的能力与 `bash` **完全等价**，只是不等待结束。改前名单里没有它，于是计划模式下
+ * 模型用 `spawn` 就能把"先对齐再动手"整道闸绕过去 —— 而 10.4.1 判定 `bash` 进名单的理由
+ * 原话是"**不堵的代价是留了一句 `> file` 就能绕开整道闸**"，`spawn` 正是同一条通路。
+ * 教训与 `SHELL_COMMAND_TOOLS`（danger.ts）那次是同一条：**闸按名字认人 ⇒ 加同形工具
+ * 必须回来补名字。**
+ *
+ * `task`（后台任务管理）**刻意不进**：它只能 list / status / output / kill 本会话经 spawn
+ * 建的任务，改的是进程状态、不是用户的文件 —— 与 `todo` / `memory` 那一类"管理自有资源"
+ * 同性质；且计划模式下没有 spawn 建的任务，堵掉它的收益为零、损失是查不到已有任务。
  */
-export const PLAN_BLOCKED_TOOLS: ReadonlySet<string> = new Set(['write', 'edit', 'bash', 'git_write']);
+export const PLAN_BLOCKED_TOOLS: ReadonlySet<string> = new Set(['write', 'edit', 'bash', 'git_write', 'spawn']);
 
-/** 该工具是否属于"能改用户项目文件"的那四条通道之一 */
+/**
+ * 名单的**展示串**（`write / edit / …`）—— 横幅与拒因**都从它派生**。
+ *
+ * 为什么不让文案手抄名单：2026-09-21 加 `spawn` 时当场证明过 —— 名单改了、两处文案没改，
+ * 于是"横幅报出的名单"与"闸真拦的名单"不一致（模型照着横幅以为 spawn 能用，撞一次才知道）。
+ * 套件里的 C10 正是为这半步留的断言，但**能靠派生消掉的漂移，不该靠断言去逮**。
+ */
+export const PLAN_BLOCKED_LABEL = [...PLAN_BLOCKED_TOOLS].join(' / ');
+
+/** 该工具是否属于"能改用户项目文件"的那几条通道之一 */
 export function isPlanBlockedTool(toolName: string): boolean {
   return PLAN_BLOCKED_TOOLS.has(toolName);
 }
@@ -108,14 +128,14 @@ export function guardPlanMode(toolName: string, enabled: boolean): HookDeny | un
 export function renderPlanReason(toolName: string): string {
   return [
     `${PLAN_MARK} 这条调用没有被执行：现在是计划模式，用户只要方案、不要改动。`,
-    `  被拦下的工具 = ${toolName}（能改项目文件的通道：write / edit / bash / git_write）`,
+    `  被拦下的工具 = ${toolName}（能改项目文件的通道：${PLAN_BLOCKED_LABEL}）`,
     '  出路：',
     '    · 你要做的事**已经够写方案了** —— 用 ls / read / grep / git 把情况看全，'
       + '然后把「打算改哪些文件、每个文件改什么、为什么这么改、怎么验证」写成给用户看的方案；',
     '    · 用户看过方案后自己敲 /plan off 退出计划模式，你才能动手。**这一步只有用户能做**；',
     '    · 方案里需要用户拍板的地方，用 ask 工具问（它不受本闸限制）。',
-    '  （说明：这道闸只管 write / edit / bash / git_write 这四条改东西的通道；'
-      + '读、检索、git 只读、以及 todo / memory / record_event 这些"记自己的账"都不拦。'
+    `  （说明：这道闸只管 ${PLAN_BLOCKED_LABEL} 这几条改东西的通道；`
+      + '读、检索、git 只读、以及 todo / memory / record_event / task 这些"记自己的账 / 管自己的进程"都不拦。'
       + '它不是沙箱。）',
   ].join('\n');
 }
@@ -130,7 +150,7 @@ export function renderPlanReason(toolName: string): string {
 export function renderPlanBanner(): string {
   return [
     `${PLAN_MARK}（由用户开启，会话内有效）：**只读、先出方案**。`,
-    '  现在 write / edit / bash / git_write 会被程序拒绝，直到用户敲 /plan off。',
+    `  现在 ${PLAN_BLOCKED_LABEL} 会被程序拒绝，直到用户敲 /plan off。`,
     '  你要做的是：用只读工具把情况看全，把方案讲给用户看；需要拍板的地方用 ask 问。',
   ].join('\n');
 }

@@ -310,6 +310,22 @@ check('F18 参数注入生效：platform 换成 linux 后 MSYS 写法不再展�
 check('F19 注入的 cwd 与 platform=win32 组合下，MSYS 写法能命中',
   findDangerousCommand(`rm -rf /c${process.cwd().slice(2).replace(/\\/g, '/')}`, { ...REAL, platform: 'win32' }) !== null);
 
+/* ── F20/F21：`spawn` 与 `bash` 同判（2026-09-21 补的一处真缺口）──
+   改前 `guardDangerousCommand` 写死 `toolName !== 'bash'`，而 10.10.1 新加的 `spawn`
+   **手里同样拿着一条 shell 命令**，只是不等待结束 —— 于是 `spawn "rm -rf .."` 整条绕过
+   本闸，而 spawn 自己的 description 里还写着"受……危险命令等一切钉在 bash 上的闸约束"
+   （那句话当时是假的）。**闸按工具名字认人 ⇒ 每加一个同形工具都要回来补名字**，
+   这两条就是给"下一次加工具"留的那声提醒（配合 G 段的封闭枚举断言）。 */
+check('F20 spawn 与 bash 同判：同一条灾难命令在 spawn 上也被拒',
+  guardDangerousCommand('spawn', { command: 'rm -rf /' }, REAL)?.action === 'deny');
+check('F21 spawn 同样放得下正常命令（扩工具名不是"一律拦"）',
+  guardDangerousCommand('spawn', { command: 'npm run dev' }, REAL) === undefined
+  && guardDangerousCommand('spawn', { command: 'node dev-server.js' }, REAL) === undefined);
+// 反面：手里没有命令串的工具依然 fail-open（"不认得就放行"这条纪律没被改动）
+check('F22 手里没有命令串的工具仍放行（write / task 不进这道闸）',
+  guardDangerousCommand('write', { command: 'rm -rf /' }, REAL) === undefined
+  && guardDangerousCommand('task', { command: 'rm -rf /' }, REAL) === undefined);
+
 /* ── ⑦ 源码守护 ── */
 console.log('── ⑦ 源码守护 ──');
 
@@ -353,6 +369,13 @@ check('G11 fork 炸弹判据在**整串**上（不切段：它的分隔符与 sh
 const dangerCode = stripComments(dangerSrc);
 check('G12 拒因里的两处边界声明都在**代码里**（剥掉注释后仍有）',
   dangerCode.includes('没有被执行') && dangerCode.includes('护栏不是沙箱'));
+
+// ⚠ 同样用剥掉注释的 `dangerCode`：danger.ts 的注释里为讲清来龙去脉，逐字引用了改前那句
+// `toolName !== 'bash'` —— 裸扫会被这句散文**喂饱**（把判据删掉它照绿）。
+check('G13 工具身份判定走**封闭枚举**，不再写死某一个工具名（下一个同形工具必须回来补名字）',
+  /SHELL_COMMAND_TOOLS\.has\(toolName\)/.test(dangerCode)
+  && !/toolName\s*!==\s*'bash'/.test(dangerCode)
+  && /export const SHELL_COMMAND_TOOLS[^=]*= new Set\(\['bash', 'spawn'\]\)/.test(dangerCode));
 
 /* ── ⑧ 真目录 + 真链路 ── */
 console.log('── ⑧ 真目录 + 真 PromptEventEmitter 链路 ──');

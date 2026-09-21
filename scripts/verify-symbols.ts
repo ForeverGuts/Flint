@@ -611,8 +611,11 @@ console.log('\n⑥ 源码守护（手段钉死：换成等价实现也要知道�
     const at = builtinCode('symbols');
     return at !== '' && !/requirePermission/.test(at);
   })());
-  check('G11 symbols **不进**计划模式名单（它不改任何东西；名单里仍是四条）',
-    !PLAN_BLOCKED_TOOLS.has('symbols') && PLAN_BLOCKED_TOOLS.size === 4,
+  // ⚠ 名字里**别写死条数**（2026-09-21 实踩）：这里曾写着"名单里仍是四条"，加 `spawn` 后
+  //   整条红 —— 而它真正要钉的只是"symbols 不在名单里"这一件事。条数由 `verify-plan.ts`
+  //   的 A1 专有（**一份事实只该有一处判据**），这里重复一遍只会多一处要跟着改的地方。
+  check('G11 symbols **不进**计划模式名单（它不改任何东西）',
+    !PLAN_BLOCKED_TOOLS.has('symbols'),
     [...PLAN_BLOCKED_TOOLS].join(','));
   check('G12 symbols 的 description 明说"不是编译器"（文案回退会直接误导模型去新建同名符号）',
     builtinRaw.includes('没找到不等于这个符号不存在'));
@@ -623,7 +626,7 @@ console.log('\n⑥ 源码守护（手段钉死：换成等价实现也要知道�
     return at !== '' && (at.match(/toolNegative\(/g) ?? []).length === 1
       && /toolNegative\('NOT_FOUND'/.test(at);
   })());
-  check('G15 模块头工具数改到 17（不是"悄悄多一个"）', /共 17 个/.test(builtinRaw));
+  check('G15 模块头工具数改到 19（不是\"悄悄多一个\"）', /共 19 个/.test(builtinRaw));
 
   /** 切出某个工具的注册段（到下一个 tools.register 为止）—— 与 verify-git-write 同一手法 */
   function builtinCode(tool: string): string {

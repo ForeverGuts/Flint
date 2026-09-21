@@ -2,7 +2,7 @@
  * 内置工具注册 —— Ls / Read / Write / Edit / Grep / Bash 六个核心工具，
  * 外加清单（todo）/ 记忆（memory）/ 事件库（record_event · search_events · pull_events）/
  * 分叉点提问（ask）/ 坐标归档（archive）/ git 只读查询（git）/ git 写操作（git_write）/
- * 符号定义检索（symbols）/ 引用查找（refs）等系统级工具，共 17 个。
+ * 符号定义检索（symbols）/ 引用查找（refs）等系统级工具，共 19 个。
  * 调用方：main.ts（组装工具子系统时调用）
  * 服务于：为 LLM 提供列目录、读文件、写文件、精准改片段、搜索内容、查定义、执行命令的能力
  *         （Ls 支撑"工具增强推理"：模型先看清项目结构再动手，不凭记忆脑补）
@@ -80,7 +80,8 @@ import {
 // 起子进程的两处（bash / 自检）都走统一执行器 —— 它管住的是**整棵进程树**（ROADMAP 10.6.6）
 import { resolveToolPath } from './paths.js';
 import { describeTreeKill } from '../process/proctree.js';
-import { childFailureCode, runChildInTree } from '../process/runner.js';
+import { childFailureCode, decodeChildOutput, runChildInTree } from '../process/runner.js';
+import { backgroundStore, type BackgroundTaskStore } from '../process/background.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    参数规则在每个工具的 spec 里，Schema 与校验都由它派生（实现见 spec.ts）
@@ -100,47 +101,6 @@ import { childFailureCode, runChildInTree } from '../process/runner.js';
       里、跑在 handler 之前，正常不会命中；留着是为了保住"handler 体内自己抛出的参数错误
       也算 [INVALID]"这条分类不变量（代价：6 行实际不走的分支，以及为它保留的 import）。
    ═══════════════════════════════════════════════════════════════════════════════ */
-
-/* ═══════════════════════════════════════════════════════════════════════════════
-   子进程输出解码 与 glob 编译
-   ═══════════════════════════════════════════════════════════════════════════════ */
-
-/**
- * 把子进程的输出字节解成字符串。
- *
- * 为什么不能硬编码一种编码（改前硬编码 GBK，实测两处失真）：进程之间传的是**字节**，
- * 字节不带"我是谁的编码"这个属性，而**谁产生的输出决定编码**——
- *   · cmd.exe 内建命令（echo / dir / type / chcp）走控制台代码页，中文 Windows = 936(GBK)
- *     实测 `echo 中文测试` → d6d0cec4b2e2cad4
- *   · 外部程序（node / npm / git / tsc）走自己的编码，通常 UTF-8
- *     实测 `node -e "console.log('中文测试')"` → e4b8ade69687e6b58be8af95
- * 硬编码 GBK 时后者全变乱码：模型跑 `node -e "console.log('编译通过')"` 看到的是
- * "缂栬瘧閫氳繃"，而它正是靠这段文本判断编译结果的。
- *
- * 策略：先按 UTF-8 **严格**解（fatal: true）——解得通就是 UTF-8（纯 ASCII 是两者的公共
- * 子集，怎么解都一样）；解不通说明含非 UTF-8 字节，退回平台代码页。GBK 的中文字节序列
- * （如 d6d0）在 UTF-8 下必然非法（双字节前导后必须跟 10xxxxxx，而 d0 不是），所以这个
- * 探测在实践中是可靠的判别，不是碰运气。
- *
- * 残留限制（不装糊涂，写明）：一条命令同时混两种编码时（如 `echo x && node y`），GBK
- * 字节会让 UTF-8 严格解失败，于是整段按 GBK 解，node 那部分仍乱码。逐段判编码要先按行
- * 切字节再分别试解，代价是可能把一行 UTF-8 中文误判成 GBK（GBK 字符集覆盖面大，几乎所有
- * 双字节组合都"合法"）。当前策略在"单一来源输出"（绝大多数情况）上是对的。
- */
-function decodeChildOutput(raw: Buffer): string {
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(raw);
-  } catch {
-    // 回退解码器本身也可能不可用（Node 未带 full-icu 时 'gbk' 构造抛 RangeError）。
-    // 这种情况绝不能让它冒到 handler 的 catch 里——那会被报成 [ERROR] 命令执行失败，
-    // 模型会去排查一个根本没坏的执行环境（改前正是这条路）。
-    try {
-      return new TextDecoder(process.platform === 'win32' ? 'gbk' : 'utf-8', { fatal: false }).decode(raw);
-    } catch {
-      return raw.toString('utf-8');
-    }
-  }
-}
 
 /* ── 子进程的两个上限（值与 ROADMAP 10.6.6 迁移前逐字一致：换执行机制不改配额） ──
    bash：30 秒 / 4MB；自检：8MB。自检的**时间**上限来自登记表（timeoutMs / totalTimeoutMs），
@@ -338,6 +298,7 @@ export function registerBuiltinTools(
   mem: MemoryStore = memoryStore,
   evs: EventStore = eventStore,
   askFn: AskFn = NO_INTERACTION,
+  bg: BackgroundTaskStore = backgroundStore,
 ): void {
   /* ── Ls：列目录（了解结构，工具增强推理的起点） ── */
   tools.register(defineTool({
@@ -1683,6 +1644,115 @@ export function registerBuiltinTools(
       } catch (e) {
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`git_write 执行失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
+      }
+    },
+  }));
+/* ── Spawn：后台执行命令 ──
+       起子进程后**立即返回任务 id**（不等待）——与 bash 的区别是"等到结束"。
+       输出进后台任务的字节环形缓冲，由 `task` 工具回读；超上限丢弃最旧字节而**不杀进程**
+       （后台语义=进程继续跑、旧输出丢）。C6：输出只进缓冲、经 tool 回读，绝不直写 stdout。
+       kill 不弹窗的论证：任务表里的每条任务都是本会话经 spawn 创建的、kill 只认任务 id，
+       撤销自己启动的进程 ≈ todo.done（管理自有资源）；真正危险的是 spawn 本身 —— 故 spawn
+       必须 requirePermission，task 必不含（来源必须是源码断言钉住）。 */
+  tools.register(defineTool({
+    name: 'spawn',
+    description: '在后台启动一个 shell 命令（非阻塞：起了就返回任务 id，输出存在任务的环形缓冲里，之后用 task 回读）。用于 dev server / 长任务 —— 不会顶死本轮会话。注意：后台命令的输出**仅能**通过 task 工具回读，**不会**出现在本条结果里；后台进程仍受工作区 / 契约锁 / 危险命令等一切钉在 bash 上的闸约束。Windows 路径中反斜杠需转义或用正斜杠，多行命令用 && 连接。',
+    requirePermission: true,
+    spec: {
+      command: str('命令', '要在后台执行的 shell 命令。示例: "node dev-server.js" 或 "npm run dev"'),
+      description: optStr('用途说明', '命令用途说明（仅用于权限确认提示，不影响执行）。示例: "启动开发服务器"', ''),
+    },
+    // 授权边界 = 完整命令，一个字也不截，与 bash 同边界。
+    permissionKey: (args) => String(args.command ?? ''),
+    permissionDetail: (args) => {
+      const flat = (v: unknown): string => String(v ?? '').replace(/\s+/g, ' ').trim();
+      const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s);
+      const cmd = clip(flat(args.command), 60);
+      const why = flat(args.description);
+      return why ? `${why}: ${cmd}` : cmd;
+    },
+    handler: async (args) => {
+      const cmd = typeof args.command === 'string' ? args.command.trim() : '';
+      if (cmd === '') return toolInvalid('spawn 需要非空的 command（要后台执行的命令）');
+      // 起子进程的逻辑全部在 process/background.ts，builtin.ts 不直接 import child_process（G12）
+      const r = bg.spawn(cmd);
+      if (r.pid == null) {
+        return toolError(`后台任务 #${r.id} 启动失败（无法获取 pid）：${cmd.slice(0, 80)}`);
+      }
+      return toolOk(`已在后台启动任务 #${r.id}（pid ${r.pid}）。用 task list/status/output/kill 回读它的进程与输出（缓冲上限 1MB，超限自动丢弃旧输出）。命令：${clipOutput(cmd.slice(0, 100))}`);
+    },
+  }));
+
+  /* ── Task：回读/管理后台任务 ──
+       op: list / status / output / kill。kill 只认任务 id、不弹窗，论证见 spawn 注释。 */
+  tools.register(defineTool({
+    name: 'task',
+    description: '管理后台任务。op: list 列出所有任务 / status(id) 查某任务状态 / output(id) 回读已缓冲的输出（tail=字节） / kill(id) 终止任务（只杀 spawn 起的进程）。输出上限 1MB，超限自动丢弃旧的字节；回读时才解码，避免截断多字节字符。',
+    spec: {
+      op: str('操作', 'list（列任务）/ status（查状态，需 id）/ output（回读输出，需 id；可选 tail）/ kill（终止，需 id）'),
+      id: optPosInt('任务 id', 'list 不用传；status / output / kill 需要。1 基，任务 id。示例: 2', 1),
+      tail: optPosInt('回读字节数', 'output 用：只回读最后 N 字节，缺省回读全部缓冲（上限 1MB）。示例: 4000', Infinity),
+    },
+    handler: async (args) => {
+      try {
+        const { op, id, tail } = args;
+        switch (op) {
+          case 'list': {
+            const list = bg.list();
+            if (list.length === 0) return toolOk('（暂无后台任务）');
+            const rows = list.map((t: {id:number;status:string;pid:number|null;exitCode:number|null;signal:string|null;stdoutBytes:number;stderrBytes:number;droppedStdoutBytes:number;droppedStderrBytes:number}) =>
+              `\n  #${t.id}  pid=${t.pid ?? '—'}  ${t.status}`
+              + `  exit=${t.exitCode ?? '—'}  signal=${t.signal ?? '—'}`
+              + `  out=${t.stdoutBytes}B err=${t.stderrBytes}B`
+              + (t.droppedStdoutBytes + t.droppedStderrBytes > 0 ? `  dropped=${t.droppedStdoutBytes + t.droppedStderrBytes}B` : '')
+            );
+            return toolOk(`后台任务 (${list.length})：${rows.join('')}`);
+          }
+          case 'status': {
+            const t = bg.status(id);
+            if (t === null) return toolInvalid(`status 的 id=${id} 不存在：当前任务由 spawn 创建并立即编号，list 能看见全部；id 不在 list 里就一定没起来过`);
+            const dur = t.endedAtMs === null
+              ? Math.floor((Date.now() - t.startedAtMs) / 1000) + 's（运行中）'
+              : Math.floor((t.endedAtMs - t.startedAtMs) / 1000) + 's';
+            return toolOk(`任务 #${t.id}：${t.status}（运行 ${dur}）pid=${t.pid ?? '—'}`
+              + `  exitCode=${t.exitCode ?? '—'}  signal=${t.signal ?? '—'}`
+              + (t.spawnErrorCode ? `  spawnError=${t.spawnErrorCode}` : ''));
+          }
+          case 'output': {
+            const r = bg.output(id, tail === Infinity ? undefined : tail);
+            if (r === null) return toolInvalid(`output 的 id=${id} 不存在：当前任务由 spawn 创建并立即编号，list 能看见全部；id 不在 list 里就一定没起来过`);
+            /* 回执**必须含内容** —— 改前这段只报字节数，把 `r.stdout` / `r.stderr` 拿在手里
+               却没拼进回执，于是"回读后台任务输出"这个动作永远拿不到输出（store 是对的、
+               工具是空的，正是"测函数 ≠ 测接线"那一类洞：S3 断言测的是 `bg.output()`，
+               全绿，而工具回执里一个字也没有）。
+               形状与 bash 对齐（同用 `clipOutput`、同样的"共 N 字符"口径）—— 两个工具
+               对"输出被截了"这件事说两种话，迟早有人照着错的那个数去判断。 */
+            const dropped = r.droppedStdoutBytes + r.droppedStderrBytes;
+            const dropNote = dropped > 0
+              ? `\n（缓冲满 1MB 后丢弃了最旧的 ${dropped}B —— 后台任务不因超限被杀，只丢旧字节）`
+              : '';
+            if (r.stdout === '' && r.stderr === '') {
+              return toolOk(`任务 #${id} 目前没有任何输出（stdout 0B、stderr 0B）${dropNote}。它可能刚启动还没来得及打印，也可能这条命令本就不输出 —— 用 task status 查它是否还在跑`);
+            }
+            const parts: string[] = [];
+            if (r.stderr !== '') parts.push(`── stderr（${r.stderrBytes}B）：\n${clipOutput(r.stderr)}`);
+            if (r.stdout !== '') parts.push(`── stdout（${r.stdoutBytes}B）：\n${clipOutput(r.stdout)}`);
+            // stderr 在前：报错比正常输出更该先被看见（与 bash 回执"先结果后输出"同取向）
+            const tailNote = r.truncated ? `\n（tail=${tail} 只回读了最后这部分字节；完整缓冲共 stdout ${r.stdoutBytes}B / stderr ${r.stderrBytes}B）` : '';
+            return toolOk(`任务 #${id} 的输出：\n${parts.join('\n')}${tailNote}${dropNote}`);
+          }
+          case 'kill': {
+            const r = bg.kill(id);
+            if (r.kind === 'not-found') return toolInvalid(`kill 的 id=${id} 不存在：任务由 spawn 创建并立即编号，list 能看见全部；id 不在 list 里就一定没起来过`);
+            if (r.kind === 'already-ended') return toolOk(`任务 #${id} 已结束（status=${r.status}，exitCode=${r.exitCode ?? '—'}），无需 kill —— 它既不在运行也不在缓冲里，管理自有资源不用重复终止`);
+            return toolOk(`已向 #${id} 发出终止：${r.msg}`);
+          }
+          default:
+            return toolInvalid(`未知操作 op=${op}，可用的是 list / status / output / kill`);
+        }
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`task 执行失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
       }
     },
   }));

@@ -55,6 +55,31 @@ export interface ChildRunOutcome {
   /** true = 靠宽限期兜底结算的（正常路径是 close 事件）。观测用，不影响判定 */
   settleForced: boolean;
 }
+/**
+ * 把子进程的输出字节解成字符串（原在 tools/builtin.ts，2026-09-21 提到这里）——
+ * 前台 bash 与后台任务（ROADMAP 10.10.1）共用**同一份**编码判别，不各抄一份。
+ *
+ * 为什么不能硬编码一种编码：进程之间传的是**字节**，字节不带\"我是谁的编码\"这个属性，
+ * 而**谁产生的输出决定编码**——
+ *   · cmd.exe 内建命令（echo / dir / type / chcp）走控制台代码页，中文 Windows = 936(GBK)
+ *   · 外部程序（node / npm / git / tsc）走自己的编码，通常 UTF-8
+ * 策略：先按 UTF-8 **严格**解（fatal: true）——解得通就是 UTF-8（纯 ASCII 是两者的公共
+ * 子集，怎么解都一样）；解不通说明含非 UTF-8 字节，退回平台代码页。GBK 的中文字节序列
+ * 在 UTF-8 下必然非法，所以这个探测在实践中是可靠的判别，不是碰运气。
+ * 回退解码器本身也可能不可用（Node 未带 full-icu 时 'gbk' 构造抛 RangeError），
+ * 最后一层兜底是 toString('utf-8')，绝不冒到调用方的 catch 里。
+ */
+export function decodeChildOutput(raw: Buffer): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(raw);
+  } catch {
+    try {
+      return new TextDecoder(process.platform === 'win32' ? 'gbk' : 'utf-8', { fatal: false }).decode(raw);
+    } catch {
+      return raw.toString('utf-8');
+    }
+  }
+}
 
 /** 折成 postcheck 契约的 errorCode（null = 正常结束，退出码才是判据） */
 export function childFailureCode(o: ChildRunOutcome): 'ETIMEDOUT' | 'ENOBUFS' | 'SPAWN_FAILED' | null {

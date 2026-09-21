@@ -1,5 +1,7 @@
 /**
- * 危险命令拦截（ROADMAP 10.9.2）—— bash 命令串里的**灾难形态黑名单**。
+ * 危险命令拦截（ROADMAP 10.9.2）—— **会执行 shell 命令串的工具**（`bash` / `spawn`）里的
+ * **灾难形态黑名单**。判据只认命令串形态，所以"谁手里拿着这条命令"由 `SHELL_COMMAND_TOOLS`
+ * 这个封闭枚举回答（2026-09-21 补 `spawn`：后台执行同样是执行）。
  * 调用方：harness/main.ts 的 before_tool_call 核心钩子（排在契约闸**之后**、git 路由**之前**）。
  * 服务于：让"顺手写出来的一条命令把机器/项目毁掉"这件事，在**权限弹窗之前**就被程序拦下。
  *
@@ -380,15 +382,29 @@ export function findDangerousCommand(command: string, ctx: DangerContext, depth 
 }
 
 /**
+ * **会执行 shell 命令串的工具**（封闭枚举）—— 这道闸的判据是"命令串长什么样"，
+ * 所以凡**手里拿着一条 shell 命令**的工具都得进这个集合，而不只是名字叫 bash 的那个。
+ *
+ * 2026-09-21 补 `spawn`（ROADMAP 10.10.1 后台任务）：它只是**不等待结束**，执行的同样是
+ * 一条 shell 命令串。改前这里写死 `toolName !== 'bash'`，于是 `spawn "rm -rf .."` 整条绕过
+ * 本闸 —— 而 spawn 自己的 description 里还写着"后台进程仍受……危险命令等一切钉在 bash 上的
+ * 闸约束"，那句话当时是假的（**描述说谎比没写更坏**：模型照着它以为有兜底）。
+ * 这是"闸按工具**名字**认人"这条设计（好处：不看参数、没有 fail-open 那一支）的代价 ——
+ * 每加一个同形工具，就必须回来把名字补进这里。**加工具时先问：它手里有没有一条命令串？**
+ */
+export const SHELL_COMMAND_TOOLS: ReadonlySet<string> = new Set(['bash', 'spawn']);
+
+/**
  * 钩子形状的适配器（与 charter.ts 的 guardContractWrite 同一位置关系）：
- * 只看 `bash` 工具；命中返回 deny 契约，其余一律 undefined（fail-open，交回主流程）。
+ * 只看**会执行 shell 命令串**的工具（见 `SHELL_COMMAND_TOOLS`）；命中返回 deny 契约，
+ * 其余一律 undefined（fail-open，交回主流程）。
  */
 export function guardDangerousCommand(
   toolName: string,
   args: unknown,
   ctx: DangerContext = { cwd: process.cwd(), home: os.homedir(), platform: process.platform },
 ): HookDeny | undefined {
-  if (toolName !== 'bash') return undefined;
+  if (!SHELL_COMMAND_TOOLS.has(toolName)) return undefined;
   if (typeof args !== 'object' || args === null) return undefined;
   const command = (args as { command?: unknown }).command;
   if (typeof command !== 'string' || command.trim() === '') return undefined;
