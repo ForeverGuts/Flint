@@ -115,13 +115,29 @@ Agent 内部持有 `while(true)` 循环、自驱动运行的交互方式。**本
 ### Compaction（上下文压缩）
 历史太长时把早期对话摘要成一段，腾出上下文窗口。契约在 `core/compaction.ts`（`CompactionService`，Runtime 必注入子系统之一），实现在 `context/compaction.ts`；摘要的存放另有 `core/compaction-store.ts`（`CompactionStore`）——落在会话文件里（entry 树的 compaction entry），不塞进消息流。
 
-两个入口共用一个压缩主体：`maybeCompact`（**阈值闸**，每轮请求前跑，超 20 条才压）与 `compactNow`（**强制**，fork 摘要用，见[带摘要从此继续](#带摘要从此继续)）。storage **每次调用显式传入**（2026-09-12 起）——runtime 会切换会话，构造期绑死会把摘要写进旧文件。
+两个入口共用一个压缩主体：`maybeCompact`（**阈值闸**，每轮请求前跑，超 20 条才压、**不留档**）与 `compactNow`（**强制**：fork 摘要用，见[带摘要从此继续](#带摘要从此继续)；也是 `/compact` 手动压缩的入口）。storage **每次调用显式传入**（2026-09-12 起）——runtime 会切换会话，构造期绑死会把摘要写进旧文件。手动压缩另有一个 `beforeSummarize` 钩子：留档用的就是它（见[压缩留档](#压缩留档compact-snapshot)）。
 
 LLM 视图与文件内容的分界（2026-09-12 修复后成立）：文件 = append-only 完整历史；`getMessages()` 视图 = 最后一个 compaction 的摘要 + 保留窗口（最近 10 条），**只认最后一个**摘要（与 SystemPromptService 摘要层同一口径）。审计层（`getAllStored` / `getAllMsgIds`）不裁。
 
-压缩本身也要调 LLM，走的是**非流式** `chat()`，并用 `trace('compaction', …)` 打卡成段。**已知缺口**：这条路径烧的 token 没有回流到 `totalUsage`（全文件无 `usage` 字样），所以 `/usage` 报的数偏少。
+压缩本身也要调 LLM，走的是**非流式** `chat()`，并用 `trace('compaction', …)` 打卡成段；这次调用的用量自 2026-09-12 起回流进 `totalUsage`（`CompactionResult.usage` → `bumpUsage`）。保留条数的**缺省口径只有一处**：`DEFAULT_KEEP_RECENT`（自动压缩与 `/compact` 都取它）。
 
-参见：[Span](#span行为段)、[Usage](#usage用量)
+参见：[Span](#span行为段)、[Usage](#usage用量)、[压缩留档](#压缩留档compact-snapshot)
+
+### 压缩留档（Compact Snapshot）
+`/compact` **手动**压缩时，在生成摘要**之前**把"即将被换掉的那批消息"逐条**完整**写进 `.flint/snapshots/compact-YYYYMMDD-HHMMSS[-会话名].md` —— 留的是**完整原文**（只有单条超过 64 KB 才截，且**标出来**），喂 LLM 那份才截 200 字，两者必须分开：留档的意义就是"一个字都不少"。
+
+三条承重判据：① **先留后压** —— 顺序反了就白留（LLM 一抛错直接进 `catch`，留档排在摘要之后就一份也留不下）；② **判据只有一份** —— "哪些条要被压掉"只在 `compactTo` 里算，通过 `beforeSummarize` 钩子递给调用方，调用方**不另算一遍**（另算一遍必然漂移，且两处各测各的都绿、漂移是互相掩护的）；③ **留不下就拒绝压缩**（fail-closed）—— 压缩不可逆又没有回滚基线，**看得见的拒绝**远好过"压完才发现原文没了"（钩子返回 `ok:false` ⇒ `aborted` 带回原因，history **一字不裁**、**压根不调 LLM**、树里不留新 compaction）。
+
+**自动压缩刻意不留档**：那条路没有用户意图，只是窗口快满了，留档只会堆出一堆没人认得的文件。判据在 `context/compact-snapshot.ts`（**零 import 纯函数**），落盘只在 `context/compact-snapshot-file.ts`（**唯一**碰 fs 的模块）。另两处刻意不做：**留档不进上下文**（它只落盘）、**不做清理回收**（删哪一份该由人决定）。
+
+参见：[Compaction](#compaction上下文压缩)、[/compact](#compact手动压缩命令)
+
+### /compact（手动压缩命令）
+`/compact [keep=N]` —— 用户主动说"现在压一下"，`keep` 缺省取 `DEFAULT_KEEP_RECENT`（与自动压缩同一个常量）。参数**只认 `keep=N` 与裸数字**，认不出就报错 + 给用法，**绝不静默当成缺省**（静默的后果是他以为压了 10 条、实际压了 25 条，而这个数只在回执里出现一次、且压完不可逆）。
+
+回执两态都要说清：**压了** → 压掉几条 / 保留几条 / 留档路径 / 摘要；**没压** → 明说"没有压缩"并给原因（历史不够长 / 已经压过 / 留档写不进去），且**不带 ✅**（按下命令却什么都没变，最贵的是他以为压过了）。
+
+参见：[压缩留档](#压缩留档compact-snapshot)、[Compaction](#compaction上下文压缩)
 
 ### Config（配置）
 项目的运行参数文件，如 `package.json`、`tsconfig.json`。属于[项目元数据](#project-metadata项目元数据)的一类。

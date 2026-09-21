@@ -327,7 +327,10 @@ console.log('── ④ 源码守护（契约字段 + 接线点钉在源码文�
     /function anthropicUsageToLLM[\s\S]{0,400}cache_creation_input_tokens[\s\S]{0,120}cache_read_input_tokens/.test(anthropicSrc));
   check('U23 extractChatResult 把 usage 挂进 ChatResult',
     /response\.usage\s*\?\s*\{\s*usage:\s*anthropicUsageToLLM\(response\.usage\)\s*\}/.test(anthropicSrc));
-  check('U24 CompactionResult 契约有 usage 成员', /summary\?\s*:\s*string\s*\|\s*undefined;[\s\S]{0,260}usage\?\s*:\s*LLMUsage/.test(coreCompactionSrc));
+  // ⚠ 别把"两个成员相隔多少字符"写进判据：中间插一个字段（如 10.8.4 的 `aborted?`）就会顶红，
+  //   而红的理由与"usage 在不在"毫无关系。改成**在 interface 块内**找，射程才等于这条断言的名字。
+  const resultBlock = /export interface CompactionResult \{[\s\S]*?\n\}/.exec(coreCompactionSrc)?.[0] ?? '';
+  check('U24 CompactionResult 契约有 usage 成员', /usage\?\s*:\s*LLMUsage/.test(resultBlock), resultBlock.slice(0, 80));
   check('U25 compactTo 从 chat 结果解构并透传 usage',
     /const \{ summary, usage \} = await spanRecorderOf\(events\)\.trace\('compaction'[\s\S]{0,800}usage \? \{ usage \} : \{\}/.test(ctxCompactionSrc));
   check('U25b maybeCompact 合并结果时不丢用量（首跑抓到的真 bug）',

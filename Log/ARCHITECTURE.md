@@ -90,8 +90,8 @@
 │                     `/workspace` 命令 / `/plan` 命令）各只剩一行，闸名·标签·截断只有一份定义。**只记边界决定**（正常调用流水已全量记，
 │                     再记是双份噪音）· **拉通道**（**刻意不注入提示词**：被审计的一方若实时看到自己被拦了几次，留痕就成了
 │                     行为训练信号）· **落盘失败静默**（旁路不许反噬主流程），但授权类失败如实写进 `reason`（谎报比漏记更坏）
-│ context/          CompactionServiceImpl · SystemPromptService · 扩展装载器 · 内置段落
-│ commands/         CommandServiceImpl + 16 个内置命令（含 /memory /events /charter /projects /workspace /plan）
+│ context/          CompactionServiceImpl · SystemPromptService · 压缩留档判据与落盘（10.8.4）· 扩展装载器 · 内置段落
+│ commands/         CommandServiceImpl + 17 个内置命令（含 /memory /events /charter /projects /workspace /plan /compact）
 │ diagnostics/      DiagnosticsServiceImpl
 │ config/           ConfigManager（配置分层 + 供应商注册表 + 模型列表预热/新鲜期）
 │ llm/              createProvider() 工厂 → AnthropicProvider（provider === 'anthropic'）

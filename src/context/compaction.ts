@@ -17,12 +17,12 @@ import type { CompactionStore } from '../core/compaction-store.js';
 import type { EventBus } from '../core/events.js';
 import { spanRecorderOf } from '../core/events.js';
 import type { SpanAttrs, SpanResult } from '../runtime/events.js';
-import type { CompactionResult, CompactionService } from '../core/compaction.js';
+import type { BeforeSummarizeHook, CompactionResult, CompactionService } from '../core/compaction.js';
 
 /** 压缩阈值：历史超过此条数触发压缩 */
 const COMPACT_THRESHOLD = 20;
-/** 压缩后保留的最近条数 */
-const KEEP_RECENT = 10;
+/** 压缩后保留的最近条数（**缺省口径只有这一处**；`/compact` 的默认值也取它，不另立一份） */
+export const DEFAULT_KEEP_RECENT = 10;
 
 /** CompactionService 构造依赖（storage 2026-09-12 起改为每次调用传入——runtime 会切换会话，
  *  构造期绑死会把摘要写进旧会话文件，见 core/compaction.ts 契约注释） */
@@ -59,7 +59,7 @@ export class CompactionServiceImpl implements CompactionService {
     // 本轮触发压缩时的用量（compactTo 带回；不压缩则缺省）
     let compactionUsage: LLMUsage | undefined;
     if (history.length > COMPACT_THRESHOLD) {
-      const r = await this.compactTo(storage, history, KEEP_RECENT);
+      const r = await this.compactTo(storage, history, DEFAULT_KEEP_RECENT);
       history = r.history;
       if (r.summary) compressedSummary = r.summary;
       if (r.usage) compactionUsage = r.usage;
@@ -80,12 +80,12 @@ export class CompactionServiceImpl implements CompactionService {
   async compactNow(
     history: Array<{ role: string; content: string }>,
     storage?: CompactionStore,
-    opts?: { keepRecent?: number },
+    opts?: { keepRecent?: number; beforeSummarize?: BeforeSummarizeHook },
   ): Promise<CompactionResult> {
     if (!storage) return { history, summary: undefined };
-    const keep = opts?.keepRecent ?? KEEP_RECENT;
+    const keep = opts?.keepRecent ?? DEFAULT_KEEP_RECENT;
     if (history.length <= keep) return { history, summary: undefined };
-    return this.compactTo(storage, history, keep);
+    return this.compactTo(storage, history, keep, opts?.beforeSummarize);
   }
 
   /**
@@ -98,6 +98,7 @@ export class CompactionServiceImpl implements CompactionService {
     storage: CompactionStore,
     history: Array<{ role: string; content: string }>,
     keep: number,
+    beforeSummarize?: BeforeSummarizeHook,
   ): Promise<CompactionResult> {
     const { llm, events } = this.deps;
     const allIds = storage.getAllMsgIds();
@@ -111,6 +112,21 @@ export class CompactionServiceImpl implements CompactionService {
     }
     const uncompressedIds = allIds.slice(0, -keep).filter((id) => !summarizedIds.has(id));
     if (uncompressedIds.length === 0) return { history, summary: undefined };
+
+    // 留档（手动压缩才有钩子）：**在生成摘要之前** —— 留的是"即将被换掉"的那批原文。
+    // 钩子说不成就**中止**：没留档却把历史裁了，等于不可逆地丢了原文（见 core/compaction.ts
+    // 钩子的契约注释）。中止时 history 原样返回，一个字都不裁。
+    if (beforeSummarize) {
+      const dropped: Array<{ role: string; content: string }> = [];
+      for (const id of uncompressedIds) {
+        const msg = storage.getMsgById(id);
+        if (msg) dropped.push({ role: msg.role, content: msg.content });
+      }
+      const verdict = await beforeSummarize(dropped);
+      if (!verdict.ok) {
+        return { history, summary: undefined, aborted: verdict.reason ?? '留档未通过' };
+      }
+    }
 
     events?.emit({ type: 'thinking', phase: 'compressing' });
     const toSummarize = uncompressedIds.map((id) => {

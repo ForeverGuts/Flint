@@ -28,6 +28,10 @@ import { renderRulesSection, rulesRegistry } from '../project/rules.js';
 import { planMode, renderPlanBanner } from '../loop/plan-mode.js';
 import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { recordPermissionChoice } from '../permission/audit.js';
+import { DEFAULT_KEEP_RECENT } from '../context/compaction.js';
+import type { CompactOutcome } from '../context/compact-snapshot.js';
+import { renderSnapshot, snapshotFileName } from '../context/compact-snapshot.js';
+import { saveCompactionSnapshot } from '../context/compact-snapshot-file.js';
 
 /* ── 工作记忆：真相源是 `taskStore`（src/todo/store.ts） ──
    改造前这里有个模块级函数：每次请求读 TASK.md、数复选框、全勾选即删。那套是"文件即状态"。
@@ -367,6 +371,79 @@ export class Runtime {
       fileName: forked.fileName,
       summarized: !!result.summary,
       ...(result.summary ? { summary: result.summary } : {}),
+    };
+  }
+
+  /**
+   * 手动压缩（`/compact`，ROADMAP 10.8.4）：**压缩前先把原文整份留档**，留档写不进去就
+   * **拒绝压缩**（压缩不可逆，说好留底却没留是最坏的那种丢）。
+   * 调用方：`src/commands/builtin/compact.ts`
+   * 服务于：把"压缩"从系统自动行为（超 20 条触发）变成一次**用户自己按下的决定**。
+   *
+   * 与自动压缩的分工（刻意）：自动那条路（`maybeCompact`）**不传** `beforeSummarize`，
+   * 因此不留档 —— 它没有"用户此刻要丢掉细节"这层意图，每次都落一份只会在 `.flint/`
+   * 里堆出用户认不出是哪次的文件。理由全文见 `src/context/compact-snapshot.ts` 文件头。
+   *
+   * @param opts.keepRecent 压缩后保留最近几条（缺省 = `DEFAULT_KEEP_RECENT`，与自动压缩同口径）
+   * @returns 结果**含"为什么没压"** —— 按下命令却什么都没变而不说明，用户会以为压过了
+   */
+  async compactSession(opts: { keepRecent?: number } = {}): Promise<CompactOutcome> {
+    const keep = opts.keepRecent ?? DEFAULT_KEEP_RECENT;
+    const store = this.compactionStore();
+    if (!store) {
+      return {
+        compressed: false, keep, dropped: 0, kept: 0,
+        reason: '当前会话不支持压缩（存储没有 entry 树能力，如内存/Mock 会话）',
+      };
+    }
+    const history = await this.session.getMessages();
+    // 与 compactNow 内部同一条判据，但**这里也要判一次**：回执得说清是"条数不够"还是
+    // "这段已经被压过了"，两种没压的原因对用户是两件事（前者无需操作，后者说明再压无益）。
+    if (history.length <= keep) {
+      return {
+        compressed: false, keep, dropped: 0, kept: history.length,
+        reason: `对话只有 ${history.length} 条，不超过要保留的 ${keep} 条（没有可压的东西）`,
+      };
+    }
+
+    const sessionName = (this.session as { id?: string } | undefined)?.id;
+    let dropped = 0;
+    let snapshot: string | undefined;
+    const result = await this.compaction.compactNow(history, store, {
+      keepRecent: keep,
+      beforeSummarize: async (msgs) => {
+        dropped = msgs.length;
+        const at = new Date();
+        const saved = saveCompactionSnapshot(
+          process.cwd(),
+          snapshotFileName(at, sessionName),
+          renderSnapshot({ at, session: sessionName, keep }, msgs),
+        );
+        if (!saved.ok) return { ok: false, reason: saved.reason };
+        snapshot = saved.rel;
+        return { ok: true };
+      },
+    });
+
+    if (result.aborted) {
+      return {
+        compressed: false, keep, dropped: 0, kept: history.length,
+        reason: `留档没写成（${result.aborted}）—— 为不丢原文，本次没有压缩`,
+      };
+    }
+    if (!result.summary) {
+      return {
+        compressed: false, keep, dropped: 0, kept: history.length,
+        reason: '这段对话已经被压过了（没有新的可压消息），再压一次也不会更短',
+      };
+    }
+    // 摘要那次 LLM 调用的用量回流 /usage，与自动压缩、fork 摘要同口径
+    if (result.usage) this.bumpUsage(result.usage);
+    // 事件库留书签：与自动压缩同一手法（"旧上下文被摘要替代"这个时刻值得记一笔）
+    eventStore.recordCompaction(result.summary, EVENTS_FILE);
+    return {
+      compressed: true, keep, dropped, kept: result.history.length,
+      snapshot, summary: result.summary,
     };
   }
 
