@@ -149,7 +149,11 @@ export function renderSnapshot(
  */
 export function renderCompactReceipt(r: CompactOutcome): string {
   if (!r.compressed) {
-    return `⏸ 没有压缩 —— 原因：${r.reason ?? '（未说明）'}`;
+    // 留档在**压之前**写，所以"没压成"时它可能已经落盘了。不说出来 = 用户磁盘上悄悄多了一个文件。
+    const kept = r.snapshot
+      ? `\n· 留档已写入：${r.snapshot}（本次没压成，原文一条都没动 —— 这份留档你留着也行，删掉也行）`
+      : '';
+    return `⏸ 没有压缩 —— 原因：${r.reason ?? '（未说明）'}${kept}`;
   }
   const lines = [
     `✅ 已压缩：压缩掉 ${r.dropped} 条，保留最近 ${r.keep} 条`,

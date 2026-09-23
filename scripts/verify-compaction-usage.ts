@@ -333,8 +333,15 @@ console.log('── ④ 源码守护（契约字段 + 接线点钉在源码文�
   check('U24 CompactionResult 契约有 usage 成员', /usage\?\s*:\s*LLMUsage/.test(resultBlock), resultBlock.slice(0, 80));
   check('U25 compactTo 从 chat 结果解构并透传 usage',
     /const \{ summary, usage \} = await spanRecorderOf\(events\)\.trace\('compaction'[\s\S]{0,800}usage \? \{ usage \} : \{\}/.test(ctxCompactionSrc));
+  // ⚠ 与 U24 同一个坑：别把"两行相隔多少字符"写进判据（10.8.6 在中间插了失败处理那一段就顶红，
+  //   而红的理由与"用量有没有被透传"毫无关系）。改成**在方法体内**各自判一次。
+  const maybeBody = ctxCompactionSrc.slice(
+    ctxCompactionSrc.indexOf('async maybeCompact'),
+    ctxCompactionSrc.indexOf('async compactNow'),
+  );
   check('U25b maybeCompact 合并结果时不丢用量（首跑抓到的真 bug）',
-    /if \(r\.usage\) compactionUsage = r\.usage;[\s\S]{0,200}compactionUsage \? \{ usage: compactionUsage \} : \{\}/.test(ctxCompactionSrc));
+    /if \(r\.usage\) compactionUsage = r\.usage;/.test(maybeBody)
+    && /compactionUsage \? \{ usage: compactionUsage \} : \{\}/.test(maybeBody));
   check('U26 runtime 主轮压缩点入账', /maybeCompact\(history, this\.compactionStore\(\)\);[\s\S]{0,120}if \(compacted\.usage\) this\.bumpUsage\(compacted\.usage\)/.test(runtimeSrc));
   check('U27 runtime fork 摘要点入账', /compactNow\(history, this\.compactionStore\(\)\);[\s\S]{0,120}if \(result\.usage\) this\.bumpUsage\(result\.usage\)/.test(runtimeSrc));
   check('U28 bumpUsage 是唯一累加点（主轮也走它）',

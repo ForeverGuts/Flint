@@ -405,6 +405,19 @@
 2026-09-21 18:40 | [Fix🐛] **`verify-compaction-usage.ts` 的 U24 把"两个成员相隔多少字符"写进了判据**：原文正则要求 `summary?` 与 `usage?` 相隔 ≤260 字符，本条往 `CompactionResult` 里插了 `aborted?` 字段（连带 JSDoc）就当场变红 —— 而红的理由与"usage 在不在"**毫无关系**。改成**在 `interface CompactionResult` 块内**找，射程才等于它的名字（改完跑变异复验：`usage` 改名 → U24 仍红）。可推广一句：**源码文本断言别把距离 / 顺序写死，要按结构切块**
 2026-09-21 18:40 | [Docs📝] 现状快照同步至 **57 套 3805 项**：`TESTING.md`（第二节新增 `verify-compact.ts` 一行 56 项 + 第三节 `check` 49→50 与 `gt` 变体 36→37 + **补记（2026-09-21 第二批）** + 第四节「全量 56→57 套」与「`.ts` 的 55→56 套」+ 第二节「其余 55→56 套」+ 第七节 3749→3805 并补本条的覆盖与三处刻意不覆盖）；`ROADMAP.md` 的 10.8.4 由"候选"改**已完成**；`DECISION_LOG.md` 新锚点 `log-2026-09-21-compact-snapshot`；`GLOSSARY.md` 新增「/compact（手动压缩）」「压缩留档」两条。**不记 ARCHITECTURE_LOG**：分层序 / 注入链路 / 子系统边界一处没动
 
+2026-09-23 22:31 | [Feature✨] **压缩判据抽成纯函数模块** `src/context/compaction-policy.ts`（ROADMAP 10.8.6 / 10.8.7 / 10.8.8 / 10.8.9 / 10.8.12）："要不要压 / 留多少 / 从哪切 / 摘要写多长 / 失败了怎么办"这五个决定此前散在 `compactTo` 的一串 if 里，牵一条动三条、谁也说不清为什么
+2026-09-23 22:31 | [Feature✨] **按体积触发压缩**（10.8.9）：触发改为**体积或条数、任一超了就压**（预算 12000 token；条数阈值 20 **保留为兜底**而不是删掉——体积估算对"大量极短消息"不敏感）。保留窗口也改由 `chooseKeep` 按体积算、夹在 `[MIN_KEEP=4, DEFAULT_KEEP_RECENT=10]`，短消息时与改前"保留 10 条"**逐字一致**
+2026-09-23 22:31 | [Feature✨] **滚动摘要 + 摘要预算放宽**（10.8.8 / 10.8.7）：新摘要**吸收上一版**（`renderSummaryPrompt` 把上一版前置喂进 LLM，并写明"冲突以新对话为准"，防传话游戏式漂移）；预算 **50 字 → 400 字** —— 而这个上限本身就是"防摘要无限变长"的答案，不必再叠一层"摘要的摘要"
+2026-09-23 22:31 | [Fix🐛] **压缩失败不再偷偷裁历史**（10.8.6，确凿缺陷）：改前 `catch` 是 `return { history: history.slice(-keep) }` —— 裁了却没写 compaction 记录 ⇒ 下一轮视图找不到分界线、历史整体滚回来 ⇒ 又触发又失败，**待压那批从 10 条涨到 20、30**。现在失败 = `history` 原样返回 + `CompactionResult.failed` 带回原因
+2026-09-23 22:31 | [Fix🐛] **手动回执不再说谎**（10.8.6 连带）：失败时 `summary` 同样是 undefined，改前一律回"这段对话已经被压过了"。现在**先判 `result.failed` 再判 `!result.summary`**，两种说法分开；另补一条——失败时留档**已经写了**（留档在压之前），回执必须明说"留档已写入：…"，否则用户磁盘上悄悄多一个文件
+2026-09-23 22:31 | [Fix🐛] **切割点不再落在工具结果上**（10.8.12）：查证确认工具结果**确实逐条落盘**（`runtime.ts` 轮末写 `role:'tool'` + `tool_call_id`；`jsonl-storage.ts` 那句"这条路从未接线"的注释**已过时、已订正**）。`safeCutIndex` 把切割点**往前**挪到最近的非 tool 条目 —— 否则保留窗口第一条是没有配对 tool_use 的孤儿，多数模型 API 直接拒
+2026-09-23 22:31 | [Feature✨] **失败退避**（10.8.6）：失败后历史不动 ⇒ 下一轮**仍然**超阈值 ⇒ 每轮白烧一次摘要调用。记下 `failedAtLength`，只有**对话又长了 10 条**才重试（`shouldRetryAfterFailure`）。刻意不用计时器 / 指数退避：对话变长是最自然的重试信号，且不引入新的状态源
+2026-09-23 22:31 | [Refactor♻️] **token 估算抽成全项目唯一口径** `src/core/token-estimate.ts`：`runtime/utils.ts` 的 `/usage` 兜底与压缩判据共用它 —— 两处各写一份必然漂移，而且漂移是**互相掩护**的（各测各的都绿）
+2026-09-23 22:31 | [CI✅] 新增 `scripts/verify-compaction-policy.ts` **53 项**；**变异 11 轮全部精准变红**，其中两轮专为验"断言不是恒真空"：M9 **真的把两个回执分支换位置**、M10 在 `utils` 里再抄一份估算
+2026-09-23 22:31 | [Fix🐛] 五处既有断言随行为改判（不是为了让它们变绿，是旧行为已不存在）：`verify-compact` 的 D3c / F3、`verify-fork-summary` 的 G13 / J3、`verify-compaction-usage` 的 U25b —— 后两处是"**把两行相隔多少字符写进判据**"这个老坑复发（本条往中间插了失败处理就顶红），改成在**方法体内**各自判一次
+2026-09-23 22:31 | [Docs📝] 新增 `Log/CONTEXT.md`（上下文与存储的现状整理 + 按位置分组的问题清单）；现状快照数字更新至 **58 套 3858 项**。⚠ 本机 `spawnSync` 被环境挡住（一律 EBUSY），`npm run verify` 与 `npm run docs:sync` 都跑不起来，项数是**逐套跑完手工汇总**的（3805 + 53 = 3858），等环境恢复要补跑一次确认
+
+
 2026-09-10 19:32 | [Feature✨] 内层引导**落盘**：`runSingleTurn` 用 `takeSteer` 回调把**被内层吸收**的引导收进本轮缓冲，在 `appendMessage('assistant', finalText)` **之前**按序落盘为独立 user 条目（内容带 `STEER_PREFIX` = `[用户引导] `）。位置是关键——引导发生在"用户提问"与"助手回复"之间，落在 assistant 之后就时序错了。形状上产出 `user,user,assistant`，由下一条的适配器归并消化
 2026-09-10 19:32 | [Fix🐛] `toAnthropicMessages` 的 `user` 分支从**无条件 push** 改成**能并则并**：上一条已是 user 就把文本块并进去（与本来就在做的连续 tool 结果合并同层、同一手法）。这个洞此前**不可达**（内部格式从未产出连续 user），落盘后才会被踩到，所以两件事必须同轮做。同时把债 11 那句"连续两条 user 必然 400"核查后**降级**为"未证实但不应依赖"——Anthropic API 参考的原话是连续同角色轮**会被服务端合并**（5 个官方镜像逐字一致），而第三方 400 报告也存在，本机无法裁定（官方站点在此网络返回 `app-unavailable-in-region`、无 key 可实测）
 2026-09-10 19:32 | [Fix🐛] `/history` 把引导条目单独标成 `⚡ 中途引导`：`getHistoryMessages()` 增返回 `steer: boolean`（按 `STEER_PREFIX` 前缀判定），`summarize` 剥掉前缀再摘要。**用内容前缀而不是给 `MessageEntry` 加结构化字段**——`session/in-memory.ts` 与 `mock.ts` 的 `appendMessage(role, content)` 不接第三个参数，extra 会被静默丢弃，等于重演债 9"格式支持、入口未接线"的病

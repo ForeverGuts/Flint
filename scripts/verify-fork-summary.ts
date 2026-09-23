@@ -178,7 +178,10 @@ console.log('── ② compactNow（真 CompactionServiceImpl + 真存储 + 探
   const r = await svc.compactNow(await storage.getMessages(), storage);
   check('G11 llm 炸了 → summary undefined、不升压', r.summary === undefined);
   check('G12 失败不入树（下次请求 maybeCompact 会再试）', storage.getCompactions().length === 0);
-  check('G13 失败仍裁历史（LLM 至少只拿最近 10 条，不会更糟）', r.history.length === 10);
+  // 10.8.6 反掉了这条：改前"裁了历史却没写记录"，下一轮历史整体滚回来又触发又失败。
+  // 现在失败 = 什么都没发生（history 原样、failed 带回原因），压缩不可逆所以不能假成功。
+  check('G13 失败**一条都不裁**（没压成 = 什么都没发生）',
+    r.history.length === 25 && typeof r.failed === 'string', JSON.stringify(r.failed));
   const svc2 = new CompactionServiceImpl({ llm: makeProbeLlm({ reply: '补考成功' }) as never });
   const r2 = await svc2.maybeCompact(await storage.getMessages(), storage);
   check('G14 下轮 maybeCompact 补考成功（25 > 阈值 20 → 摘要入树）',
@@ -321,8 +324,10 @@ console.log('── ⑤ 源码守护 ──');
   };
   const hits = walk(path.join(ROOT, 'src'))
     .filter((f) => fs.readFileSync(f, 'utf8').includes('压缩为一段摘要'));
-  check('J3 摘要 prompt 全 src 只有一处（context/compaction.ts，不复制第二份）',
-    hits.length === 1 && hits[0].endsWith('compaction.ts'), hits.join(','));
+  // 2026-09-23：提示词搬到判据模块（10.8.7 放宽预算 + 10.8.8 滚动摘要要按参数渲染），
+  // 唯一性这条**仍然承重** —— 只是落点从 compaction.ts 换成了 compaction-policy.ts。
+  check('J3 摘要 prompt 全 src 只有一处（compaction-policy.ts 的 renderSummaryPrompt，不复制第二份）',
+    hits.length === 1 && hits[0].endsWith('compaction-policy.ts'), hits.join(','));
 
   const runtimeSrc = fs.readFileSync(path.join(ROOT, 'src/runtime/runtime.ts'), 'utf8');
   check('J4 runtime 的 forkSessionWithSummary 真委托 compactNow',

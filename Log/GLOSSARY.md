@@ -115,7 +115,9 @@ Agent 内部持有 `while(true)` 循环、自驱动运行的交互方式。**本
 ### Compaction（上下文压缩）
 历史太长时把早期对话摘要成一段，腾出上下文窗口。契约在 `core/compaction.ts`（`CompactionService`，Runtime 必注入子系统之一），实现在 `context/compaction.ts`；摘要的存放另有 `core/compaction-store.ts`（`CompactionStore`）——落在会话文件里（entry 树的 compaction entry），不塞进消息流。
 
-两个入口共用一个压缩主体：`maybeCompact`（**阈值闸**，每轮请求前跑，超 20 条才压、**不留档**）与 `compactNow`（**强制**：fork 摘要用，见[带摘要从此继续](#带摘要从此继续)；也是 `/compact` 手动压缩的入口）。storage **每次调用显式传入**（2026-09-12 起）——runtime 会切换会话，构造期绑死会把摘要写进旧文件。手动压缩另有一个 `beforeSummarize` 钩子：留档用的就是它（见[压缩留档](#压缩留档compact-snapshot)）。
+**五个决定**自 2026-09-23 起抽成 `src/context/compaction-policy.ts` 的**纯函数**（ROADMAP 10.8.6 / 10.8.7 / 10.8.8 / 10.8.9 / 10.8.12）：① **触发**是"体积**或**条数、任一超了就压"（预算 12000 token；条数 20 **保留为兜底**，因为体积估算对"大量极短消息"不敏感）；② **保留窗口按体积算**（`chooseKeep`，夹在 `[4, 10]`，短消息时与"保留 10 条"逐字一致）；③ **切割点绝不落在工具结果上**（`safeCutIndex` 往前挪到最近的非 tool 条目——工具结果是逐条落盘的，切在它上面会造出没有配对 `tool_use` 的孤儿，多数 API 直接拒）；④ **摘要**预算 400 字且**吸收上一版**（滚动摘要，提示词里写明"冲突以新对话为准"；这个上限同时就是防无限变长的答案）；⑤ **失败 = 什么都没发生**（history 原样返回 + `failed` 带回原因）+ **退避**（只有对话又长了 10 条才重试）。此前它们散在 `compactTo` 的一串 if 里。
+
+两个入口共用一个压缩主体：`maybeCompact`（**阈值闸**，每轮请求前跑，**体积或条数**超了才压、**不留档**）与 `compactNow`（**强制**：fork 摘要用，见[带摘要从此继续](#带摘要从此继续)；也是 `/compact` 手动压缩的入口）。storage **每次调用显式传入**（2026-09-12 起）——runtime 会切换会话，构造期绑死会把摘要写进旧文件。手动压缩另有一个 `beforeSummarize` 钩子：留档用的就是它（见[压缩留档](#压缩留档compact-snapshot)）。
 
 LLM 视图与文件内容的分界（2026-09-12 修复后成立）：文件 = append-only 完整历史；`getMessages()` 视图 = 最后一个 compaction 的摘要 + 保留窗口（最近 10 条），**只认最后一个**摘要（与 SystemPromptService 摘要层同一口径）。审计层（`getAllStored` / `getAllMsgIds`）不裁。
 

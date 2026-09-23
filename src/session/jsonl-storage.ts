@@ -178,7 +178,11 @@ export class JsonlSessionStorage implements SessionStorage, CompactionStore {
   /**
    * 追加一条消息到当前分支。
    * 调用方：runtime.ts（用户/助手消息，两处均**不传 extra**）。
-   * ⚠ “Agent 循环（tool 结果消息）”这一路**从未接线**：agent-loop.ts 里一处 appendMessage 都没有。
+   * ⚠ 旧注释曾写“这条路从未接线”——**已过时**（2026-09-23 订正）：agent-loop 确实不直接写，
+   *   但 runtime 在**轮末**把本轮 turnLog 逐条落盘（`role:'tool'` 带 tool_call_id、
+   *   assistant 带 tool_calls）。所以 `getAllMsgIds()` **包含工具结果条目** ——
+   *   压缩算切割点时必须躲开它们（见 compaction-policy.ts 的 `safeCutIndex`，ROADMAP 10.8.12）：
+   *   切割点落在工具结果上，保留窗口第一条就成了没有配对 tool_use 的孤儿，多数 API 直接拒。
    * 支持 function calling：可传结构化工具调用（tool_calls）或 tool 结果（tool_call_id/name）
    * ——但这条能力至今无人使用，详见 Log/ARCHITECTURE.md 第四节第 9 条。
    */

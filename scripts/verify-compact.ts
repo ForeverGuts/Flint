@@ -199,8 +199,10 @@ function makeProbeLlm() {
   });
   check('D3b 摘要失败（LLM 抛错）时原文**也已经留档**（留档不依赖摘要成功）',
     hookRan === true, `hookRan=${hookRan}`);
-  check('D3c 摘要失败这条兜底路径本身没被改坏（无摘要、只裁历史）',
-    r.summary === undefined && r.history.length === 10, JSON.stringify(r));
+  // 10.8.6 改掉了这条的旧行为：改前是"照常裁掉但不写记录"，等于骗自己压过了 ——
+  // 下一轮历史整体滚回来、又触发、又失败，待压那批越滚越大。现在没压成 = 什么都没发生。
+  check('D3c 摘要失败时**一条都不裁**并带回 failed（没压成 = 什么都没发生）',
+    r.summary === undefined && r.history.length === 25 && typeof r.failed === 'string', JSON.stringify(r));
 }
 {
   const storage = await makeStorage('hook-abort.jsonl', 25);
@@ -369,9 +371,11 @@ check('F2 判据模块不碰 fs（落盘只许在 compact-snapshot-file.ts）',
 const mcBody = compactionSrc
   .slice(compactionSrc.indexOf('async maybeCompact'), compactionSrc.indexOf('async compactNow'))
   .replace(/\/\*[\s\S]*?\*\//g, '');
-check('F3 自动压缩那条路**不挂**钩子（不留档是刻意，不是漏接）',
-  /this\.compactTo\(storage, history, DEFAULT_KEEP_RECENT\)/.test(mcBody)
-  && !/beforeSummarize/.test(mcBody), mcBody.slice(0, 120));
+// 保留条数 2026-09-23 起由 chooseKeep 按体积算（10.8.9），所以实参不再是常量名；
+// 写成"只收三个实参"——钩子是第四个，这才是这条断言真正要守的东西。
+const autoCallArgs = /this\.compactTo\(([^)]*)\)/.exec(mcBody)?.[1] ?? '';
+check('F3 自动压缩那条路**不挂**钩子（compactTo 只收三个实参，钩子是第四个）',
+  autoCallArgs.replace(/\s/g, '') === 'storage,history,keep' && !/beforeSummarize/.test(mcBody), autoCallArgs);
 check('F4 compactNow 把钩子往下传（手动压缩才有留档）',
   /opts\?\.beforeSummarize/.test(compactionSrc));
 check('F5 钩子失败 → 不裁历史、不带摘要（中止那一支真的存在）',

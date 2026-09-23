@@ -431,6 +431,16 @@ export class Runtime {
         reason: `留档没写成（${result.aborted}）—— 为不丢原文，本次没有压缩`,
       };
     }
+    // ⚠ 顺序承重：`failed` 必须在 `!summary` **之前**判 —— 失败时 summary 同样是 undefined，
+    // 但那是两件完全不同的事，对用户是两种操作（前者稍后重试，后者再压无益）。
+    // 改前只有后一个分支，于是"摘要没生成出来"被说成了"已经压过了"，是一句谎话（10.8.6）。
+    if (result.failed) {
+      return {
+        compressed: false, keep, dropped: 0, kept: history.length,
+        snapshot, // 留档在压之前就写了：没压成它也在，必须告诉用户（否则磁盘上悄悄多一个文件）
+        reason: `摘要没生成出来（${result.failed}）—— 为不丢原文，本次一条都没裁，稍后可以再试`,
+      };
+    }
     if (!result.summary) {
       return {
         compressed: false, keep, dropped: 0, kept: history.length,
