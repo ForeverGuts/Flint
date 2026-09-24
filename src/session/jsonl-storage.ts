@@ -53,6 +53,10 @@ export interface CompactionEntry {
   summary: string;
   /** 压缩后保留的第一条消息 id（firstKeptId 之前的内容被摘要顶替） */
   firstKeptId: string;
+  /** 文件操作清单·改写类（10.8.11，逐层累积；旧条目 / 空清单没有这两个字段） */
+  filesModified?: string[];
+  /** 文件操作清单·只读类（10.8.11） */
+  filesRead?: string[];
   timestamp: number;
 }
 
@@ -276,13 +280,22 @@ export class JsonlSessionStorage implements SessionStorage, CompactionStore {
   }
 
   /** 追加一个 compaction entry（上下文压缩摘要入树） */
-  async appendCompaction(summary: string, firstKeptId: string): Promise<void> {
+  async appendCompaction(
+    summary: string,
+    firstKeptId: string,
+    ledger?: { modified: string[]; read: string[] },
+  ): Promise<void> {
     const entry: CompactionEntry = {
       type: 'compaction',
       id: nextEntryId(),
       parentId: this.currentLeafId,
       summary,
       firstKeptId,
+      // 文件操作清单（10.8.11）：空清单**不写字段**——旧文件加载兼容、diff 也干净
+      ...(ledger && (ledger.modified.length > 0 || ledger.read.length > 0)
+        ? { ...(ledger.modified.length > 0 ? { filesModified: ledger.modified } : {}),
+            ...(ledger.read.length > 0 ? { filesRead: ledger.read } : {}) }
+        : {}),
       timestamp: Date.now(),
     };
     await this.appendLine(entry);

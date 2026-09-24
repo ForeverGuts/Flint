@@ -20,6 +20,21 @@ export type BeforeSummarizeHook = (
   dropped: Array<{ role: string; content: string }>,
 ) => Promise<{ ok: boolean; reason?: string }>;
 
+/**
+ * 文件操作清单（ROADMAP 10.8.11）：压缩时从被压消息的工具调用里抽出"这个会话碰过哪些文件"，
+ * 与上一版清单**合并去重**后随 compaction 条目逐层累积。
+ *
+ * 为什么单独立一份结构而不是塞进摘要文本：摘要是 LLM 生成的散文，细节会丢；
+ * "动过哪些文件"是**可操作的**窄信息（体积恒定、可程序判定的封闭枚举抽取），
+ * 丢不得也编不得 —— 所以走结构化字段 + 确定性渲染，不托付给摘要模型。
+ */
+export interface FileLedger {
+  /** 被改写 / 移动 / 删除过的文件（write / edit / git_write / trash 的目标） */
+  modified: string[];
+  /** 只读碰过的文件（read / ls 的目标） */
+  read: string[];
+}
+
 /** 压缩结果：历史与摘要分离，摘要独立返回（不再混入 history 前缀） */
 export interface CompactionResult {
   /** 压缩后的历史（不含摘要 system 消息，摘要独立返回） */
@@ -48,6 +63,11 @@ export interface CompactionResult {
    * 调用方（runtime）负责并入 /usage 合计。
    */
   usage?: LLMUsage;
+  /**
+   * 文件操作清单（2026-09-24，ROADMAP 10.8.11）。本会话（含历次压缩累积）碰过哪些文件。
+   * 压缩过才存在；**空清单不给空数组**，直接缺省 —— 渲染层见空就不渲染，不产生空节。
+   */
+  ledger?: FileLedger;
 }
 
 /** 上下文管理子系统接口（执行类 → Service 后缀） */

@@ -29,6 +29,7 @@ import { planMode, renderPlanBanner } from '../loop/plan-mode.js';
 import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { recordPermissionChoice } from '../permission/audit.js';
 import { DEFAULT_KEEP_RECENT } from '../context/compaction.js';
+import { glueSummaryLedger } from '../context/file-ledger.js';
 import type { CompactOutcome } from '../context/compact-snapshot.js';
 import { renderSnapshot, snapshotFileName } from '../context/compact-snapshot.js';
 import { saveCompactionSnapshot } from '../context/compact-snapshot-file.js';
@@ -831,7 +832,10 @@ export class Runtime {
       // 技能声明的依赖：给 skills-section 标注"依赖谁 / 缺了谁"用（与清单同一时刻现取，同样自愈）
       skillDeps: Object.fromEntries(this.skills.getAll().map((s) => [s.name, s.depends ?? []])),
       model: this.currentModel,
-      summary: compacted.summary,
+      // 文件操作清单（10.8.11）**确定性渲染**拼在摘要之后：摘要是 LLM 散文会丢细节，
+      // "碰过哪些文件"走结构化字段 + 本仓唯一渲染器，不托付给摘要模型。
+      // 拼接点在 glueSummaryLedger（file-ledger.ts，唯一）；无清单时摘要逐字不回退。
+      summary: glueSummaryLedger(compacted.summary, compacted.ledger),
       project: projectSnapshot,
       stack: stackSection === '' ? undefined : stackSection,
       commands: commandsSection === '' ? undefined : commandsSection,

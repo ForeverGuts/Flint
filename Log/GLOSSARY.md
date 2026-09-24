@@ -1246,7 +1246,9 @@ token 消耗统计（`llm/types.ts` 的 `LLMUsage`：`promptTokens` / `completio
 
 参见：[工作区外写保护（Workspace Gate）](#工作区外写保护workspace-gate)（同一个判定函数）· [危险命令拦截（Danger Gate）](#危险命令拦截danger-gate)（同一套词法）· 完整决策见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-24-bash-write)
 
-### 删除回收站（Trash）
+### 文件操作清单（File Ledger）
+
+压缩链路随行的那份"这个会话碰过哪些文件"账本（2026-09-24，ROADMAP 10.8.11）。摘要由 LLM 散文生成、细节会丢；清单由程序从被压消息的 `tool_calls` 里抽路径（封闭枚举：write / edit / git_write / trash → 改写桶，read / ls → 只读桶），与上一版**合并去重**后作为**结构化字段**写进 compaction entry（`filesModified` / `filesRead`，空清单不写字段），随压缩逐层累积、上限截断（50 / 30）丢最老。runtime 摘要层**确定性渲染**拼接（`glueSummaryLedger`，唯一拼接点），无清单时摘要逐字不回退。判据在 `src/context/file-ledger.ts`（零 import），验证 `verify-file-ledger.ts` 39 项。**已知边界**：bash 里的重定向写看不见（目标在自由文本里，与 [bash 写纳管](#bash-写纳管bash-write-gate) 同一条"护栏不是沙箱"账）；路径不归一化（模型写什么样记什么样）。
 
 `src/permission/trash.ts`（判据）+ `src/tools/trash-bin.ts`（**唯一碰 fs** 的落点）+ `trash` 工具 + [删除改道闸](./DECISION_LOG.md#log-2026-09-24-trash-gate)（2026-09-24 加，ROADMAP 10.9.6）："删除"从**不可逆**变成**可逆**——bash / spawn 里够不上灾难形态的删除命令被**改道**（deny + 指路 `trash` 工具），真删除一律变成"移进 `.flint/trash/<时间戳>/` 且**保留原目录结构** + manifest 记账"。
 
@@ -1255,6 +1257,8 @@ token 消耗统计（`llm/types.ts` 的 `LLMUsage`：`promptTokens` / `completio
 **三个容易误会的地方**：① **还原是栈式**（后删的先还，`/undo` 连按逐笔回退）；原位置被占（`OCCUPIED`）时**两边都不动**——覆盖就是又一次不可逆；② **保留原目录结构是承重的**——可逆的关键不是"留了一份"，是"知道它原来在哪"；③ **清理朝"宁可多留"侧 fail**——超期才清，时间读不出来一律不清。
 
 参见：[危险命令拦截（Danger Gate）](#危险命令拦截danger-gate)（同一条钩子链上的邻居，词法同源）· [/undo](#undo) · 完整决策见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-24-trash-gate)
+
+### 删除回收站（Trash）
 
 ### /undo
 

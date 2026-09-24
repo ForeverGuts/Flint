@@ -18,6 +18,7 @@ import type { EventBus } from '../core/events.js';
 import { spanRecorderOf } from '../core/events.js';
 import type { SpanAttrs, SpanResult } from '../runtime/events.js';
 import type { BeforeSummarizeHook, CompactionResult, CompactionService } from '../core/compaction.js';
+import { extractTouched, isLedgerEmpty, mergeLedger } from './file-ledger.js';
 import {
   COMPACT_MESSAGE_THRESHOLD,
   CONTEXT_BUDGET_TOKENS,
@@ -71,11 +72,19 @@ export class CompactionServiceImpl implements CompactionService {
   ): Promise<CompactionResult> {
     if (!storage) return { history, summary: undefined };
 
-    // 已有摘要：取最后一个 compaction 的 summary
+    // 已有摘要：取最后一个 compaction 的 summary（清单随行，10.8.11）
     let compressedSummary = '';
     const compactions = storage.getCompactions();
     if (compactions.length > 0) {
       compressedSummary = compactions[compactions.length - 1].summary;
+    }
+    // 文件操作清单：每轮从最后一条 compaction 现读（同 summary 的口径）
+    let ledger: CompactionResult['ledger'];
+    if (compactions.length > 0) {
+      const last = compactions[compactions.length - 1];
+      if (last.filesModified || last.filesRead) {
+        ledger = { modified: last.filesModified ?? [], read: last.filesRead ?? [] };
+      }
     }
 
     // 本轮触发压缩时的用量（compactTo 带回；不压缩则缺省）
@@ -101,6 +110,7 @@ export class CompactionServiceImpl implements CompactionService {
         compressedSummary = r.summary;
         this.failedAtLength = undefined;
       }
+      if (r.ledger) ledger = r.ledger;
       if (r.failed) {
         failure = r.failed;
         this.failedAtLength = history.length;
@@ -112,6 +122,7 @@ export class CompactionServiceImpl implements CompactionService {
     return {
       history,
       summary: compressedSummary || undefined,
+      ...(ledger ? { ledger } : {}),
       ...(failure ? { failed: failure } : {}),
       ...(compactionUsage ? { usage: compactionUsage } : {}),
     };
@@ -182,7 +193,17 @@ export class CompactionServiceImpl implements CompactionService {
     events?.emit({ type: 'thinking', phase: 'compressing' });
     // 滚动摘要（10.8.8）：上一版摘要**前置**喂进去，让信息能跨层传承。
     // 改前每版都从零重写、完全不含上一版，压三次之后开头那批在模型视野里彻底消失。
-    const prevSummary = storage.getCompactions().at(-1)?.summary;
+    const prevCompaction = storage.getCompactions().at(-1);
+    const prevSummary = prevCompaction?.summary;
+    // 文件操作清单（10.8.11）：从**即将被压掉**的那批消息的 tool_calls 里抽路径，
+    // 与上一版清单合并去重 —— 摘要会丢细节，"碰过哪些文件"不丢。与留档钩子同一批 dropped，
+    // 但走独立通道：钩子是手动路径专有，清单两条路都要。
+    const droppedMsgs = uncompressedIds.map((id) => storage.getMsgById(id));
+    const prevLedger = prevCompaction?.filesModified || prevCompaction?.filesRead
+      ? { modified: prevCompaction.filesModified ?? [], read: prevCompaction.filesRead ?? [] }
+      : undefined;
+    const ledger0 = mergeLedger(prevLedger, extractTouched(droppedMsgs));
+    const ledger = isLedgerEmpty(ledger0) ? undefined : ledger0;
     const toSummarize = uncompressedIds.map((id) => {
       const msg = storage.getMsgById(id);
       return msg ? `${msg.role}: ${msg.content.slice(0, 200)}` : '';
@@ -203,9 +224,14 @@ export class CompactionServiceImpl implements CompactionService {
       // 切割点用挪过的那个（不是 `length - keep`）：保留窗口因此可能比 keep 多几条，
       // 这是刻意的安全代价 —— 宁可多留两条，不可造一个孤儿工具结果。
       const firstKeptId = allIds[cut] ?? '';
-      await storage.appendCompaction(summary, firstKeptId);
+      await storage.appendCompaction(summary, firstKeptId, ledger);
       const keptCount = Math.min(allIds.length - cut, history.length);
-      return { history: history.slice(history.length - keptCount), summary, ...(usage ? { usage } : {}) };
+      return {
+        history: history.slice(history.length - keptCount),
+        summary,
+        ...(ledger ? { ledger } : {}),
+        ...(usage ? { usage } : {}),
+      };
     } catch {
       // 10.8.6：失败就**什么都没发生**。改前是"照常裁掉但不写记录"——那等于骗自己压过了：
       // 下一轮视图找不到分界线、历史整体滚回来，于是又触发、又失败，待压那批从 10 条涨到 20、30，

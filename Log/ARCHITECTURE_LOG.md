@@ -11,6 +11,22 @@
 
 ---
 
+<a id="log-2026-09-24-file-ledger"></a>
+
+## 2026-09-24 15:04 | 压缩链路长出"清单通道"：compaction entry 第一次同时承载散文摘要与结构化清单，`core` 存储契约用结构子类型避开 llm 依赖
+
+**牵连系统 / 层次**：`src/context/file-ledger.ts`（**新增**，判据纯函数：抽取 / 合并 / 渲染 / 成文，零 import）· `src/core/compaction.ts`（`FileLedger` 类型 + `CompactionResult.ledger?`）· `src/core/compaction-store.ts`（`getMsgById` 暴露 `tool_calls`、`getCompactions` / `appendCompaction` 带清单）· `src/context/compaction.ts`（`compactTo` 抽取合并入树、`maybeCompact` 每轮现读）· `src/session/jsonl-storage.ts`（`CompactionEntry` 加 `filesModified?` / `filesRead?`，**空清单不写字段**）· `src/runtime/runtime.ts`（摘要层经 `glueSummaryLedger` 唯一拼接点）· `scripts/verify-file-ledger.ts`（**新增 39 项**）
+
+**面向的问题**：摘要由 LLM 散文生成，压缩几轮后"改过哪些文件"这类可操作信息漂移丢失；而它是编程 Agent 最需要的那类窄信息（体积恒定、丢不得也编不得）。
+
+**做出的改动**：清单与摘要**分离**——散文归 LLM、清单归程序。entry 同时承载两种载体（结构化字段不托付给摘要模型）；渲染只在 runtime 摘要层一处出口，`[对话摘要]` 历史消息刻意不加（不放大 F 的双发）；`getMsgById` 的 `tool_calls` 用**结构子类型**（`{ function: { name, arguments } }`）而非 import `LLMToolCall`，**core 层保持零 llm 依赖**——契约定义的是"压缩需要看的两格"，不是工具调用的全貌。
+
+**解决的问题**：压缩逐层累积后模型仍知道本会话碰过哪些文件；旧格式文件照常加载（字段缺省）、无工具调用的压缩不写字段（不是空数组）。
+
+**未来可优化**：trash 目前的"改写桶"语义偏宽（移进回收站 ≠ 内容改写），若将来要区分"删过"需第三桶；bash 写仍看不见（与 10.9.8 同一条边界账）。
+
+---
+
 <a id="log-2026-09-24-bash-write"></a>
 
 ## 2026-09-24 14:23 | `before_tool_call` 从六道闸变七道闸：bash 的重定向写第一次被翻译出来送进同一条边界，`permission/` 长出"翻译型闸"
