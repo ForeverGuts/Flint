@@ -2,7 +2,7 @@
  * 内置工具注册 —— Ls / Read / Write / Edit / Grep / Bash 六个核心工具，
  * 外加清单（todo）/ 记忆（memory）/ 事件库（record_event · search_events · pull_events）/
  * 分叉点提问（ask）/ 坐标归档（archive）/ git 只读查询（git）/ git 写操作（git_write）/
- * 符号定义检索（symbols）/ 引用查找（refs）等系统级工具，共 19 个。
+ * 符号定义检索（symbols）/ 引用查找（refs）/ 删除回收站（trash）等系统级工具，共 20 个。
  * 调用方：main.ts（组装工具子系统时调用）
  * 服务于：为 LLM 提供列目录、读文件、写文件、精准改片段、搜索内容、查定义、执行命令的能力
  *         （Ls 支撑"工具增强推理"：模型先看清项目结构再动手，不凭记忆脑补）
@@ -78,7 +78,11 @@ import {
   renderCommitResult, renderPushResult, renderWriteFailure,
 } from '../git/write.js';
 // 起子进程的两处（bash / 自检）都走统一执行器 —— 它管住的是**整棵进程树**（ROADMAP 10.6.6）
-import { resolveToolPath } from './paths.js';
+import { realPathOf, resolveToolPath } from './paths.js';
+// 工作区边界（ROADMAP 10.9.3）与回收站执行层（10.9.6）：`trash` 工具的判定与动手分在两处，
+// 与本文件其余改类工具同一形状 —— 判据是纯函数、注入上下文由装配处给；碰 fs 的只有 trash-bin。
+import { isOutsideWorkspace, workspaceGrants } from '../permission/workspace.js';
+import { trashTarget } from './trash-bin.js';
 import { describeTreeKill } from '../process/proctree.js';
 import { childFailureCode, decodeChildOutput, runChildInTree } from '../process/runner.js';
 import { backgroundStore, type BackgroundTaskStore } from '../process/background.js';
@@ -578,6 +582,53 @@ export function registerBuiltinTools(
       } catch (e) {
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`替换失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  }));
+
+  /* ── Trash：删除（移进回收站，可撤销）—— ROADMAP 10.9.6 ── */
+  tools.register(defineTool({
+    name: 'trash',
+    description: '删除文件或目录：目标会被移到 .flint/trash/ 回收站（不是直接抹掉），用户随后可用 /undo 还原。bash 里的 rm 等删除命令一律被拦下并指向本工具，所以要删东西就用它。只收当前项目（工作区）内的目标。',
+    requirePermission: true,
+    spec: {
+      path: str('目标路径', '要删除的文件或目录路径，相对当前工作目录或绝对。示例: "src/tmp.ts" 或 "dist/"'),
+    },
+    // 授权边界 = 目标路径（同 write / edit：路径之外的东西每次都不同，塞进键里会让
+    // "本次全部允许"退化成"只允许这一次"）。
+    permissionKey: (args) => String(args.path ?? '').replace(/\\/g, '/'),
+    permissionDetail: (args) => `删除 ${String(args.path ?? '?').replace(/\\/g, '/')}`,
+    handler: async (args) => {
+      try {
+        const { path } = args;
+        // 显示用原文形态 / fs 用统一解析出来的绝对路径（见 ls handler 里那段说明）
+        const resolvedPath = path.replace(/\\/g, '/');
+        const resolvedAbs = resolveToolPath(path, process.cwd()).abs;
+        const cwd = process.cwd();
+
+        // 与工作区闸（10.9.3）**同一判据、同一份上下文**：回收站只管这个项目里的东西。
+        // 不在这里另写一遍边界 —— 两处各写一份 = 迟早漂移（10.7.3 那条教训）。
+        const outside = isOutsideWorkspace(resolvedAbs, {
+          cwd,
+          grants: workspaceGrants.list(),
+          realpath: realPathOf,
+        });
+        const r = trashTarget(resolvedAbs, cwd, outside);
+        if (!r.ok) {
+          // 参数侧的四类（不存在 / 工作区外 / 项目根 / 回收站自己）都是"这个目标不能这么删"
+          // MOVE_FAILED（没动）与 LOST（动了但没凭据）都是"工具没完成它承诺的事" → error
+          if (r.code === 'MOVE_FAILED' || r.code === 'LOST') {
+            return toolError(`删除失败: ${r.message}`);
+          }
+          return toolInvalid(`${r.message}（目标: ${resolvedPath}）`);
+        }
+        const size = r.record.isDir ? '目录' : `${r.record.bytes} 字节`;
+        return toolOk(`已删除: ${resolvedPath}（${size}）\n`
+          + `  已移入回收站: ${r.record.to}\n`
+          + `  撤销办法: 让用户在 flint 里敲 /undo（/undo list 看全部待还原）`);
+      } catch (e) {
+        if (e instanceof ToolInputError) return toolInvalid(e.message);
+        return toolError(`删除失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   }));

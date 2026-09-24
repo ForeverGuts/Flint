@@ -8,7 +8,7 @@
  * 所以本套件的重心是"**边界恰好落在哪**"与"**谁能碰这个开关**"，不是文案好不好看。
  *
  * 验什么（判据 / 注入 / 接线 三层分开钉）：
- *   ① 被拦工具的**名单** —— 封闭枚举（现为 write / edit / bash / git_write）；只读与"记自己的账"都不在内
+ *   ① 被拦工具的**名单** —— 封闭枚举（现为 write / edit / bash / git_write / spawn / trash）；只读与"记自己的账"都不在内
  *   ② `guardPlanMode` —— 模式 × 工具 × **参数形状**（后者刻意全不影响结论）
  *   ③ 两段文案 —— 拒因与横幅：出路方向**不能给错**（别的闸的出路在计划模式下走不通）
  *   ④ `planMode` 会话级单例 —— enter / exit / 幂等 / reset
@@ -68,17 +68,20 @@ const stripComments = (s: string): string =>
   s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 /* ═══ ① 被拦工具的名单 ═══ */
-console.log('── ① 被拦工具的名单（封闭枚举：恰好五条改东西的通道）──');
+console.log('── ① 被拦工具的名单（封闭枚举：恰好六条改东西的通道）──');
 
 // 2026-09-21 补 `spawn`（ROADMAP 10.10.1）：后台起一条 shell 命令，改文件的能力与 bash
 // 等价、只是不等待结束。改前名单没有它 ⇒ 计划模式"先对齐再动手"这条纪律一换工具就绕过
 // （10.4.1 判定 bash 进名单的原话：不堵的代价是"留一句 > file 就能绕开整道闸"）。
-check('A1 名单恰好是 write / edit / bash / git_write / spawn（多一个少一个都当场红）',
-  [...PLAN_BLOCKED_TOOLS].sort().join(',') === 'bash,edit,git_write,spawn,write',
+// 2026-09-24 补 `trash`（ROADMAP 10.9.6 删除回收站化）：bash 里的 rm 被改道闸拦下之后，
+// `trash` 就是删除的**唯一**入口 —— 它不进名单，计划模式照样被一句 trash 绕开。
+check('A1 名单恰好是 write / edit / bash / git_write / spawn / trash（多一个少一个都当场红）',
+  [...PLAN_BLOCKED_TOOLS].sort().join(',') === 'bash,edit,git_write,spawn,trash,write',
   [...PLAN_BLOCKED_TOOLS].sort().join(','));
-check('A2 write / edit / bash / git_write / spawn 都判为被拦',
+check('A2 write / edit / bash / git_write / spawn / trash 都判为被拦',
   isPlanBlockedTool('write') && isPlanBlockedTool('edit') && isPlanBlockedTool('bash')
-  && isPlanBlockedTool('git_write') && isPlanBlockedTool('spawn'));
+  && isPlanBlockedTool('git_write') && isPlanBlockedTool('spawn')
+  && isPlanBlockedTool('trash'));
 // 真接线：guardPlanMode 真的把 spawn 拒掉（A1/A2 只测名单与 isPlanBlockedTool，
 // 若哪天闸改判 `PLAN_BLOCKED_TOOLS.has` 之外的地方，这两条照绿 —— 所以补一条走上闸本身的）
 check('A2b guardPlanMode 真的拒下 spawn（不是只在名单里挂着）',

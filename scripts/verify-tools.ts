@@ -348,7 +348,7 @@ console.log('\n⑦ 源码文本断言（防回退）');
     : builtinSrc.slice(toolDefs[grepIdx].at,
       grepIdx + 1 < toolDefs.length ? toolDefs[grepIdx + 1].at : undefined);
   check('G0 切片本身有效（否则下面几条是空转的假绿）——射程恰好是 grep 这一个工具，不吃邻居',
-    toolDefs.length === 19 && grepBlock.length > 500
+    toolDefs.length === 20 && grepBlock.length > 500
     && !grepBlock.includes("name: 'bash'") && !grepBlock.includes("name: 'symbols'"),
     `切到 ${grepBlock.length} 字符，工具定义行 ${toolDefs.length} 个`);
   // 断言用**调用形态**（带括号）而非裸标识符：解释性注释里会写"Windows 上 execSync 走

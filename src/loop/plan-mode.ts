@@ -30,7 +30,7 @@
  *     "先把方案摆出来"，而记账（写下计划、记下结论）正是做这件事的一部分。
  *     界线一句话：**闸管"改用户的文件"，不管"Agent 记自己的账"。**
  *
- * ── 为什么排在四道闸**之前**（次序是设计，不是顺手）──
+ * ── 为什么排在其余五道闸**之前**（次序是设计，不是顺手）──
  * 其余各闸的**出路在计划模式下都不成立**：模型若拿到"请让用户 /charter unlock"或者
  * "请让用户 /workspace allow <目录>"，用户照做之后它**照样被这道闸拦着** —— 那就是
  * **方向给错**，而"方向给错比不给更坏"（同 10.9.5 的拒因分工）。
@@ -82,11 +82,15 @@ export const PLAN_MARK = '[计划模式]';
  * 教训与 `SHELL_COMMAND_TOOLS`（danger.ts）那次是同一条：**闸按名字认人 ⇒ 加同形工具
  * 必须回来补名字。**
  *
+ * **2026-09-24 补 `trash`**（ROADMAP 10.9.6 删除回收站化）：它是"删除"这条通道的**唯一**入口
+ * （bash 里的 rm 已被改道闸拦下），所以它**就是**那条会改用户文件的通道本身 —— 不进名单，
+ * 计划模式下"先对齐再动手"照样被一句 trash 绕开。与 `spawn` 那次同一条教训。
+ *
  * `task`（后台任务管理）**刻意不进**：它只能 list / status / output / kill 本会话经 spawn
  * 建的任务，改的是进程状态、不是用户的文件 —— 与 `todo` / `memory` 那一类"管理自有资源"
  * 同性质；且计划模式下没有 spawn 建的任务，堵掉它的收益为零、损失是查不到已有任务。
  */
-export const PLAN_BLOCKED_TOOLS: ReadonlySet<string> = new Set(['write', 'edit', 'bash', 'git_write', 'spawn']);
+export const PLAN_BLOCKED_TOOLS: ReadonlySet<string> = new Set(['write', 'edit', 'bash', 'git_write', 'spawn', 'trash']);
 
 /**
  * 名单的**展示串**（`write / edit / …`）—— 横幅与拒因**都从它派生**。

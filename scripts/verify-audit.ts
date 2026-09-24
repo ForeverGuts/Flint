@@ -483,8 +483,10 @@ const gateTags = [...mainSrc.matchAll(/deny\('[^']+', '([^']+)',/g)].map((mm) =>
 // 2026-09-20：从四道闸涨到**五道**（+计划模式，ROADMAP 10.4.1）。
 // 这条断言是"名单式"的：新增一道闸忘了改它，它会当场红 —— 这正是想要的
 // （"闸多了一道"是要人看见的事，不该静默）。
-check('H4 五道闸各有一个 tag 且互不相同（不许两道闸共用一个来源名）',
-  gateTags.length === 5 && new Set(gateTags).size === 5, gateTags.join(','));
+// 2026-09-24 加第六道（删除改道回收站，tag=trash）：加闸必须回来改这个数 —— 少了说明新闸
+// 没记审计（出事查不到是谁拒的），多了说明两道闸共用一个 tag（复盘时分不清）。
+check('H4 六道闸各有一个 tag 且互不相同（不许两道闸共用一个来源名）',
+  gateTags.length === 6 && new Set(gateTags).size === 6, gateTags.join(','));
 const srcFiles = walk(path.join(ROOT, 'src')).filter((f) => f.endsWith('.ts'));
 check('H5 全仓只有 audit.ts 调 eventStore.recordAudit（落点唯一）',
   srcFiles.every((f) => path.resolve(f) === path.resolve(ROOT, 'src/permission/audit.ts')

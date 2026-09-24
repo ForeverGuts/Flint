@@ -33,6 +33,7 @@ import { seedProjectContext } from './project-context.js';
 import { atFileInputHandler } from '../input/probe.js';import { renderRegistrationNote } from '../project/projects.js';
 import { charterLock, guardContractWrite } from '../project/charter.js';
 import { guardDangerousCommand } from '../permission/danger.js';
+import { guardDeleteRedirect } from '../permission/trash.js';
 import { guardWorkspaceWrite, workspaceGrants } from '../permission/workspace.js';
 import { realPathOf } from '../tools/paths.js';
 import { recordGateDeny } from '../permission/audit.js';
@@ -75,18 +76,18 @@ interface CreateRuntimeResult {
 /**
  * 核心钩子链（`before_tool_call`）的**唯一实现**。
  *
- * 为什么抽成独立函数：它此前只活在 `main()` 的闭包里，于是"四道闸的实际次序""是谁拒的"
+ * 为什么抽成独立函数：它此前只活在 `main()` 的闭包里，于是"六道闸的实际次序""是谁拒的"
  * "审计记了什么"这三件事**只能靠读 main.ts 的源码文本**来钉（文本断言既不懂语义、又容易
  * 被重排骗过）。抽出来之后套件能拿真事件喂它、逐条打靶，而**行为一字未变**：判据全是纯函数，
  * `charterUnlocked` 由参数注入（原来读 `charterLock` 单例），这里没有进程级状态，可以反复调用。
  *
- * ⚠ 五道闸的**书写顺序 = 执行顺序**（命中即返回），这个顺序本身就是设计 ——
+ * ⚠ 六道闸的**书写顺序 = 执行顺序**（命中即返回），这个顺序本身就是设计 ——
  *   但**两条排序理由不同，别用一条去推另一条**：
  *     · 模式闸（计划模式）排最前，理由不是"判据更窄"（它的判据其实**最宽**：按工具名一票拦），
  *       而是**其余各闸的出路在计划模式下都不成立** —— 模型若拿到"请让用户 /charter unlock"
  *       或"请让用户 /workspace allow"，用户照做之后它**照样被计划模式拦着**，那就是把模型
  *       与用户一起引向一条走不通的路（"方向给错比不给更坏"，同 10.9.5 的拒因分工）。
- *     · 其余四道照旧按"判据更窄更确定的排前面"，先让它们给出更具体的理由。
+ *     · 其余五道照旧按"判据更窄更确定的排前面"，先让它们给出更具体的理由。
  *   既有套件（verify-danger G3）钉着契约 → 危险 → 路由三者的相对次序 ——
  *   重排之前先想清楚为什么这么排。
  *
@@ -134,6 +135,14 @@ export function coreBeforeToolCall(
   //    排在①之后：契约闸的判据更窄更确定（字面文件名），先让它给出更具体的解锁指引。
   const danger = guardDangerousCommand(toolName, e.args);
   if (danger) return deny('危险命令', 'danger', danger);
+  // ②b 改道闸：删除回收站化（ROADMAP 10.9.6）。bash / spawn 里的**删除类命令**一律拒，
+  //    出路是 `trash` 工具 —— 它同样让目标离开原处，但落进 `.flint/trash/` 且记一笔，
+  //    于是删除从"不可逆"变成"可撤销"（危险闸当年那句"删除没有 L2"的缺口由它补上）。
+  //    排在②之后：危险闸的判据**更窄**（只认"一棵树的根"这种灾难形态），先让它给出更
+  //    具体的理由；本闸判据更宽（只认段首命令词、不看目标），理由也更泛。
+  //    管的是 bash / spawn，与③的 write / edit 工具集不重叠，两者谁先谁后不影响结论。
+  const del = guardDeleteRedirect(toolName, e.args);
+  if (del) return deny('删除改道回收站', 'trash', del);
   // ③ 边界闸：工作区外写保护（ROADMAP 10.9.3）。write / edit 的**目标路径**落在 cwd
   //    之外 → 拒。只有 L1（外写是效果、事后没有基线可比对，同②）。放行只能由用户敲
   //    `/workspace allow <目录>`——刻意不接权限子系统：非 TTY 下弹窗自动放行会让边界静默失效。

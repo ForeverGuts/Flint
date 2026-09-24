@@ -626,7 +626,7 @@ console.log('\n⑥ 源码守护（手段钉死：换成等价实现也要知道�
     return at !== '' && (at.match(/toolNegative\(/g) ?? []).length === 1
       && /toolNegative\('NOT_FOUND'/.test(at);
   })());
-  check('G15 模块头工具数改到 19（不是\"悄悄多一个\"）', /共 19 个/.test(builtinRaw));
+  check('G15 模块头工具数改到 20（不是\"悄悄多一个\"）', /共 20 个/.test(builtinRaw));
 
   /** 切出某个工具的注册段（到下一个 tools.register 为止）—— 与 verify-git-write 同一手法 */
   function builtinCode(tool: string): string {

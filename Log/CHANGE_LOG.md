@@ -417,6 +417,14 @@
 2026-09-23 22:31 | [Fix🐛] 五处既有断言随行为改判（不是为了让它们变绿，是旧行为已不存在）：`verify-compact` 的 D3c / F3、`verify-fork-summary` 的 G13 / J3、`verify-compaction-usage` 的 U25b —— 后两处是"**把两行相隔多少字符写进判据**"这个老坑复发（本条往中间插了失败处理就顶红），改成在**方法体内**各自判一次
 2026-09-23 22:31 | [Docs📝] 新增 `Log/CONTEXT.md`（上下文与存储的现状整理 + 按位置分组的问题清单）；现状快照数字更新至 **58 套 3858 项**。⚠ 本机 `spawnSync` 被环境挡住（一律 EBUSY），`npm run verify` 与 `npm run docs:sync` 都跑不起来，项数是**逐套跑完手工汇总**的（3805 + 53 = 3858），等环境恢复要补跑一次确认
 
+2026-09-24 13:06 | [Feature✨] **删除回收站化（ROADMAP 10.9.6）**：新增第 20 个内置工具 `trash` —— 删除不再真删，移进 `.flint/trash/<时间戳>/` 且**保留原目录结构**，manifest 记原路径与字节（目录记 `bytes=-1`）。核心落点 `src/tools/trash-bin.ts` **唯一碰 fs**（移入 / 还原 / 清理），工具层与命令层都只 import 它
+2026-09-24 13:06 | [Feature✨] **删除改道闸**：`src/permission/trash.ts`（判据纯函数，词法复用 `danger.ts` 同一套）——bash / spawn 命令段首命中七个删除词（`rm`/`rmdir`/`unlink`/`del`/`rd`/`Remove-Item`/`ri`）且目标"该拒"（工作区外 / 项目根 / 回收站自己）→ deny，拒因给四样：没执行 + 理由 + **出路 `trash` 工具** + "护栏不是沙箱"。钩子链五道闸 → **六道闸**，排在危险闸之后、工作区闸之前
+2026-09-24 13:06 | [Feature✨] **`/undo` 命令**（`src/commands/builtin/undo.ts`）：**栈式还原**（后删的先还），字节一致自证；原位置被占 → `OCCUPIED` 且**两边都不动**（宁可失败不可覆盖）；实体没了 → `GONE` 但记录仍在；`EMPTY` 是常态。命令层零 fs
+2026-09-24 13:06 | [Feature✨] `trash` 进 `PLAN_BLOCKED_TOOLS`（删除也是改动；横幅文案从名单派生）、要权限确认（按工具身份回答"会不会改用户的文件"）；`.flint/trash` 落点常量单一来源
+2026-09-24 13:06 | [CI✅] 新增 `scripts/verify-trash.ts` **59 项**全绿：① 命令词 A1–A10 ② 目标判据 B1–B10（纯函数，`outside` 由调用方注入）③ 真执行 C1–C9 ④ 还原 D1–D8 ⑤ 清理 E1–E4 ⑥ 真接线 F1–F7（真钩子链、真 `ToolRegistry` 20 个工具）⑦ 源码守护 G1–G9；**变异 4 轮各自精准变红**（M1 删 `rm` → 9 红；M2 去"段首" → 2 红；M3 还原改 FIFO → 4 红；M4 钩子不 deny → 1 红只红接线）
+2026-09-24 13:06 | [Fix🐛] 既有断言随结构改判（工具 19 → 20、五道闸 → 六道闸）：`verify-edit` A1、`verify-spec` 4-count、`verify-tools` 计数、`verify-background` B4、`verify-git-write` G21、`verify-references` F8、`verify-symbols` G15、`verify-plan` A1/A2 与注释、`verify-audit` H4、`verify-paths` F5（路径工具仍七个，trash 不走 `resolveToolPath`）；`main.ts` / `audit.ts` / `plan-mode.ts` 头注同步"六道闸"
+2026-09-24 13:06 | [Docs📝] 快照同步至 **59 套 3917 项**：TESTING（生成区 + 逐套表 + 写法分布 `check` 52、`gt` 39 + 第七节 3917）；ROADMAP 10.9.6 改**已完成**、新增 10.9.7「写前留备份」**候选**（用户顾虑笨重，轻量形状与次序写在行内）；DECISION_LOG 新锚点 `log-2026-09-24-trash-gate`；ARCHITECTURE_LOG 新锚点同名单独成块（钩子链六道闸、工具 19→20）；目录.md / ARCHITECTURE.md 工具数与清单同步；GLOSSARY 新增「删除回收站（Trash）」「/undo」词条。⚠ 项数为逐套跑手工汇总（3858 + 59 = 3917），`npm run docs:sync` 仍需用户在自有终端补跑确认
+
 
 2026-09-10 19:32 | [Feature✨] 内层引导**落盘**：`runSingleTurn` 用 `takeSteer` 回调把**被内层吸收**的引导收进本轮缓冲，在 `appendMessage('assistant', finalText)` **之前**按序落盘为独立 user 条目（内容带 `STEER_PREFIX` = `[用户引导] `）。位置是关键——引导发生在"用户提问"与"助手回复"之间，落在 assistant 之后就时序错了。形状上产出 `user,user,assistant`，由下一条的适配器归并消化
 2026-09-10 19:32 | [Fix🐛] `toAnthropicMessages` 的 `user` 分支从**无条件 push** 改成**能并则并**：上一条已是 user 就把文本块并进去（与本来就在做的连续 tool 结果合并同层、同一手法）。这个洞此前**不可达**（内部格式从未产出连续 user），落盘后才会被踩到，所以两件事必须同轮做。同时把债 11 那句"连续两条 user 必然 400"核查后**降级**为"未证实但不应依赖"——Anthropic API 参考的原话是连续同角色轮**会被服务端合并**（5 个官方镜像逐字一致），而第三方 400 报告也存在，本机无法裁定（官方站点在此网络返回 `app-unavailable-in-region`、无 key 可实测）
