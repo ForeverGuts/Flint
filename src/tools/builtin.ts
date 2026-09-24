@@ -48,6 +48,11 @@ import {
 // 本文件里只剩两个 handler 各自决定"收哪些文件名"与"每读到一个文件做什么"。
 // SKIP_DIRS 连 `ls` 也用同一个常量（它走的是"列目录树"，形状不同，但跳过表必须同源）
 import { SKIP_DIRS, scanPaths } from '../search/walk.js';
+// read 工具的二进制与体积体检（ROADMAP 10.7.4）：二进制判定复用 walk.ts 的 headIsBinary
+//（全仓唯一一份），体积只拦"整读"、分段永远放行 —— 判据与出路见 read-guard.ts 模块头
+import {
+  guardForRead, renderReadNotice,
+} from './read-guard.js';
 import {
   SYMBOL_MAX_HITS, isCodeFile, renderSymbolReport, scanSymbols, type SymbolEntry,
 } from '../search/symbols.js';
@@ -396,9 +401,16 @@ export function registerBuiltinTools(
         if (!existsSync(resolvedAbs)) {
           return toolNegative('NOT_FOUND', `文件不存在: ${resolvedPath}`);
         }
-        if (!statSync(resolvedAbs).isFile()) {
+        const stat = statSync(resolvedAbs);
+        if (!stat.isFile()) {
           return toolNegative('NOT_FILE', `不是文件: ${resolvedPath}`);
         }
+
+        // 二进制与体积体检（ROADMAP 10.7.4）：与 grep/symbols 的扫描遍历**同一份判据**
+        //（walk.ts 的 headIsBinary），只探头部 8KB、不为体检读整个文件。头部探不动
+        //（fail-open）→ 没有证据就不拦，回到改前行为（护栏不是沙箱）。
+        const guardKind = guardForRead(resolvedAbs, stat.size, limit);
+        if (guardKind) return toolOk(renderReadNotice(guardKind, resolvedPath, stat.size));
 
         const content = readFileSync(resolvedAbs, 'utf-8');
         const lines = content.split('\n');

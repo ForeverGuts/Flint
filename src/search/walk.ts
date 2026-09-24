@@ -66,6 +66,19 @@ export type ScanSkipReason = 'unreadable' | 'big' | 'binary';
 export type ScanRead = { ok: true; buf: Buffer } | { ok: false; reason: ScanSkipReason };
 
 /**
+ * 二进制判定：头部窗口内有 NUL 字节即视为二进制（与 ripgrep 同一思路）。
+ * 注意 Buffer.indexOf 的第三参是 encoding 而非结束位置，限定窗口只能先 subarray
+ *（subarray 越界会自动夹到长度，不必自己 Math.min）。
+ *
+ * **全仓唯一一份**（ROADMAP 10.7.4 起也供 read 工具复用）："体检口径只许有一份"
+ * 是 10.7.3 立下的规矩 —— grep/symbols 与 read 若各判各的，同一个文件就会出现
+ * "搜得到却读不得"（或反过来）的分裂口径，且两份名单必然漂移。
+ */
+export function headIsBinary(buf: Buffer, probeBytes: number = SCAN_PROBE_BYTES): boolean {
+  return buf.subarray(0, probeBytes).indexOf(0) !== -1;
+}
+
+/**
  * 读一个文件并做两道体检（体积 / 二进制）。
  * 分开导出是因为调用方有一条"点名单个文件"的路径：那时没有目录要走，但仍要过同样的体检
  * —— 体检口径只许有一份，否则点名一个 3GB 文件就会把它整个读进内存。
@@ -82,10 +95,7 @@ export function readForScan(
     return { ok: false, reason: 'unreadable' };   // 无权限 / 占用中 / 是个目录
   }
   if (buf.length > maxFileBytes) return { ok: false, reason: 'big' };
-  // 二进制判定：头部窗口内有 NUL 字节即视为二进制（与 ripgrep 同一思路）。
-  // 注意 Buffer.indexOf 的第三参是 encoding 而非结束位置，限定窗口只能先 subarray
-  //（subarray 越界会自动夹到长度，不必自己 Math.min）
-  if (buf.subarray(0, probeBytes).indexOf(0) !== -1) return { ok: false, reason: 'binary' };
+  if (headIsBinary(buf, probeBytes)) return { ok: false, reason: 'binary' };
   return { ok: true, buf };
 }
 

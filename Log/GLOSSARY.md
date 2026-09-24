@@ -1250,15 +1250,15 @@ token 消耗统计（`llm/types.ts` 的 `LLMUsage`：`promptTokens` / `completio
 
 压缩链路随行的那份"这个会话碰过哪些文件"账本（2026-09-24，ROADMAP 10.8.11）。摘要由 LLM 散文生成、细节会丢；清单由程序从被压消息的 `tool_calls` 里抽路径（封闭枚举：write / edit / git_write / trash → 改写桶，read / ls → 只读桶），与上一版**合并去重**后作为**结构化字段**写进 compaction entry（`filesModified` / `filesRead`，空清单不写字段），随压缩逐层累积、上限截断（50 / 30）丢最老。runtime 摘要层**确定性渲染**拼接（`glueSummaryLedger`，唯一拼接点），无清单时摘要逐字不回退。判据在 `src/context/file-ledger.ts`（零 import），验证 `verify-file-ledger.ts` 39 项。**已知边界**：bash 里的重定向写看不见（目标在自由文本里，与 [bash 写纳管](#bash-写纳管bash-write-gate) 同一条"护栏不是沙箱"账）；路径不归一化（模型写什么样记什么样）。
 
-`src/permission/trash.ts`（判据）+ `src/tools/trash-bin.ts`（**唯一碰 fs** 的落点）+ `trash` 工具 + [删除改道闸](./DECISION_LOG.md#log-2026-09-24-trash-gate)（2026-09-24 加，ROADMAP 10.9.6）："删除"从**不可逆**变成**可逆**——bash / spawn 里够不上灾难形态的删除命令被**改道**（deny + 指路 `trash` 工具），真删除一律变成"移进 `.flint/trash/<时间戳>/` 且**保留原目录结构** + manifest 记账"。
+### 删除回收站（Trash）
+
+`src/permission/trash.ts`（判据）+ `src/tools/trash-bin.ts`（**唯一碰 fs** 的落点）+ `trash` 工具 + 删除改道闸（2026-09-24 加，ROADMAP 10.9.6）："删除"从**不可逆**变成**可逆**——bash / spawn 里够不上灾难形态的删除命令被**改道**（deny + 指路 `trash` 工具），真删除一律变成"移进 `.flint/trash/<时间戳>/` 且**保留原目录结构** + manifest 记账"。
 
 **一句话定位**：危险闸（10.9.2）当年承认"只有 L1、没有 L2"，本条给"删除"这一类补上 L2 雏形——**基线就是回收站本身**。它不是沙箱：变量拼装（`rm $F`）、换语言重写（`python -c "os.remove(...)"`）照样绕得过，它挡的是"顺手直接敲出来"的那一类。
 
 **三个容易误会的地方**：① **还原是栈式**（后删的先还，`/undo` 连按逐笔回退）；原位置被占（`OCCUPIED`）时**两边都不动**——覆盖就是又一次不可逆；② **保留原目录结构是承重的**——可逆的关键不是"留了一份"，是"知道它原来在哪"；③ **清理朝"宁可多留"侧 fail**——超期才清，时间读不出来一律不清。
 
 参见：[危险命令拦截（Danger Gate）](#危险命令拦截danger-gate)（同一条钩子链上的邻居，词法同源）· [/undo](#undo) · 完整决策见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-24-trash-gate)
-
-### 删除回收站（Trash）
 
 ### /undo
 
@@ -1267,3 +1267,13 @@ token 消耗统计（`llm/types.ts` 的 `LLMUsage`：`promptTokens` / `completio
 边界：它是**用户手打的命令**，模型没有对应的"还原"工具——"放回去"这个决定刻意只留给人（模型手里的合规出路是"删进回收站"，不是"替用户决定放不放回来"）。
 
 参见：[删除回收站（Trash）](#删除回收站trash)
+
+### 二进制与体积体检（Read Guard）
+
+read 工具读内容前的两道检查（2026-09-24 加，ROADMAP 10.7.4）：**头部 8KB 含 NUL = 二进制**（不读内容，只回"多大 / 为什么没读 / 怎么办"）；干净文本再看体积，**整读**超过 64KB 不整个读、点名 offset/limit 分段。二进制判定是 `search/walk.ts` 的 `headIsBinary`——grep / symbols 的扫描遍历与 read **共用同一份**（10.7.3 立的"体检口径只许有一份"：两份名单必然漂移，同一文件会"搜得到却读不得"）。
+
+**三个容易误会的地方**：① **次序承重**——又二进制又超大的文件答案是"别读"，不是"请分段"（分段读出来还是乱码，方向给错比不给更坏）；② **分段永远放行**——offset/limit 是大文件的正规通道，体积闸只在缺省整读时生效，上限 64KB 按上下文预算 12000 token 倒推；③ **答案是 `toolOk` 不是拒绝**——参数合法、路径没错，模型没犯错；计失败会把"连读几个不同的二进制文件"（合法探索）误判成重复犯错。
+
+**刻意不做**：扩展名黑名单（永远列不全，头部 NUL 探测是证据、名单是猜测）· 为体检读整个文件（只探头部 8KB）· 探不动硬拦（fail-open，没证据不拦——**护栏不是沙箱**）。
+
+参见：判据 `src/tools/read-guard.ts` · 完整决策见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-24-read-guard)

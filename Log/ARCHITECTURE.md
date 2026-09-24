@@ -49,10 +49,13 @@
 │ tools/            ToolRegistry + spec.ts（参数规格：一份定义派生 Schema / 运行时校验 / 入参类型）
 │                   + paths.ts（10.9.5：全仓**唯一**的"相对 → 绝对"解析 + 真落点；六个路径 handler 都从它取落点，
 │                     闸那边的真落点也由它提供 —— 由装配处注入，故闸自身仍不碰 fs）
+│                   + read-guard.ts（10.7.4：read 的二进制与整读体积体检 —— 二进制判定只 import walk.ts 的
+│                     headIsBinary 不复制，体检口径全仓一份；命中只报摘要、分段永远放行、探不动 fail-open）
 │                   + 20 个内置工具（ls / read / write / edit / grep / symbols / refs / bash / todo / memory / record_event / search_events / pull_events / ask / archive / git / git_write / spawn / task / trash）
-│ search/           逐文件内容扫描（10.7.1）：walk.ts 遍历器（scanPaths / readForScan / SKIP_DIRS）—— grep 与 symbols
-│                   **共用同一份**"走目录 + 跳过表 + .gitignore + 二进制/体积体检"（ls 复用同一份跳过表，但保留
-│                     自己"列目录树"的遍历形状）；symbols.ts 符号定义识别（零 import 纯判据：跨语言并集形状表 + 跨行注释扫描）
+│ search/           逐文件内容扫描（10.7.1）：walk.ts 遍历器（scanPaths / readForScan / headIsBinary / SKIP_DIRS）—— grep 与
+│                   symbols **共用同一份**"走目录 + 跳过表 + .gitignore + 二进制/体积体检"（ls 复用同一份跳过表，但保留
+│                     自己"列目录树"的遍历形状；read 的体检自 10.7.4 起复用同一份 headIsBinary）；
+│                   symbols.ts 符号定义识别（零 import 纯判据：跨语言并集形状表 + 跨行注释扫描）
 │ todo/             TaskStore —— 任务清单的内存真相源（render/parse 互逆 + TASK.md 投影/种子；层级 / 依赖 / 会话内时间戳）
 │ memory/           MemoryStore —— 项目记忆的内存真相源（render/parse 互逆 + .flint/memory.md 投影/种子）
 │ eventlog/         EventStore —— 历史事件库（.flint/events.jsonl 追加档案 + 检索；tool_call span 自动捕获）

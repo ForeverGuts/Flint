@@ -11,6 +11,22 @@
 
 ---
 
+<a id="log-2026-09-24-read-guard"></a>
+
+## 2026-09-24 20:55 | read 的体检接进扫描遍历的同一份判定：`search` 层第一次向 `tools` 层输出一个共享判据函数
+
+**牵连系统 / 层次**：`src/search/walk.ts`（二进制判定式抽成导出函数 `headIsBinary`，`readForScan` 内部改调它 —— 行为零变化）· `src/tools/read-guard.ts`（**新增**：分类 `classifyRead` / 渲染 `renderReadNotice` / 接线便捷式 `guardForRead` / 头部探针 `readHeadBytes`，只 import walk 的判据与窗口常量）· `src/tools/builtin.ts`（read handler 在 `statSync` 之后、`readFileSync` 之前接线一处）· `scripts/verify-read-guard.ts`（**新增 38 项**）
+
+**面向的问题**：read 对任何文件整个读进来——二进制灌乱码进上下文，大文件整个吞内存；grep/symbols 那条路早有同款体检，read 走"点名单个文件"的门一直没接。最省事的写法是在 read handler 里再判一遍——那正是 10.7.3 批评过的"两处各抄一份"。
+
+**做出的改动**：不新写判定，把 walk.ts 的二进制判定式**抽成导出函数**（`headIsBinary`），`readForScan` 改调它（回归套件 B 段钉住行为零变化）；新增 read-guard 作分类 / 渲染 / fail-open 的落点，read handler 只剩一行接线。**层次方向是"search → tools"的判据输出**：walk.ts 本就是"探针"模块（碰 fs、不放策略），headIsBinary 是其中唯一纯判定的那一格；read-guard 接着它做 read 语境的策略（整读 vs 分段、次序、出路文案），不复制判定式。
+
+**解决的问题**：误读二进制不再灌乱码（乱码内容一字不进上下文，只回"多大 / 为什么没读 / 怎么办"）；整读超限被点名分段（分段路径零扰动）；grep/symbols 的体检口径与 read 严格同源，改一处两边生效。
+
+**未来可优化**：若将来 read 要支持按扩展名的**提示性**建议（如"这看着像图片，也许你想要的是……"），名单可放渲染层做注解，判定仍以 NUL 探测为准；`readHeadBytes` 与 `readForScan` 各自开文件读头部，若将来遍历器也改成"stat 先行"可合并探针（现下两者语境不同，刻意不共享 IO）。
+
+---
+
 <a id="log-2026-09-24-file-ledger"></a>
 
 ## 2026-09-24 15:04 | 压缩链路长出"清单通道"：compaction entry 第一次同时承载散文摘要与结构化清单，`core` 存储契约用结构子类型避开 llm 依赖
