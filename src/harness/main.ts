@@ -9,6 +9,7 @@ import { Runtime } from '../runtime/runtime.js';
 import { Mode } from '../types.js';
 import type { CheckResult, SessionStorage } from '../types.js';
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { closeTerminal } from '../io/terminal.js';
 import { JsonlSessionStorage } from '../session/jsonl-storage.js';
 import { JsonlSessionRepo } from '../session/jsonl-repo.js';
@@ -35,6 +36,7 @@ import { charterLock, guardContractWrite } from '../project/charter.js';
 import { guardDangerousCommand } from '../permission/danger.js';
 import { guardDeleteRedirect } from '../permission/trash.js';
 import { guardWorkspaceWrite, workspaceGrants } from '../permission/workspace.js';
+import { guardBashWrite } from '../permission/bash-write.js';
 import { realPathOf } from '../tools/paths.js';
 import { recordGateDeny } from '../permission/audit.js';
 import { routeBashGitRead } from '../git/route.js';
@@ -76,18 +78,18 @@ interface CreateRuntimeResult {
 /**
  * 核心钩子链（`before_tool_call`）的**唯一实现**。
  *
- * 为什么抽成独立函数：它此前只活在 `main()` 的闭包里，于是"六道闸的实际次序""是谁拒的"
+ * 为什么抽成独立函数：它此前只活在 `main()` 的闭包里，于是"七道闸的实际次序""是谁拒的"
  * "审计记了什么"这三件事**只能靠读 main.ts 的源码文本**来钉（文本断言既不懂语义、又容易
  * 被重排骗过）。抽出来之后套件能拿真事件喂它、逐条打靶，而**行为一字未变**：判据全是纯函数，
  * `charterUnlocked` 由参数注入（原来读 `charterLock` 单例），这里没有进程级状态，可以反复调用。
  *
- * ⚠ 六道闸的**书写顺序 = 执行顺序**（命中即返回），这个顺序本身就是设计 ——
+ * ⚠ 七道闸的**书写顺序 = 执行顺序**（命中即返回），这个顺序本身就是设计 ——
  *   但**两条排序理由不同，别用一条去推另一条**：
  *     · 模式闸（计划模式）排最前，理由不是"判据更窄"（它的判据其实**最宽**：按工具名一票拦），
  *       而是**其余各闸的出路在计划模式下都不成立** —— 模型若拿到"请让用户 /charter unlock"
  *       或"请让用户 /workspace allow"，用户照做之后它**照样被计划模式拦着**，那就是把模型
  *       与用户一起引向一条走不通的路（"方向给错比不给更坏"，同 10.9.5 的拒因分工）。
- *     · 其余五道照旧按"判据更窄更确定的排前面"，先让它们给出更具体的理由。
+ *     · 其余六道照旧按"判据更窄更确定的排前面"，先让它们给出更具体的理由。
  *   既有套件（verify-danger G3）钉着契约 → 危险 → 路由三者的相对次序 ——
  *   重排之前先想清楚为什么这么排。
  *
@@ -159,6 +161,19 @@ export function coreBeforeToolCall(
     realpath: realPathOf,
   });
   if (workspace) return deny('工作区外写', 'workspace', workspace);
+  // ③b 边界闸：bash 写纳管（ROADMAP 10.9.8）。③ 只认 write / edit 的 path 参数，而 bash /
+  //    spawn 的重定向目标藏在**命令串**里 —— 本闸在这里做小翻译：认出 `>` `>>` `2>` 与
+  //    `tee` / `cp` / `mv` 的目标，展开成绝对路径（~ / $HOME，含 Windows —— cmd 里 `> ~/x`
+  //    本来就会失败，意图却毫无歧义；MSYS `/c/...` **刻意不映射**，理由写在 bash-write.ts
+  //    文件头），然后喂给 **③ 同一个判定函数** `isOutsideWorkspace` —— 两扇门一个规矩，
+  //    改一处两边生效。判不出的形态（变量 / 命令替换 / 换语言）一律放行 —— 护栏不是沙箱，
+  //    拒因里对模型明说。cwd / 放行表 / 家目录**每次调用现取**，与③同一条纪律。
+  const bashWrite = guardBashWrite(toolName, e.args, {
+    cwd: process.cwd(),
+    home: homedir(),
+    grants: workspaceGrants.list(),
+  });
+  if (bashWrite) return deny('bash 写出工作区', 'bash-write', bashWrite);
   // ④ 引导闸（**路由器**，不是闸）：bash 里的裸 git 只读命令 → 零弹窗的结构化 git 工具。
   //    判据刻意窄（只认裸形式），漏掉只是"照旧走 bash"，因此没有完备性负担，可与①②③同栖一个钩子。
   //    三/四个闸共用"拦在权限弹窗之前"这个位置：被路由的调用不会让用户看到弹窗（ROADMAP 10.5.6）。

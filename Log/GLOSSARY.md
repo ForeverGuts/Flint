@@ -1236,6 +1236,16 @@ token 消耗统计（`llm/types.ts` 的 `LLMUsage`：`promptTokens` / `completio
 
 参见：[危险命令拦截（Danger Gate）](#危险命令拦截danger-gate) · [工作区外写保护（Workspace Gate）](#工作区外写保护workspace-gate) · [工作区授权持久化（Grant Persistence）](#工作区授权持久化grant-persistence)（本词条给这三条装账）· [EventStream（推拉通道）](#eventstream推拉通道)（本词条落在"拉"那一侧）· 完整决策（七条）见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-19-audit)
 
+### bash 写纳管（Bash Write Gate）
+
+`src/permission/bash-write.ts`（2026-09-24 加，ROADMAP 10.9.8）：write / edit 写出工作区有[工作区闸](#工作区外写保护workspace-gate)拦着，但 bash 的重定向目标藏在**命令串**里——本闸在钩子链里做**小翻译**：提取 `>` `>>` `2>` `2>>`（含紧贴写法）与 `tee` / `cp` / `mv` 的目标，展开成绝对路径，喂给工作区闸**同一个判定函数** `isOutsideWorkspace`。**两扇门一个规矩，改一处两边生效**——它不是新保安，是给老保安多接了一条入口。
+
+**三个容易误会的地方**：① **`~` 在 Windows 上也展开成家目录**（flint 的 bash 走 `shell: true`、真跑 cmd.exe，`> ~/x` 本就会失败，意图却毫无歧义——看得见的拒绝好过莫名失败的命令）；② **MSYS `/c/...` 刻意不映射**（与[危险命令拦截](#危险命令拦截danger-gate)相反：cmd 的真落点就是 `<盘>:\c\...`，映射会把盘外写判成区内——**假放行正是本闸要堵的洞**）；③ **`/dev/null` / `NUL` / `>&1` 放行**（不是文件；`&>` 写法则根本到不了判据——`&` 是切段分隔符，到达时已拆成 `>`）。
+
+**刻意不做**：变量 / 命令替换 / 写进脚本再触发 / 换语言重写（判不出，拒因里对模型明说——**护栏不是沙箱**）；`dd` 归危险闸、`rm` 归[删除回收站](#删除回收站trash)，本闸不抢理由。
+
+参见：[工作区外写保护（Workspace Gate）](#工作区外写保护workspace-gate)（同一个判定函数）· [危险命令拦截（Danger Gate）](#危险命令拦截danger-gate)（同一套词法）· 完整决策见 [DECISION_LOG 锚点](./DECISION_LOG.md#log-2026-09-24-bash-write)
+
 ### 删除回收站（Trash）
 
 `src/permission/trash.ts`（判据）+ `src/tools/trash-bin.ts`（**唯一碰 fs** 的落点）+ `trash` 工具 + [删除改道闸](./DECISION_LOG.md#log-2026-09-24-trash-gate)（2026-09-24 加，ROADMAP 10.9.6）："删除"从**不可逆**变成**可逆**——bash / spawn 里够不上灾难形态的删除命令被**改道**（deny + 指路 `trash` 工具），真删除一律变成"移进 `.flint/trash/<时间戳>/` 且**保留原目录结构** + manifest 记账"。

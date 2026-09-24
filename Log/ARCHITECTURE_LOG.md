@@ -11,6 +11,31 @@
 
 ---
 
+<a id="log-2026-09-24-bash-write"></a>
+
+## 2026-09-24 14:23 | `before_tool_call` 从六道闸变七道闸：bash 的重定向写第一次被翻译出来送进同一条边界，`permission/` 长出"翻译型闸"
+
+**牵连系统 / 层次**：`src/permission/bash-write.ts`（**新增**，提取判据——纯函数，复用 `danger.ts` 词法与 `workspace.ts` 边界）· `src/harness/main.ts`（钩子链第七道闸，`homedir()` 现取）· `scripts/verify-bash-write.ts`（**新增 55 项**）
+
+**面向的问题**：
+- 工作区闸只认 write / edit 的 `path` 参数；bash / spawn 的重定向目标藏在**命令串**里，`echo x > ~/Desktop/a.txt` 没人查——"换个门"即可绕过整条边界。
+- 直接把 bash 塞进受管名单不可行：工作区闸的输入契约是"path 字格"，bash 没有那一格。
+
+**做出的改动**：
+- 新增**翻译型闸**：提取目标（重定向符封闭枚举 + `tee` / `cp` / `mv` 命令词）→ `expandTarget` 归一（`~` / `$HOME` / `%USERPROFILE%`，**含 Windows**；**MSYS 不映射**，与 danger.ts 相反——cmd 真落点方向不可假放行）→ 复用 **`isOutsideWorkspace` 同一个判定函数**。边界规则一份，改一处两边生效。
+- 伪目标（`/dev/null` / `NUL` / 流重定向）与判不出的形态（变量 / 反引号 / 通配）一律放行；拒因四样齐全（没执行 + 两扇门一个规矩 + 出路 + 护栏不是沙箱）。
+- 排在工作区闸**之后**：同族边界闸，先让判据更确定的 write / edit 闸说话。
+
+**解决的问题**：
+- "换个门绕过工作区边界"的门从两扇收成一扇：write、edit、bash 重定向、spawn 重定向现在走**同一个判定函数**。
+- `permission/` 的组织长出新形状：**翻译型闸**（命令串 → 目标 → 复用既有判定），与"命令词型闸"（危险 / 删除）、"路径型闸"（工作区）三足分开，互不抢理由。
+
+**未来可优化**：
+- `dd` / `install` / `rsync` 等写形命令词未收（先不猜）；`mv -t` 旗标吃参形态判不出。
+- 符号链接真落点只对 write / edit 生效；bash 目标若要追，需把两步判 generalize，先不做。
+
+---
+
 <a id="log-2026-09-24-trash-gate"></a>
 
 ## 2026-09-24 13:06 | `before_tool_call` 从五道闸变六道闸：删除第一次从"不可逆"变成"可逆"，内置工具 19 → 20

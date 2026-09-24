@@ -85,6 +85,10 @@
 │                   · grants.ts **工作区授权持久化**（10.9.1 落地前半）—— `/workspace allow --save` 之后重启仍生效，
 │                     落盘 `~/.flint/permissions.json`（按项目键分区）；**读一次**（启动读进内存快照 → 运行期不读盘，
 │                     掐掉"模型改文件给自己发授权"那条通路）· **读不懂当没有**且**拒写**（免得抹掉别的项目条目）· **写失败报出来**
+│                   · trash.ts **删除改道闸**（10.9.6，`before_tool_call` 的 ②b）+ tools/trash-bin.ts 唯一落点 —— 删除一律移进 `.flint/trash/`
+│                     保留原目录结构 + manifest，`/undo` 栈式还原；删除从不可逆变可逆（"只有 L1"的缺口补上 L2 雏形）
+│                   · bash-write.ts **bash 写纳管**（10.9.8，`before_tool_call` 的 ③b）—— 从命令串翻译出重定向 / tee / cp / mv 的
+│                     目标，喂给工作区闸**同一个判定函数**（两扇门一个规矩）；`~` 展开含 Windows、MSYS 刻意不映射（cmd 真落点方向不可假放行）
 │                   · audit.ts **审计留痕的统一落点**（10.9.4）—— 拦下 / 拒绝 / 放行 / 收回四类**边界决定**各落一条进
 │                     `events.jsonl`（`kind=system`、`tags` 带 `audit`，**不新开文件**）；四个调用方（钩子链 / `askPermission` /
 │                     `/workspace` 命令 / `/plan` 命令）各只剩一行，闸名·标签·截断只有一份定义。**只记边界决定**（正常调用流水已全量记，
