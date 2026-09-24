@@ -291,8 +291,11 @@ console.log('\n⑨ tool_calls 持久化（钉死“存储只存纯文本”这�
   check('E1 compaction 摘要写进**同一个**会话文件（GLOSSARY 旧词条说的独立 _summary.jsonl 不存在）',
     fs.readFileSync(cp.getFilePath(), 'utf8').includes('"type":"compaction"')
     && !fs.existsSync(path.join(tmpDir, 'compact_summary.jsonl')));
-  check('E2 getMessages 把 compaction entry 转成 [对话摘要] 的 system 消息',
-    (await cp.getMessages()).some((m) => m.role === 'system' && m.content === '[对话摘要] 前情提要'));
+  check('E2 摘要单一通道（F 修复）：getMessages 不再渲染 [对话摘要]，摘要只经 getCompactions 进系统提示词层',
+    !(await cp.getMessages()).some((m) => m.content.includes('对话摘要'))
+    && cp.getCompactions().at(-1)?.summary === '前情提要');
+  check('E3 视图裁剪仍生效：视图 = firstKeptId 起的真实消息（不含摘要条目）',
+    JSON.stringify((await cp.getMessages()).map((m) => m.content)) === JSON.stringify(['B']));
 
   const srcFiles: string[] = [];
   const walk = (d: string): void => {

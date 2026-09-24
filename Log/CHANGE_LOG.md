@@ -438,6 +438,10 @@
 2026-09-24 15:04 | [Fix🐛] 既有断言随结构改判：`verify-compaction-usage` U25（距离型正则被新增的 ledger 行顶过 800 —— 第 N 次应验"别把字符距离写进判据"，改成方法体内各自判）
 2026-09-24 15:04 | [Docs📝] 快照同步至 **61 套 4011 项**：TESTING（生成区 + 逐套表 + 写法分布 `check` 54、`gt` 41 + 补记第四批 + 第七节 4011）；ROADMAP 10.8.11 改**已完成**；CONTEXT.md D 段标已修（剩 F / G）；DECISION_LOG / ARCHITECTURE_LOG 新锚点 `log-2026-09-24-file-ledger`；GLOSSARY 新增「文件操作清单（File Ledger）」词条；目录.md / ARCHITECTURE.md 同步。⚠ 项数为逐套手工汇总（3972 + 39 = 4011），`npm run docs:sync` 仍需用户在自有终端补跑确认
 
+2026-09-24 15:31 | [Fix🐛] **摘要单一通道（CONTEXT 问题 F，压缩后每轮双发）**：`JsonlSessionStorage.getMessages()` **不再**把 compaction entry 渲染成 `[对话摘要] …` 的历史首位 system 消息（裁剪逻辑不变，fallback 也不渲染）——摘要唯一通道 = 系统提示词 summary 层（runtime 每轮从 `getCompactions()` 现读，重启不丢）。连带口径：条数阈值 `>20` 现在只数**真实消息**（以前摘要条目占 1 个名额），`verify-compaction-policy` F8 追加量 +1；token 预算少算摘要那几百 token，有界（400 字预算）+ 条数兜底，刻意不补算
+2026-09-24 15:31 | [CI✅] 既有断言随行为改判：`verify-session` E2 改钉**摘要单一通道**并新增 E3（视图裁剪仍生效，71→72 项）；`verify-fork-summary` F1-F5/F10/G9/H5/H15（视图只含真实消息、H15 兼钉摘要经 getCompactions 重启仍在）；`verify-fork-rpc` C3；`verify-compaction-policy` F8。**变异两轮各自精准变红**——M1 用 `git stash` 撤销整个修复（4 套 6 红）、M2 砍视图裁剪（4 红）
+2026-09-24 15:31 | [Docs📝] 快照同步至 **61 套 4012 项**：TESTING（生成区 + session/fork-summary 两行）；CONTEXT.md F 段标已修（A-E + F 全修完，剩 G 未立项）；DECISION_LOG 新锚点 `log-2026-09-24-summary-single-channel`；GLOSSARY「会话存储」词条订正。⚠ 项数为逐套手工汇总，`npm run docs:sync` 仍需用户在自有终端补跑确认
+
 
 2026-09-10 19:32 | [Feature✨] 内层引导**落盘**：`runSingleTurn` 用 `takeSteer` 回调把**被内层吸收**的引导收进本轮缓冲，在 `appendMessage('assistant', finalText)` **之前**按序落盘为独立 user 条目（内容带 `STEER_PREFIX` = `[用户引导] `）。位置是关键——引导发生在"用户提问"与"助手回复"之间，落在 assistant 之后就时序错了。形状上产出 `user,user,assistant`，由下一条的适配器归并消化
 2026-09-10 19:32 | [Fix🐛] `toAnthropicMessages` 的 `user` 分支从**无条件 push** 改成**能并则并**：上一条已是 user 就把文本块并进去（与本来就在做的连续 tool 结果合并同层、同一手法）。这个洞此前**不可达**（内部格式从未产出连续 user），落盘后才会被踩到，所以两件事必须同轮做。同时把债 11 那句"连续两条 user 必然 400"核查后**降级**为"未证实但不应依赖"——Anthropic API 参考的原话是连续同角色轮**会被服务端合并**（5 个官方镜像逐字一致），而第三方 400 报告也存在，本机无法裁定（官方站点在此网络返回 `app-unavailable-in-region`、无 key 可实测）

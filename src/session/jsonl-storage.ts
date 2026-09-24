@@ -213,15 +213,20 @@ export class JsonlSessionStorage implements SessionStorage, CompactionStore {
   }
 
   /**
-   * 读取当前分支的对话消息（遇 compaction 转成摘要 system 消息）。
+   * 读取当前分支的对话消息（**只含真实消息，不含摘要** —— 摘要的唯一通道见下）。
    * 调用方：runtime.ts（LLM 上下文）
-   * 服务于：让 LLM 看到"当前路径上的历史"，含压缩摘要、结构化工具调用（function calling）
+   * 服务于：让 LLM 看到"当前路径上的历史"，含结构化工具调用（function calling）
    *
    * **视图裁剪（2026-09-12 修复）**：最后一个 compaction 的 firstKeptId 之前的消息已被摘要
    * 顶替，不再进入 LLM 视图——此前缺这刀，压缩省下的 token 只活一轮（当轮 maybeCompact
    * 裁剪返回，下一轮起这里把全量历史原样端出，旧消息与摘要双份都在）。只认最后一个
    * compaction（与 SystemPromptService 摘要层"取最后一个"同一口径），更早的 compaction
-   * entry 被最后一个覆盖、一并出视图；摘要 system 消息提到裁剪窗口开头。
+   * entry 被最后一个覆盖、一并出视图。
+   *
+   * **摘要单一通道（F 修复，2026-09-24）**：本方法**不再**把 compaction entry 渲染成
+   * `[对话摘要]` system 消息 —— 那会与 SystemPromptService 的 summary 层**每轮发两遍**
+   * （同一份摘要、两处内容还可能漂移：summary 层另拼了文件清单）。摘要唯一通道 =
+   * 系统提示词 summary 层（runtime 每轮从 `getCompactions()` 现读，重启不丢）。
    * ⚠ 其中 tool_calls / tool_call_id / name 的还原在 LLM 路径上**无人消费**：runtime.ts 组装请求时
    * 只取 role + content（那道丢弃是承重的，理由见 Log/ARCHITECTURE.md 第四节第 9 条）。
    */
@@ -241,16 +246,16 @@ export class JsonlSessionStorage implements SessionStorage, CompactionStore {
       const comp = pathEntries[lastCompIdx] as CompactionEntry;
       const keptIdx = pathEntries.findIndex((e) => e.type === 'message' && e.id === comp.firstKeptId);
       if (keptIdx !== -1) {
-        // 摘要在前 + 保留窗口（窗口内只留真实消息，更早的 compaction 一并出视图）
-        render = [pathEntries[lastCompIdx], ...pathEntries.slice(keptIdx).filter((e) => e.type === 'message')];
+        // 保留窗口（窗口内只留真实消息，更早的 compaction 一并出视图）。
+        // compaction entry 本身**不进**返回值（摘要单一通道，见方法头注释）
+        render = pathEntries.slice(keptIdx).filter((e) => e.type === 'message');
       }
       // firstKeptId 指向的消息不在路径上（损坏文件）→ 不裁剪，全量渲染兜底
     }
 
-    return render.map((e): LLMMessage => {
-      if (e.type === 'compaction') {
-        return { role: 'system', content: `[对话摘要] ${e.summary}` };
-      }
+    // 无论裁没裁，compaction entry 都不进返回值（摘要单一通道，见方法头注释）
+    const msgs = render.filter((e): e is MessageEntry => e.type === 'message');
+    return msgs.map((e): LLMMessage => {
       const base: LLMMessage = { role: e.role as LLMMessage['role'], content: e.content };
       if (e.tool_calls) base.tool_calls = e.tool_calls;
       if (e.tool_call_id) base.tool_call_id = e.tool_call_id;

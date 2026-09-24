@@ -2,9 +2,10 @@
  * verify-fork-summary.ts —— 分支摘要（fork 带摘要从此继续）+ 压缩视图裁剪修复
  *
  * 验什么（手段与行为分开钉）：
- *   ① 视图裁剪回归（真存储，bug 修复本体）—— getMessages 只端出 [对话摘要] + firstKeptId 起的
- *      消息；后续轮次稳定；审计层（getAllStored/getAllMsgIds）不裁；无 compaction 全量；
- *      多次 compaction 只认最后一个（与 SystemPromptService 摘要层同一口径）
+ *   ① 视图裁剪回归（真存储，bug 修复本体）—— getMessages 只端出 firstKeptId 起的消息
+ *      （摘要单一通道，F 修复 2026-09-24：不再把 compaction entry 渲染成 [对话摘要] 进历史，
+ *      摘要唯一通道 = 系统提示词 summary 层）；后续轮次稳定；审计层（getAllStored/getAllMsgIds）
+ *      不裁；无 compaction 全量；多次 compaction 只认最后一个（与摘要层同一口径）
  *   ② compactNow 契约行为（真 CompactionServiceImpl + 真存储 + 探针 llm）—— 短前缀 no-op、
  *      长前缀摘要入树、firstKeptId 正确、llm 探针收到待压缩内容、keepRecent 覆盖、
  *      失败路径不入树且下轮 maybeCompact 能再试
@@ -93,17 +94,20 @@ console.log('── ① 视图裁剪回归（真存储：getMessages 只端出�
   await storage.appendCompaction('前 15 条的摘要', ids[15]);
 
   const view = await storage.getMessages();
-  check('F1 视图 = 11 条（1 摘要 + 保留 10 条），修复前是 26 条全量', view.length === 11, `实得 ${view.length}`);
-  check('F2 视图首条是 [对话摘要] system 消息', view[0].role === 'system' && view[0].content === '[对话摘要] 前 15 条的摘要');
+  check('F1 视图 = 10 条（保留窗口，无摘要条目——摘要单一通道），修复前是 26 条全量',
+    view.length === 10, `实得 ${view.length}`);
+  check('F2 视图首条是消息 16，且全视图无 [对话摘要]（F 修复：不渲染进历史）',
+    view[0].content === '消息 16' && !view.some((m) => m.content.includes('对话摘要')),
+    `实得 ${String(view[0]?.content)}`);
   check('F3 被顶替的旧消息（消息 1）不在视图', !view.some((m) => m.content === '消息 1'));
-  check('F4 保留窗口从第 16 条开始', view[1].content === '消息 16', `实得 ${String(view[1]?.content)}`);
-  check('F5 保留窗口到第 25 条结束（最后 10 条原样）', view[10].content === '消息 25');
+  check('F4 保留窗口从第 16 条开始', view[0].content === '消息 16', `实得 ${String(view[0]?.content)}`);
+  check('F5 保留窗口到第 25 条结束（最后 10 条原样）', view[9].content === '消息 25');
 
   // 后续轮次稳定：再聊一条，旧消息仍不回流
   await storage.appendMessage('user', '消息 26');
   const view2 = await storage.getMessages();
-  check('F6 再聊一条后视图 = 12 条，旧消息不回流（修复前会涨回 27 条全量）',
-    view2.length === 12 && !view2.some((m) => m.content === '消息 1'), `实得 ${view2.length}`);
+  check('F6 再聊一条后视图 = 11 条，旧消息不回流（修复前会涨回 27 条全量）',
+    view2.length === 11 && !view2.some((m) => m.content === '消息 1'), `实得 ${view2.length}`);
 
   // 审计层不裁：/history 展示与压缩增量判断仍见全量
   check('F7 getAllStored 审计层仍是全量 26 条（视图裁剪只影响 LLM 看到的）',
@@ -123,11 +127,11 @@ console.log('── ① 视图裁剪回归（真存储：getMessages 只端出�
   for (let i = 26; i <= 30; i++) await storage.appendMessage('user', `消息 ${i}`);
   await storage.appendCompaction('第二段摘要', storage.getAllMsgIds()[20]); // 压 16..20，保留 21..30
   const view = await storage.getMessages();
-  check('F10 两次 compaction → 视图 = 第二段摘要 + 21..30 共 11 条',
-    view.length === 11 && view[0].content === '[对话摘要] 第二段摘要', `实得 ${view.length}`);
+  check('F10 两次 compaction → 视图 = 21..30 共 10 条（无摘要条目，单一通道）',
+    view.length === 10 && !view.some((m) => m.content.includes('对话摘要')), `实得 ${view.length}`);
   check('F11 被覆盖的第一段摘要不在视图（单一摘要口径）',
     !view.some((m) => m.content.includes('第一段摘要')));
-  check('F12 保留窗口从第 21 条开始', view[1].content === '消息 21', `实得 ${String(view[1]?.content)}`);
+  check('F12 保留窗口从第 21 条开始', view[0].content === '消息 21', `实得 ${String(view[0]?.content)}`);
 }
 
 /* ════════════ ② compactNow 契约行为 ════════════ */
@@ -156,10 +160,10 @@ console.log('── ② compactNow（真 CompactionServiceImpl + 真存储 + 探
     llm.chats.length === 1 && llm.chats[0][0].role === 'system' && llm.chats[0][0].content.includes('压缩为一段摘要'));
   check('G8 待压缩内容是前 15 条（25 - 保留 10）',
     (llm.chats[0][1].content.match(/^user: 消息 /gm) ?? []).length === 15);
-  // 视图联动：入树后 getMessages 立即变成"摘要 + 10 条"
+  // 视图联动：入树后 getMessages 立即只剩保留窗口（fork 摘要经系统提示词 summary 层生效）
   const view = await storage.getMessages();
-  check('G9 入树后视图 = 摘要 + 最近 10 条（fork 摘要当场生效）',
-    view.length === 11 && view[0].content === '[对话摘要] 分支前缀摘要');
+  check('G9 入树后视图 = 最近 10 条真实消息（摘要走单一通道，不进历史）',
+    view.length === 10 && !view.some((m) => m.content.includes('对话摘要')));
 }
 
 {
@@ -221,8 +225,8 @@ console.log('── ③ Runtime.forkSessionWithSummary（真 Runtime + 真存储
   const fresh = await JsonlSessionStorage.open(String(cur));
   check('H4 新文件 compaction 入树（持久化，不只在内存）',
     fresh !== undefined && (fresh as JsonlSessionStorage).getCompactions().length === 1);
-  check('H5 新分支视图 = 摘要 + 保留窗口（21 条前缀 → 压 11 留 10）',
-    fresh !== undefined && (await (fresh as JsonlSessionStorage).getMessages()).length === 11);
+  check('H5 新分支视图 = 保留窗口 10 条真实消息（摘要走单一通道）（21 条前缀 → 压 11 留 10）',
+    fresh !== undefined && (await (fresh as JsonlSessionStorage).getMessages()).length === 10);
   const orig = await JsonlSessionStorage.open(beforePath);
   check('H6 原文件未动：仍 25 条、无 compaction（fork 审计性）',
     orig !== undefined && (orig as JsonlSessionStorage).getAllStored().length === 25
@@ -263,8 +267,9 @@ console.log('── ③ Runtime.forkSessionWithSummary（真 Runtime + 真存储
   const r2 = await rt2.forkSessionWithSummary(ids2[20]);
   const reopened2 = await JsonlSessionStorage.open(String(rt2.getCurrentSessionFile()));
   const view2 = await (reopened2 as JsonlSessionStorage).getMessages();
-  check('H15 fork 摘要 → 重开：视图仍是摘要 + 10 条（compaction 落盘且 leaf 指向它）',
-    r2.summarized === true && view2.length === 11 && view2[0].content === '[对话摘要] 重启后仍在');
+  check('H15 fork 摘要 → 重开：视图仍是 10 条真实消息（摘要单一通道、重启后经 summary 层仍在）',
+    r2.summarized === true && view2.length === 10 && !view2.some((m) => m.content.includes('对话摘要'))
+    && (reopened2 as JsonlSessionStorage).getCompactions().at(-1)?.summary === '重启后仍在');
 }
 
 {

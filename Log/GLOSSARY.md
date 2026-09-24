@@ -611,7 +611,7 @@ repo，`verify-repo.ts` 用探针 repo 钉住这条委托线。
 
 一行一条落 `sessions/*.jsonl`，形如 `{"type":"message","id":"m2","parentId":"m1","role":"assistant","content":"...","timestamp":2}`。`/history` 读 `getAllStored()` 展示当前分支，`/sessions` 读 `getDir()` 列会话，`/fork` 走 `forkTo()`。
 
-**压缩摘要就在同一个文件里**：`JsonlSessionStorage` 自己 `implements CompactionStore`，`appendCompaction(summary, firstKeptId)` 往树里追加一条 `{"type":"compaction","id":...,"parentId":...,"summary":...,"firstKeptId":...}` entry，`getMessages()` 遇到它就转成 `[对话摘要] …` 的 system 消息。
+**压缩摘要就在同一个文件里**：`JsonlSessionStorage` 自己 `implements CompactionStore`，`appendCompaction(summary, firstKeptId)` 往树里追加一条 `{"type":"compaction","id":...,"parentId":...,"summary":...,"firstKeptId":...}` entry。`getMessages()` **不渲染**它（F 修复 2026-09-24：摘要**单一通道** = 系统提示词 summary 层，runtime 每轮从 `getCompactions()` 现读）——改前历史首位会多出一条 `[对话摘要] …` 的 system 消息，与摘要层每轮双发。
 
 **不存在独立的 `sessions/*_summary.jsonl`**——那是 v1 机制，全 `src/` 无一行代码写它（旧词条此处写错，已于 2026-09-04 改正）。现存的 `sessions/archive-v1/default_summary.jsonl` 只是归档遗物，而 `isSessionFileName()` 还专门把含 `_summary` 的文件**排除**在 `/sessions` 列表外。
 

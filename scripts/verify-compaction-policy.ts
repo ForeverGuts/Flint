@@ -288,7 +288,9 @@ console.log('\n── ⑥ 失败与退避 ──');
     r3.summary === '补考成功' && chatCount === 2 && storage.getCompactions().length === 1, `chatCount=${chatCount}`);
 
   // 成功后退避必须清零：否则下一次压缩会被上次的失败计数挡住
-  for (let i = 35; i < 45; i++) await storage.appendMessage('user', `第 ${i} 句`);
+  // ⚠ 追加 11 条而非 10 条（F 修复 2026-09-24 后的口径）：条数阈值只数**真实消息**，
+  // 压缩后视图 10 条 + 10 = 20 不触发（以前摘要条目占 1 个名额，21 就触发），+11 = 21 > 20 才压。
+  for (let i = 35; i < 46; i++) await storage.appendMessage('user', `第 ${i} 句`);
   await svc.maybeCompact(await storage.getMessages(), storage);
   check('F8 成功后退避清零（下一次还能正常压，不会被上次失败挡住）', chatCount === 3, `chatCount=${chatCount}`);
 }

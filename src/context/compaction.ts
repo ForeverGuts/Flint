@@ -92,6 +92,8 @@ export class CompactionServiceImpl implements CompactionService {
     let failure: string | undefined;
 
     // 触发：**体积或条数**任一超了就压（10.8.9）。条数阈值不再删掉，留作体积估算看不见的那一半的兜底。
+    // ⚠ 估算口径（F 修复后）：history 不含摘要（摘要唯一通道在系统提示词层），所以摘要那
+    // 几百 token 不在本预算里 —— 有界（摘要预算 400 字）且条数阈值兜底，刻意不为此补算。
     const verdict = shouldCompact(history, CONTEXT_BUDGET_TOKENS, COMPACT_THRESHOLD);
     if (verdict.needed) {
       // 退避（10.8.6）：上次没压成、对话又没变长，就别每轮都白烧一次摘要调用

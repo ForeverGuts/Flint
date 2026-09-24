@@ -354,8 +354,9 @@ export class Runtime {
    * 调用方：/history 命令
    * 服务于：长对话分叉后 LLM 不再每轮背着整个前缀跑——forkTo 先原样复制整条前缀
    * （文件仍是完整历史，append-only 不破，审计性同普通 fork），再对新会话强制压缩
-   * （CompactionService.compactNow）：compaction 入树后，getMessages() 视图 =
-   * [对话摘要] + 最近 KEEP_RECENT 条。前缀不足时不压缩（summarized=false，等同普通分叉）。
+   * （CompactionService.compactNow）：compaction 入树后，摘要经系统提示词 summary 层生效
+   * （getMessages 只端真实消息，摘要单一通道 —— F 修复，2026-09-24）。前缀不足时不压缩
+   * （summarized=false，等同普通分叉）。
    */
   async forkSessionWithSummary(
     msgId: string,

@@ -165,8 +165,9 @@ console.log('── ③ fork_session 带摘要（summarize: true）──');
   const fresh = await JsonlSessionStorage.open(path.join(storage.getDir(), r.fileName));
   check('C2 新文件 compaction 入树（摘要持久化）',
     fresh !== undefined && (fresh as JsonlSessionStorage).getCompactions().length === 1);
-  check('C3 新分支视图 = 摘要 + 最近 10 条',
-    fresh !== undefined && (await (fresh as JsonlSessionStorage).getMessages()).length === 11);
+  check('C3 新分支视图 = 最近 10 条真实消息（摘要单一通道，不进历史）',
+    fresh !== undefined && (await (fresh as JsonlSessionStorage).getMessages()).length === 10
+    && !(await (fresh as JsonlSessionStorage).getMessages()).some((m) => m.content.includes('对话摘要')));
   check('C4 原文件未动：25 条、无 compaction',
     (await JsonlSessionStorage.open(storage.getFilePath()) as JsonlSessionStorage).getAllStored().length === 25
     && (await JsonlSessionStorage.open(storage.getFilePath()) as JsonlSessionStorage).getCompactions().length === 0);
