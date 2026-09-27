@@ -82,6 +82,10 @@ import {
   gitWritePermissionDetail, gitWritePermissionKey, pushFollowUpArgs,
   renderCommitResult, renderPushResult, renderWriteFailure,
 } from '../git/write.js';
+// commit message 自动生成（ROADMAP 10.5.3）：纯函数模块，handler 在跑 commit 前调它
+import { generateCommitMessage } from '../project/commit-message.js';
+// 规约正文（10.2.1）：commit 留空时取这里的格式约定；运行期单例，只在这里读一次
+import { rulesRegistry } from '../project/rules.js';
 // 起子进程的两处（bash / 自检）都走统一执行器 —— 它管住的是**整棵进程树**（ROADMAP 10.6.6）
 import { realPathOf, resolveToolPath } from './paths.js';
 // 工作区边界（ROADMAP 10.9.3）与回收站执行层（10.9.6）：`trash` 工具的判定与动手分在两处，
@@ -1619,7 +1623,7 @@ export function registerBuiltinTools(
     spec: {
       op: str('操作', `要做的操作：${GIT_WRITE_OPS.join(' / ')}`),
       path: optStr('暂存路径', 'add 用：**必填**，要暂存什么（仓库根相对或绝对路径；要暂存本目录下全部改动就写 "."）。示例: "src/tools"', ''),
-      message: optStr('提交消息', 'commit 用：**必填**，提交消息（本工具不开编辑器，空消息会被拒）。示例: "fix(git): 修正路由判据"', ''),
+      message: optStr('提交消息', 'commit 用：留空时**基于已暂存的改动自动生成**（格式默认 Conventional Commits，规约文件可改；生成失败会让你显式给出）。要自己写就直接填，示例: "fix(git): 修正路由判据"', ''),
       remote: optStr('远端', 'push 用：远端名或 URL，留空 = 用配置好的上游。与 branch **成对**给。示例: "origin"', ''),
       branch: optStr('分支', 'push 用：要推的分支名，留空 = 当前分支。与 remote **成对**给。示例: "main"', ''),
       force: optStr('强制模式', 'push 用：留空 = 只推能快进的（安全默认）；"lease" = --force-with-lease；"overwrite" = --force（会盖掉远端提交）。示例: "lease"', ''),
@@ -1632,7 +1636,6 @@ export function registerBuiltinTools(
         const check = checkWriteArgs(args);
         if (check.params === null) return toolInvalid(check.problem ?? '参数不合法');
         const p = check.params;
-        const argv = buildGitWriteArgs(p);
         const { execFileSync } = await import('node:child_process');
 
         /** 跑一条 argv（不经 shell）。失败一律走同一个"打码 + 认原因"的出口 */
@@ -1672,6 +1675,34 @@ export function registerBuiltinTools(
           }
         };
 
+        // ── 10.5.3：commit 消息留空时，先读已暂存的 diff 自动生成，再构造 argv ──
+        //    放在 run 定义之后、构造 commit argv 之前：先确认"有没有已暂存的改动"，
+        //    没有就直接回绝（比让 git 自己报 "nothing to commit" 清楚），有就生成写回 p.message。
+        //    这一步只读（git diff --cached），不经 shell、不写仓库，安全。
+        if (p.op === 'commit' && p.message.trim() === '') {
+          const staged = run(
+            ['-c', 'core.quotepath=false', '-c', 'color.ui=false', 'diff', '--cached', '--numstat'],
+            15_000,
+          );
+          if (!staged.ok) {
+            return toolInvalid('commit 的 message 留空了：本想基于已暂存的改动自动生成提交消息，'
+              + '但读取暂存区这一步没跑成（' + staged.text + '）。请显式给出 message，或先 op=add 暂存改动。');
+          }
+          const files = parseNumstat(decodeChildOutput(staged.out));
+          if (files.length === 0) {
+            return toolInvalid('commit 的 message 留空了，但当前没有**已暂存的改动**可供生成'
+              + '（git diff --cached --numstat 没有任何输出）。请先 op=add 暂存要提交的内容，'
+              + '或显式给出 message。');
+          }
+          const generated = generateCommitMessage({ files, rulesText: rulesRegistry.get()?.text ?? null });
+          // files 非空时 generated 必非 null；这里兜底，避免任何路径漏出空消息
+          p.message = generated ?? '';
+          if (p.message.trim() === '') {
+            return toolInvalid('commit 的 message 留空，且自动生成未能产出内容。请显式给出 message。');
+          }
+        }
+
+        const argv = buildGitWriteArgs(p);
         const first = run(argv, WRITE_TIMEOUT_MS[p.op]);
         if (!first.ok) return toolError(first.text);
 

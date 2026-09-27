@@ -223,7 +223,9 @@ export function checkWriteArgs(args: unknown): WriteCheck {
 
 /**
  * 逐 op 的形状校验。**落在纯函数里**而不是全塞进 spec：`tools/spec.ts` 表达不了
- * "仅当 op=commit 时 message 必填"（同 blame 的 path，判据只能写在 handler 这一侧）。
+ * "仅当 op=commit 且 message 留空时走自动生成"这种跨字段语义（同 blame 的 path，
+ * 判据只能写在 handler 这一侧）。commit 的 message 留空不再在这里拒 —— 放行给 handler，
+ * 由它在跑 commit 前基于已暂存 diff 生成（ROADMAP 10.5.3）。
  */
 export function validateWriteParams(p: GitWriteParams): string | null {
   if (p.op === 'add') {
@@ -233,11 +235,10 @@ export function validateWriteParams(p: GitWriteParams): string | null {
     return null;
   }
   if (p.op === 'commit') {
-    if (p.message.trim() === '') {
-      return 'commit 需要 message，而且**不能靠编辑器**：本工具不经 shell、也不开编辑器，'
-        + '空消息只会让 git 直接中止（实测 `git commit -m ""` → "Aborting commit due to '
-        + 'empty commit message."）。另外本工具只提交**已经暂存**的改动 —— 还没暂存就先 op=add。';
-    }
+    // message 留空 = 请求基于已暂存的 diff 自动生成（ROADMAP 10.5.3）。
+    // 这里不再以"空消息"拒 —— 否则自动生成这条路永远走不进来。
+    // 真正的"有没有东西可提交"由 handler 在跑 commit 前确认：无已暂存改动会明确回绝，
+    // 有就调 generateCommitMessage 写好再提交。
     return null;
   }
   // push：两个位置参数都落在 `--` **之前**，任一以 "-" 开头都会被 git 当选项

@@ -151,11 +151,11 @@ console.log('【③ 校验与分类（判成 [INVALID] 才对 —— 原样重�
 }
 {
   const r = checkWriteArgs({ op: 'commit', message: '' });
-  check('C2 commit 空消息 → 拒，且说明"不开编辑器"（否则模型以为空着就会弹编辑器）',
-    r.params === null && (r.problem ?? '').includes('编辑器'));
+  check('C2 commit 空消息**不再被 validate 拒**：留空 = 请求自动生成（10.5.3），由 handler 跑前确认有没有暂存改动',
+    r.params !== null && validateWriteParams(P({ op: 'commit', message: '' })) === null);
 }
-check('C3 **只空白的**消息也算空（否则会提交一条没有主题的提交）',
-  checkWriteArgs({ op: 'commit', message: '   \n ' }).params === null);
+check('C3 **只空白的**消息现在也放行（同样走自动生成，不再以"空"拒）',
+  checkWriteArgs({ op: 'commit', message: '   \n ' }).params !== null);
 {
   const r = checkWriteArgs({ op: 'push', remote: '--force' });
   check('C4 remote 以 `-` 开头 → 拒，原因是"那位置要填名字"（分类对：原样重试必然再错）',
@@ -193,9 +193,10 @@ check('C10 未知 op 的原因里点名可用项（模型据此改参数，而�
 check('C11 原始 args 形状完全不对（null / 数组 / 数字）→ 不抛异常，一律判成"未知操作"',
   checkWriteArgs(null).params === null && checkWriteArgs([1]).params === null
   && checkWriteArgs(42).params === null);
-check('C12 validateWriteParams 与 checkWriteArgs 用同一套判据（不是两处各写一遍）',
+check('C12 validateWriteParams 与 checkWriteArgs 用同一套判据（空消息两处都放行，不为自动生成设卡）',
   validateWriteParams(P({ op: 'commit', message: 'x' })) === null
-  && validateWriteParams(P({ op: 'commit', message: '' })) !== null);
+  && validateWriteParams(P({ op: 'commit', message: '' })) === null
+  && checkWriteArgs({ op: 'commit', message: '' }).params !== null);
 
 console.log('');
 console.log('【④ 权限身份：授权键 与 弹窗文案】');
