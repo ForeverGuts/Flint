@@ -25,6 +25,7 @@ import { readProjectSnapshot } from '../project/snapshot.js';
 import { commandRegistry, renderCommandsSection } from '../project/commands.js';
 import { renderStackSection, stackRegistry } from '../project/stack.js';
 import { renderRulesSection, rulesRegistry } from '../project/rules.js';
+import { renderRepoStatusSection, repoStatusRegistry } from '../project/repo-status.js';
 import { planMode, renderPlanBanner } from '../loop/plan-mode.js';
 import { EVENTS_FILE, eventStore } from '../eventlog/store.js';
 import { recordPermissionChoice } from '../permission/audit.js';
@@ -816,6 +817,9 @@ export class Runtime {
     // 而运行期回读会让模型 write AGENTS.md 就改写自己下一轮的注入内容。
     // 没命中 → 空串 → 该节缺席，memory 层逐字与接入前相同（"没有就不注入"）。
     const rulesSection = renderRulesSection(rulesRegistry.get());
+    // 仓库状态（10.5.5）：与画像 / 规约 / 命令表**同一手法** —— 播种时（启动与切项目）探一次进注册表，
+    // 运行期只渲染不回读。⚠C4 边界：这是会话起点快照，非 git 仓库时探针返回 null → 空串 → 整段缺席。
+    const repoStatusSection = renderRepoStatusSection(repoStatusRegistry.get());
     // 计划模式横幅（10.4.1）：**每轮现取**（它是个会中途变的状态，不像规约那样"会话内不该变"）。
     // 为什么值得每轮注入、而不是等它撞一次墙：这正是 10.2.1 的立场 —— 把当前规则放进视野，
     // 比事后纠正便宜。不注入的话，模型每轮都要先白试 write / edit / bash 三次才知道自己在
@@ -840,6 +844,7 @@ export class Runtime {
       project: projectSnapshot,
       stack: stackSection === '' ? undefined : stackSection,
       commands: commandsSection === '' ? undefined : commandsSection,
+      repo: repoStatusSection === '' ? undefined : repoStatusSection,
       task: taskMemory,
       rules: rulesSection === '' ? undefined : rulesSection,
       plan: planBanner,

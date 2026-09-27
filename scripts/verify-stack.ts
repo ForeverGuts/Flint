@@ -20,7 +20,7 @@
  *   ⑤ 源码守护 —— 判据不碰 fs / 不起进程；原料清单**接 detect.ts 那份、不另开**；
  *      方向单向；探针是唯一做 IO 的地方；播种处重探；两半同刻播种
  *   ⑥ 行为证明 —— 真目录真探针；真播种（含**切到空目录必须清掉旧画像**）；
- *      真 SystemPromptServiceImpl 的三半合成与整层缺席；端到端"探测 → 命令表"
+ *      真 SystemPromptServiceImpl 的四半合成与整层缺席；端到端"探测 → 命令表"
  *
  * 运行：node node_modules/tsx/dist/cli.mjs scripts/verify-stack.ts
  *      （npm run verify 会自动发现本文件，无需登记）
@@ -321,10 +321,11 @@ check('E9 runtime 每轮渲染并注入画像段；空段传 undefined（半段�
   runtimeSrc.includes('renderStackSection(stackRegistry.get())')
   && runtimeSrc.includes("stackSection === '' ? undefined : stackSection")
   && runtimeSrc.includes('stack: stackSection'));
-check('E10 project 层从两半扩成**三半**，且内部顺序是 现状 → 画像 → 命令表',
-  /if \(ctx\.project \|\| ctx\.stack \|\| ctx\.commands\)/.test(spSrc)
+check('E10 project 层从三半扩成**四半**（现状 → 画像 → 命令表 → 仓库状态），条件含 ctx.repo',
+  /if \(ctx\.project \|\| ctx\.stack \|\| ctx\.commands \|\| ctx\.repo\)/.test(spSrc)
+  && spSrc.indexOf('parts.push(`[项目现状]') < spSrc.indexOf('parts.push(ctx.stack)')
   && spSrc.indexOf('parts.push(ctx.stack)') < spSrc.indexOf('parts.push(ctx.commands)')
-  && spSrc.indexOf('parts.push(`[项目现状]') < spSrc.indexOf('parts.push(ctx.stack)'));
+  && spSrc.indexOf('parts.push(ctx.commands)') < spSrc.indexOf('parts.push(ctx.repo)'));
 check('E11 SystemPromptContext 里有 stack 位（类型层没漏；分层序 union 未动，由 verify-commands 钉）',
   /stack\?: string \| undefined;/.test(coreSpSrc));
 

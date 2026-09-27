@@ -71,6 +71,7 @@
 │                      **没有 package.json 绝不认 npm**；原料表 = detect 的 MANIFEST_FILES ∪ 探测专用，单向不回流）
 │                   · rules.ts **项目规约读取**（10.2.1，**判据纯函数**、只 import node:path：3 级 × AGENTS.md / CLAUDE.md 首命中、
 │                     **到盘根就停**、空文件不算命中；**折进 memory 层内分节**而不新开一层，播种一次、运行期不回读）
+│                   · repo-status.ts **仓库状态注入**（10.5.5，2026-09-27：registry `repoStatusRegistry` 播种时一次性写入 + probe 跑 `git status --porcelain=v1 -z --branch --untracked-files=all` 复用 `git.ts` 的 `parseStatus` 压成 `summarizeRepoStatus` 视图；非 git 仓库整段缺席；project 层"三半"合成扩为"四半"，层序承重不变）
 │ git/              git 只读结构化（git.ts：op 白名单 + argv 不经 shell + 8 个 op 的解析渲染 + 分支描述单源）· write.ts **写侧纯判据**（10.5.2：add/commit/push，`--` 形状围栏 + force 三档与另一把权限键）· route.ts bash 裸 git 只读命令的路由（**不是闸**）
 │ process/          子进程**整树终止**（proctree.ts 纯策略：Windows taskkill /T · POSIX 负 pid 进程组 · 失败分类；runner.ts 执行器：异步 spawn + 超时按树杀 + 宽限期兜底）——`bash` 与改完自检**两处共用**
 │ input/            `@file` 输入引用（10.8.1）：at-file.ts 判据纯函数（零 import）· probe.ts 探针（唯一碰 fs 处）

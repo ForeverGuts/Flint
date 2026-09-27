@@ -283,11 +283,12 @@ check('F8 空表 → 传 undefined（半段缺席，不塞空串进提示词）'
   runtimeCode.includes("commandsSection === '' ? undefined : commandsSection"));
 check('F9 system-prompt 的 project 层把 commands 拼进同一条消息',
   /layer: 'project'/.test(spCode) && spCode.includes('ctx.commands'));
-// ⚠ 2026-09-17 本条**必然要改**（同 C10 那类"新增能力动了既有断言"）：project 层自
-//   ROADMAP 10.1.1（技术栈画像）起从**两半**扩成**三半**，正则跟着扩。改的是"哪几半算一层"，
-//   不是"哪一层"——层序（F12/F13）与"没有就不注入"的纪律都没动。
-check('F10 三半都无 → project 层整层缺席（维持"没有就不注入"）',
-  /if \(ctx\.project \|\| ctx\.stack \|\| ctx\.commands\)/.test(spCode));
+// ⚠ 2026-09-27 本条**必然要改**（同 C10 那类"新增能力动了既有断言"）：project 层自
+//   ROADMAP 10.1.1（技术栈画像）起从**两半**扩成**三半**，2026-09-27 因 10.5.5（仓库状态注入）
+//   再扩成**四半**，正则跟着扩。改的是"哪几半算一层"，不是"哪一层"——层序（F12/F13）
+//   与"没有就不注入"的纪律都没动。
+check('F10 四半都无 → project 层整层缺席（维持"没有就不注入"）',
+  /if \(ctx\.project \|\| ctx\.stack \|\| ctx\.commands \|\| ctx\.repo\)/.test(spCode));
 check('F11 SystemPromptContext 里加了 commands 位（类型层没漏）',
   /commands\?: string \| undefined;/.test(coreSpCode));
 // 分层序是**承重的**（越稳定越靠前）：命令表并进 project 层，不能把它挪到别处去

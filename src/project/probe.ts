@@ -30,6 +30,8 @@ import { normalizeProjectPath } from '../eventlog/registry.js';
 import { MANIFEST_FILES, judgeProject, type ProjectProbes, type ProjectVerdict } from './detect.js';
 import { STACK_CANDIDATES, type StackProbes } from './stack.js';
 import { clipRules, rulesCandidates, type RulesHit } from './rules.js';
+import { parseStatus } from '../git/git.js';
+import { summarizeRepoStatus, type RepoStatusView } from './repo-status.js';
 
 /**
  * 实物档案的落点 —— 任一存在，就是"flint 真在这儿工作过"。
@@ -146,4 +148,30 @@ export function probeRules(dir: string): RulesHit | null {
     return { name: c.name, level: c.level, text };
   }
   return null;
+}
+
+/**
+ * 仓库状态的探针（ROADMAP 10.5.5）—— 跑一次 `git status --porcelain=v1 -z --branch`，
+ * 把字节交给 git.ts 的 `parseStatus`（**全仓唯一的 porcelain 解析**，不重造轮子），
+ * 再压成展示视图 `summarizeRepoStatus`。
+ *
+ * 探不到就返回 `null`（"不是 git 仓库 / git 不在 PATH / 超时"）—— 与 probeStack / probeRules 同一
+ * 口径（认不出即丢弃，不抛）。后果只有一个方向：注册表是 null、注入时整段【仓库状态】缺席，
+ * 模型照样可以 `git status` 工具自查。绝不因为"探不动"让启动失败。
+ *
+ * 成本（回答 C9）：只有一次 `execFileSync`（不经 shell、3s 超时），且**只在播种时跑一次**
+ * （启动 / 切项目），运行期不回读——与 stack / rules 同一纪律。⚠C4 的"状态会变"由标题里的
+ * "会话起点快照"明示，实时性交给 git 工具，本段不负责刷新。
+ */
+export function probeRepoStatus(dir: string): RepoStatusView | null {
+  try {
+    const out = execFileSync(
+      'git',
+      ['status', '--porcelain=v1', '-z', '--branch', '--untracked-files=all'],
+      { cwd: dir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 3000 },
+    );
+    return summarizeRepoStatus(parseStatus(out));
+  } catch {
+    return null;
+  }
 }

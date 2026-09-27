@@ -85,9 +85,10 @@ import { normalizeProjectPath, projectRegistry } from '../eventlog/registry.js';
 import { charterLock } from '../project/charter.js';
 import { workspaceGrants } from '../permission/workspace.js';
 import { persistedGrants } from '../permission/grants.js';
-import { classifyProject, probeStack, probeRules } from '../project/probe.js';
+import { classifyProject, probeStack, probeRules, probeRepoStatus } from '../project/probe.js';
 import { detectStack, stackRegistry } from '../project/stack.js';
 import { rulesRegistry } from '../project/rules.js';
+import { repoStatusRegistry } from '../project/repo-status.js';
 import type { ProjectVerdict } from '../project/detect.js';
 
 /** 清单落点（cwd 根，不是 .flint/ 下——历史原因，见 todo/store.ts） */
@@ -176,6 +177,12 @@ export function seedProjectContext(opts: SeedOptions = {}): ProjectContextReport
   //     漏了 `clear()` 就会把上一个项目的放行目录带过来（静默且危险）。
   //   一句话：**替换语义不需要先清，累加语义必须写清**。
   rulesRegistry.set(probeRules(process.cwd()));
+
+  // 仓库状态（ROADMAP 10.5.5）：与画像 / 规约**同一判断** —— 都是"这个项目长什么样"的展示内容，
+  // 播种时（启动与切项目）探一次进注册表，运行期只渲染不回读。它不是授权类配置，切项目时
+  // 应当重探（新项目有它自己的 git 状态）。⚠C4 边界：这是会话起点快照，实时状态交给 git 工具，
+  // 标题里已明示；非 git 仓库 → 探针返回 null → 整段缺席，模型仍可 `git status` 自查。
+  repoStatusRegistry.set(probeRepoStatus(process.cwd()));
 
   // 目标文档的锁**不跨项目继承**：新项目一律从"已锁"开始（要改就再 /charter unlock）。
   charterLock.lock();

@@ -11,6 +11,21 @@
 
 ---
 
+<a id="log-2026-09-27-repo-status"></a>
+
+## 2026-09-27 21:00 | 项目层"三半"合成演进为"四半"：仓库状态注入成为第四半
+
+**牵连系统/层次**：`extensions/sections/project.ts`（注入层）· `registry/repo-status.ts`（注册表）· `probe/repo-status.ts`（探针）· `summarize/repo-status.ts`（纯视图）· 受影响 `verify-stack.ts` E10 / `verify-commands.ts` F10（把"三半"断言改为"四半"顺序断言，项数维持 72/82，红→绿不增不减）。
+
+**面向的问题**：模型不知道自己当前在哪条分支、领先/落后远端多少、工作区有没有脏文件，每次都要靠 `bash "git status"` 现猜。
+
+**做出的改动**：project 层现状快照的合成从"现状 + 技术栈画像 + 命令表"三半扩成"现状 + 技术栈画像 + 命令表 + 仓库状态"四半；仓库状态为**可选半**——非 git 仓库整半缺席。probe 复用 `git.ts` 的 `parseStatus`（零新增依赖）；注册表播种时一次性写入，运行期不回读。
+
+**解决的问题**：一进门即知"在哪条分支 / 领先落后多少 / 脏不脏"，且与 `git` 工具同源数据，不另造一套 git 解析。
+
+**未来可优化**：若日后需要"运行期实时重注"，再评估是否接入 onChange（当前刻意不做，见 DECISION_LOG `log-2026-09-27-repo-status`）。
+
+
 <a id="log-2026-09-24-read-guard"></a>
 
 ## 2026-09-24 20:55 | read 的体检接进扫描遍历的同一份判定：`search` 层第一次向 `tools` 层输出一个共享判据函数

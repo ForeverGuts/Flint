@@ -169,6 +169,9 @@ cwd 下 `.flint/` 里的**生命周期三件套**之一（另两个是 `PROJECT.
 
 参见：[Project Metadata（项目元数据）](#project-metadata项目元数据) · [Check](#check)
 
+### 仓库状态注入（Repo Status Injection）
+ROADMAP 10.5.5（2026-09-27 落地）：让模型一进门就知道自己在哪条分支、领先/落后远端多少、工作区有没有未提交改动。落在 project 层"四半"合成的**第四半**【仓库状态】段：数据由播种时跑一次的 `probeRepoStatus`（`git status --porcelain=v1 -z --branch --untracked-files=all`）产出，复用 `git.ts` 的 `parseStatus` 压成 `summarizeRepoStatus` 视图，注册表 `repoStatusRegistry` 一次性写入、运行期不回读。非 git 仓库 → 探测 null → 整段缺席。⚠ **是会话起点快照，不是实时状态**：运行期 git 变了不会自动重注，要最新用 `git` 工具现查。
+
 ## D
 
 ### 危险命令拦截（Danger Gate）

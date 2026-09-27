@@ -61,6 +61,13 @@ export interface SystemPromptContext {
    */
   commands?: string | undefined;
   /**
+   * 仓库状态（git 当前分支 / 领先落后 / 工作区脏净，渲染结果，可选）—— ROADMAP 10.5.5。
+   * **与 project 快照 / 画像 / 命令表同一层**（都答"这个项目长什么样"），没有则不注入。
+   * 它是**会话起点快照**（播种时探一次），实时状态靠 `git` 工具自查；非 git 仓库 → 整段缺席。
+   * 位置排在命令表之后：先知道"在哪、用什么、能跑什么"，再知道"git 当前在哪"。
+   */
+  repo?: string | undefined;
+  /**
    * 项目规约（`AGENTS.md` / `CLAUDE.md` 的首命中，渲染结果，可选）—— ROADMAP 10.2.1。
    * **与 memory 同一层**（`layer: 'memory'`），但在同一条消息里**排在项目记忆之前**：
    * 两者权威来源不同 —— 这份是**人写下的规矩**、那份是**模型自己攒的结论**，冲突时以人为准，
