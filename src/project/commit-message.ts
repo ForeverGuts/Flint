@@ -22,7 +22,7 @@
  * ── "格式取规约文件"具体指什么 ──
  * 默认走 **Conventional Commits**（`type(scope): subject`）。规约文件（AGENTS.md / CLAUDE.md）
  * 若写明了"不要用 Conventional Commits / 提交用中文"，本模块识别到就退回纯中文一行式
- * （`scope: 改动 N 个文件`）。除此之外**不解析任意模板**：规约里的格式写法千奇百怪，
+ * （`改动 N 个文件`，**不带任何前缀**）。除此之外**不解析任意模板**：规约里的格式写法千奇百怪，
  * 真去解析等于引入一套没人拍过板的语法，与本项目"判据只认结构性信号"的纪律相悖。
  *
  * ── 复用口径（不另搓一份）──
@@ -186,7 +186,11 @@ function buildSubject(
     ? `更新 ${basename(files[0]!.path)}`
     : `改动 ${summary.files} 个文件`;
   if (!fmt.conventional) {
-    return scope ? `${scope}: ${what}` : what;
+    // 纯中文一行式：**不带任何前缀**，连 scope 也不带。
+    // 2026-09-28 实测改掉：早先写成 `scope: 描述`，产出 "git: 更新 write.ts" —— scope 是
+    // **目录名**，顶在冒号前会被当成提交类型（比 Conventional 的 `feat` 更误导：feat 至少
+    // 真是类型词，git 只是个文件夹）。位置信息不靠标题补：正文已逐行列出完整路径。
+    return what;
   }
   const head = scope ? `${type}(${scope})` : type;
   return `${head}: ${what}`;

@@ -137,15 +137,20 @@ check('E5 二进制文件 → 正文标"（二进制）"而非行数',
   (() => { const m = generateCommitMessage({ files: files('-\t-\tlogo.png\n') })!;
     return m.includes('logo.png（二进制）') && !m.includes('logo.png (+'); })(),
   generateCommitMessage({ files: files('-\t-\tlogo.png\n') }) ?? 'null');
+/** opt-out 下不该出现的两种前缀形状：Conventional 类型词，以及任何"英文词:"（含 scope 目录名） */
+const TYPE_WORD_RE = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(|$)/;
+const ASCII_LABEL_RE = /^[A-Za-z][\w./-]*\s*[:：]/;
 {
-  // opt-out：规约说不要 Conventional → 标题是 "scope: 描述"，不含任何类型词
+  // opt-out：规约说不要 Conventional → 标题是**纯中文一句话，不带任何前缀**。
+  // 2026-09-28 实测改掉早先的 "git: 更新 write.ts"：scope 是目录名，顶在冒号前会被当成
+  // 提交类型。位置信息不靠标题补——正文已逐行列出完整路径。
   const msg = generateCommitMessage({
     files: files('5\t3\tsrc/git/write.ts\n'),
     rulesText: '提交消息不要用 Conventional Commits，用中文一句话说明。',
   })!;
   const subject = msg.split('\n')[0]!;
-  check('E6 opt-out → 标题走纯中文 "git: 更新 write.ts"，且不含 Conventional 类型词（feat/fix/…）',
-    subject === 'git: 更新 write.ts' && !/^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(|$)/.test(subject),
+  check('E6 opt-out（单文件有 scope）→ 标题 "更新 write.ts"，既无类型词也无 "git:" 这类前缀',
+    subject === '更新 write.ts' && !TYPE_WORD_RE.test(subject) && !ASCII_LABEL_RE.test(subject),
     subject);
 }
 check('E7 多文件超 20 条时正文封顶并标"共 N 个文件"（防止消息爆长，验证手段而非死板数字）',
@@ -154,6 +159,18 @@ check('E7 多文件超 20 条时正文封顶并标"共 N 个文件"（防止消�
     const m = generateCommitMessage({ files: files(many) })!;
     return m.includes('…（共 25 个文件）') && (m.match(/\(\+\d+ −\d+\)/g) ?? []).length === 20;
   })());
+{
+  // E6 只覆盖了"单文件"；多文件且能推断出 scope 时才是早先 `scope: 描述` 露馅的地方
+  // （会产出 "git: 改动 2 个文件"）。补这一条把该形态钉住。
+  const msg = generateCommitMessage({
+    files: files('1\t0\tsrc/git/a.ts\n2\t0\tsrc/git/b.ts\n'),
+    rulesText: '提交消息不要用 Conventional Commits，用中文一句话说明。',
+  })!;
+  const subject = msg.split('\n')[0]!;
+  check('E8 opt-out（多文件有 scope）→ 标题 "改动 2 个文件"，不出现 "git:" 这类目录名当前缀',
+    subject === '改动 2 个文件' && !subject.includes('git') && !ASCII_LABEL_RE.test(subject),
+    subject);
+}
 
 console.log('');
 console.log(`结果：${passed} 通过 / ${failed} 失败（共 ${passed + failed} 项）`);
