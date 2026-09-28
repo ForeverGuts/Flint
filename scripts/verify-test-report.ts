@@ -326,7 +326,9 @@ check('F4 只有编译器诊断时走诊断路径（与接本功能前逐字一�
   tscOnly === summarizeByDiagnostics(mixed.diagnostics), tscOnly);
 
 const tapOnly = summarizePostcheckOutput('', TAP_TWO);
-check('F5 纯测试器输出不再退回「掐头留尾」（原来会只剩 `# duration_ms` 那种尾行）',
+// 措辞按实测来（2026-09-28 探针）：改前不是"只剩尾行"，而是"截成 30 行、后面的失败用例
+// 连名字带位置整条落在省略区"（第一个用例的块其实还在，只是塞满 duration / stack 噪音）。
+check('F5 纯测试器输出不再退回「按行截断」（原来会把后面的失败用例整条丢进省略区）',
   tapOnly.includes('✗') && !tapOnly.includes('# fail 2'), tapOnly.split('\n')[0]);
 check('F6 两类都认不出时仍退回按行摘要（fail-safe 朝多给噪音倒）',
   summarizePostcheckOutput('x\ny\nz', '') === 'x\ny\nz');
