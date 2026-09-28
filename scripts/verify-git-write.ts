@@ -56,7 +56,9 @@ import {
   type GitWriteParams,
 } from '../src/git/write.js';
 import { PLAN_BLOCKED_TOOLS, guardPlanMode, renderPlanReason } from '../src/loop/plan-mode.js';
-import { linkCommitToTask, taskLinkError, type CommitLinkRequest } from '../src/git/commit-link.js';
+import {
+  linkCommitToTask, suggestTaskLink, taskLinkError, type CommitLinkRequest,
+} from '../src/git/commit-link.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -599,8 +601,41 @@ check('G20 不自己抄一份「凭据打码」（复用 git.ts 的 redactCreden
   check('G32 接线：关联结果拼进了回执（否则模型看不出这次到底连没连上）',
     /link\.text/.test(gwToolCode));
 
+  // ── 提醒（判据 ③：提醒可以做进程序，决定不行）──
+  check('G34 有候选（进行中那项）→ 点名它的序号与文本、要求**先问用户**，'
+    + '且**只给模板不给结论**（文案里不许出现 task=2 这种现成实参，否则模型会照抄着直接带）',
+    (() => {
+      const s = mk(3); s.start(2);
+      const h = suggestTaskLink(s);
+      return h !== null && h.includes('第 2 项') && /先问用户/.test(h) && !/task=\d/.test(h)
+        && !h.includes('第 1 项') && !h.includes('第 3 项');
+    })());
+  check('G35 已完成（done）也算候选 —— 一件活儿常常是做完才提交',
+    (() => {
+      const s = mk(2); s.start(2); s.done(2);
+      const h = suggestTaskLink(s);
+      return h !== null && h.includes('第 2 项');
+    })());
+  check('G36 ⚠ pending 不算候选：没开头的活儿挂上提交，读者会以为它做完了',
+    (() => {
+      const s = mk(3); s.start(1); s.done(1);
+      const h = suggestTaskLink(s);
+      return h !== null && h.includes('第 1 项')
+        && !h.includes('第 2 项') && !h.includes('第 3 项');
+    })());
+  check('G37 零噪音：清单为空 / 全是 pending → **null**（回执与加提醒之前逐字相同）',
+    suggestTaskLink(new TaskStore()) === null && suggestTaskLink(mk(3)) === null);
+  check('G38 ⚠ 接线：提醒挂在 **add 分支**里，且**没有**替模型给 p.task 赋值（提醒 ≠ 决定）',
+    (() => {
+      const at = gwToolCode.indexOf("if (p.op === 'add') {");
+      if (at < 0) return false;
+      const end = gwToolCode.indexOf("if (p.op === 'commit') {", at);
+      const block = gwToolCode.slice(at, end < 0 ? undefined : end);
+      return block !== '' && /suggestTaskLink/.test(block) && !/p\.task\s*=/.test(block);
+    })(), 'add 分支里没调 suggestTaskLink，或它替模型定了 task —— 后者等于换个人来猜');
+
   fs.rmSync(linkTmp, { recursive: true, force: true });
-  check('G33 临时目录已清理', !fs.existsSync(linkTmp));
+  check('G39 临时目录已清理', !fs.existsSync(linkTmp));
 }
 
 console.log('');

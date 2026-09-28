@@ -85,7 +85,7 @@ import {
 // commit message 自动生成（ROADMAP 10.5.3）：纯函数模块，handler 在跑 commit 前调它
 import { generateCommitMessage } from '../project/commit-message.js';
 // 任务 ↔ 提交关联（ROADMAP 10.5.4）：接缝模块，提交成功后把 hash 挂到任务项上 + 记事件
-import { linkCommitToTask, taskLinkError } from '../git/commit-link.js';
+import { linkCommitToTask, suggestTaskLink, taskLinkError } from '../git/commit-link.js';
 // 起子进程的两处（bash / 自检）都走统一执行器 —— 它管住的是**整棵进程树**（ROADMAP 10.6.6）
 import { realPathOf, resolveToolPath } from './paths.js';
 // 工作区边界（ROADMAP 10.9.3）与回收站执行层（10.9.6）：`trash` 工具的判定与动手分在两处，
@@ -1719,9 +1719,14 @@ export function registerBuiltinTools(
         //    复核那一步是本地只读（log -1 / status），超时按只读侧的口径给 15 秒
         const FOLLOW_UP_TIMEOUT = 15_000;
         if (p.op === 'add') {
+          // ── 10.5.4 提醒：暂存完正是"下一步要提交"的时刻，顺带问一句要不要关联任务 ──
+          //    只是提醒，绝不替模型带 task（那等于替它猜）—— 文案里明说"先问用户"。
+          //    没有候选时 hint 是 null，回执与加这个提醒之前**逐字相同**。
+          const hint = suggestTaskLink(store);
           return toolOk(`暂存完成：${p.path.trim()}\n`
             + '  下一步：op=commit 提交它（本工具只提交已暂存的改动）；'
-            + '要看暂存了什么，用只读的 git(op="status")。');
+            + '要看暂存了什么，用只读的 git(op="status")。'
+            + (hint === null ? '' : `\n  ${hint}`));
         }
 
         if (p.op === 'commit') {
