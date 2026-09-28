@@ -43,8 +43,10 @@
  *        「Found 42 errors」挤没了。改成先认出「哪些行是诊断」，按**条目**取舍。
  *   三者共用 `parseDiagnosticLine` —— 这正是把它们放在同一批做的原因：切三次不如切一次。
  *
- * 本文件**零 import**（无 node:fs / node:child_process）：解析与渲染是纯函数，可脱离终端验。
- *   读配置在 harness/main.ts（宽容读，读失败一律不启用），起进程在 tools/builtin.ts。
+ * 本文件**不 import 任何碰 fs / 子进程的东西**（无 node:fs / node:child_process）：解析与渲染是
+ *   纯函数，可脱离终端验。唯一的 import 是同层的纯函数模块 `test-report.ts`（10.6.3，认测试器
+ *   输出）—— 它同样零副作用，不破坏"可脱离终端验"。读配置在 harness/main.ts（宽容读，
+ *   读失败一律不启用），起进程在 tools/builtin.ts。
  *
  * 【已知边界，不装糊涂】超时只保证「**不再等它**」，不保证「**杀干净**」。
  *   2026-09-15 探针实测（WorkBuddy_Test/probe-treekill.mjs）：让子脚本 2 秒后写一个标记文件、
@@ -55,6 +57,17 @@
  *   真咬人时的修法是超时后按**进程树**终止（Windows 走 taskkill /T，POSIX 走进程组），
  *   那是一次横跨 bash 与自检的改动，不该塞进本条里顺手做。
  */
+
+import {
+  collectTestFailureKeys,
+  parseTestCounts,
+  parseTestFailures,
+  summarizeTestFailures,
+  testFailureKey,
+  TEST_MAX_FAILURES,
+  type TestCounts,
+  type TestFailure,
+} from './test-report.js';
 
 /** 登记表位置：项目自己声明「改完跑什么」的唯一落点 */
 export const POSTCHECK_FILE = '.flint/postcheck.json';
@@ -193,6 +206,63 @@ export function collectDiagnosticKeys(diagnostics: readonly Diagnostic[]): strin
 }
 
 /**
+ * 一段输出里认出来的「结构化的错」—— **两路并列**（10.6.3）：
+ *   `diagnostics` = 编译器诊断（tsc 那两种形态，见 parseDiagnosticLine）；
+ *   `failures`    = 测试器失败用例（`node --test` 的 TAP，见 test-report.ts）。
+ * 两路都认不出时两者皆空，调用方退回按行摘要（fail-safe 朝"多给噪音"倒）。
+ */
+export interface StructuredOutput {
+  diagnostics: Diagnostic[];
+  failures: TestFailure[];
+  /** 测试器自报的 counts（`counts` 只在认得出 `node --test` 统计行时非 null） */
+  counts: TestCounts | null;
+}
+
+/** 诊断键的命名空间前缀：防止测试失败的键（`文件|用例名`）与诊断键（`文件|码|消息`）撞车 */
+export const TEST_KEY_PREFIX = 'test|';
+
+/** 认一段输出里的全部结构化条目 */
+export function parseStructured(stdout: unknown, stderr: unknown): StructuredOutput {
+  return {
+    diagnostics: parseDiagnostics(stdout, stderr),
+    failures: parseTestFailures(stdout, stderr),
+    counts: parseTestCounts(stdout, stderr),
+  };
+}
+
+/** 结构化的条目总数（两类加起来） */
+export function countStructured(s: StructuredOutput): number {
+  return s.diagnostics.length + s.failures.length;
+}
+
+/** 按基线过滤掉「启动前就有」的那些。基线为 null（没采过）时原样返回 */
+export function filterStructured(
+  s: StructuredOutput,
+  baseline: readonly string[] | null,
+): StructuredOutput {
+  if (baseline === null) return s;
+  return {
+    diagnostics: s.diagnostics.filter((d) => !baseline.includes(diagnosticKey(d))),
+    failures: s.failures.filter(
+      (f) => !baseline.includes(TEST_KEY_PREFIX + testFailureKey(f)),
+    ),
+    counts: s.counts,
+  };
+}
+
+/** 渲染结构化条目：**测试失败优先**（理由见 summarizePostcheckOutput 上方那条注） */
+export function summarizeStructured(
+  s: StructuredOutput,
+  maxDiagnostics: number = POSTCHECK_MAX_DIAGNOSTICS,
+  maxFailures: number = TEST_MAX_FAILURES,
+): string {
+  const byTest = summarizeTestFailures(s.failures, s.counts, maxFailures);
+  if (byTest !== '') return byTest;
+  if (s.diagnostics.length > 0) return summarizeByDiagnostics(s.diagnostics, maxDiagnostics);
+  return '';
+}
+
+/**
  * 解析登记表。**严格**：任何一处读不懂就不启用（返回 null）。
  * 判据的理由 —— 这张表是用户手写的白名单，而「声明即授权」的另一面就是
  * **没声明好 = 没授权**：猜一半去跑，比干脆不跑危险得多。
@@ -312,10 +382,16 @@ export interface PostcheckRun {
 /**
  * 把命令输出压成一段能塞进工具结果的摘要。**纯函数**，不看退出码。
  *
- * 两条路径：
+ * 三条路径，**次序即优先级**（10.6.3 加的第 ⓪ 条）：
+ *   ⓪ **认得出失败用例** → 按**用例**取舍。`node --test` 一类测试器的输出里，失败信息散在
+ *      TAP 的长篇块里（用例名在一行、位置在下面好几行），按行截断会把它们一起切掉；
+ *      而「哪个用例挂了」恰恰是模型下一步最需要的那句话。
+ *      它排在诊断**之前**，理由：测试失败是**结论**、编译器诊断是**原因** ——
+ *      一段输出里两者都有时（先 tsc 再跑测试的那种登记表），先答"哪个用例挂了"，
+ *      模型才会去看那个用例，而不是先去啃一串类型错。
  *   ① **认得出诊断** → 按**条目**取舍（这是 2026-09-16 加的）。按行截断时，报错一多
  *      真正的错误会被尾部「Found 42 errors」那类结论行挤掉 —— 而结论行数自己就能报。
- *   ② **一条诊断都认不出** → 退回原来的按行掐头留尾。这是 fail-safe 的方向：
+ *   ② **两者都认不出** → 退回原来的按行掐头留尾。这是 fail-safe 的方向：
  *      宁可多给噪音，也不能让一段看不懂的输出被结构化的尝试啃掉内容。
  *
  * stdout 在前、stderr 在后：构建器（tsc / pytest 等）通常把错误写 stdout，
@@ -326,11 +402,14 @@ export function summarizePostcheckOutput(
   stderr: unknown,
   maxLines: number = POSTCHECK_MAX_LINES,
   maxDiagnostics: number = POSTCHECK_MAX_DIAGNOSTICS,
+  maxFailures: number = TEST_MAX_FAILURES,
 ): string {
-  const diagnostics = parseDiagnostics(stdout, stderr);
-  if (diagnostics.length > 0) {
-    return summarizeByDiagnostics(diagnostics, maxDiagnostics);
-  }
+  const structured = summarizeStructured(
+    parseStructured(stdout, stderr),
+    maxDiagnostics,
+    maxFailures,
+  );
+  if (structured !== '') return structured;
 
   const norm = (v: unknown): string =>
     typeof v === 'string' ? v.replace(/\r\n/g, '\n').replace(/\r/g, '\n') : '';
@@ -409,26 +488,28 @@ export function describePostcheck(
   }
   if (status === 0) return `${POSTCHECK_TAG} 通过（${command}）`;
 
-  // 只在「认得出诊断」且「有基线」时过滤；否则全量报（旧行为）
-  const diagnostics = parseDiagnostics(stdout, stderr);
-  const filtered = baseline !== null && diagnostics.length > 0
-    ? diagnostics.filter((d) => !baseline.includes(diagnosticKey(d)))
-    : diagnostics;
+  // 只在「认得出结构化条目」且「有基线」时过滤；否则全量报（旧行为）。
+  // 结构化 = 编译器诊断 ∪ 测试器失败用例（10.6.3）—— 两者都可能「启动前就挂着」，
+  // 都该被基线挡掉，否则模型会去改一个它没碰过的失败用例。
+  const all = parseStructured(stdout, stderr);
+  const allCount = countStructured(all);
+  const filtered = filterStructured(all, baseline);
+  const newCount = countStructured(filtered);
 
-  if (baseline !== null && diagnostics.length > 0 && filtered.length === 0) {
+  if (baseline !== null && allCount > 0 && newCount === 0) {
     return `${POSTCHECK_TAG} 未通过（${command}，退出码 ${status}），但没有新增问题`
-      + ` —— 报出来的还是启动前就有的那 ${diagnostics.length} 条。`
+      + ` —— 报出来的还是启动前就有的那 ${allCount} 条。`
       + (tail ? '改动已落盘；' : '')
       + '这些旧问题不归本次改动管，别顺手去改它们。';
   }
 
-  const body = filtered.length > 0 && filtered.length !== diagnostics.length
-    ? summarizeByDiagnostics(filtered)
+  const body = newCount > 0 && newCount !== allCount
+    ? summarizeStructured(filtered)
     : summarizePostcheckOutput(stdout, stderr);
 
-  const newNote = baseline !== null && diagnostics.length > 0 && filtered.length > 0
-    && filtered.length !== diagnostics.length
-    ? `（共 ${diagnostics.length} 条，其中 ${filtered.length} 条是本次新增）`
+  const newNote = baseline !== null && allCount > 0 && newCount > 0
+    && newCount !== allCount
+    ? `（共 ${allCount} 条，其中 ${newCount} 条是本次新增）`
     : '';
 
   return `${POSTCHECK_TAG} 未通过（${command}，退出码 ${status}）${newNote}：\n`
@@ -467,11 +548,26 @@ export function isRunPassed(run: PostcheckRun): boolean {
     && typeof run.errorCode !== 'string';
 }
 
-/** 从一轮自检结果里收集**全部**诊断身份（用于播种基线 / 比对） */
+/**
+ * 从一轮自检结果里收集**全部**结构化身份（用于播种基线 / 比对）。
+ * 两类键共用一个集合，靠命名空间前缀区分（`test|` vs 诊断的 `文件|码|消息`）——
+ * 基线只是一条"启动前就有这些"的清单，它不需要知道每一条是哪个测试器报的。
+ */
 export function collectRunKeys(runs: readonly PostcheckRun[]): string[] {
-  const all: Diagnostic[] = [];
-  for (const r of runs) all.push(...parseDiagnostics(r.stdout, r.stderr));
-  return collectDiagnosticKeys(all);
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  const push = (k: string): void => {
+    if (seen.has(k)) return;
+    seen.add(k);
+    keys.push(k);
+  };
+  for (const r of runs) {
+    for (const d of parseDiagnostics(r.stdout, r.stderr)) push(diagnosticKey(d));
+    for (const k of collectTestFailureKeys(parseTestFailures(r.stdout, r.stderr))) {
+      push(TEST_KEY_PREFIX + k);
+    }
+  }
+  return keys;
 }
 
 /**

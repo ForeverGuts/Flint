@@ -15,7 +15,8 @@
  *   ② 输出摘要 —— 空 / 单行 / 恰好等于上限 / 超一行 / 差量计数 / stdout 先 stderr 后
  *   ③ 结论渲染 —— 通过 / 未通过（含退出码与摘要）/ 超时 / 输出超缓冲 / 起不来 / 被信号中止
  *   ④ 内存单例 —— set / get / clear（测试卫生：模块级单例会跨套件残留）
- *   ⑤ 源码守护 —— 纯模块零 import；main.ts **只读一次**（运行期不回读）；两个 handler 都接；
+ *   ⑤ 源码守护 —— 纯模块只 import 同层纯模块（不碰 fs / 不起进程）；main.ts **只读一次**；
+ *      两个 handler 都接；
  *      追加用空行分隔
  *   ⑥ 行为证明 —— 真起子进程跑成功 / 失败 / 命令不存在 / 超时四种结局；
  *      以及端到端：用真 write 工具写文件，断言结果里带不带 [项目自检]，
@@ -241,8 +242,15 @@ const moduleCode = stripComments(moduleSrc);
 const mainCode = stripComments(fs.readFileSync(path.join(ROOT, 'src/harness/main.ts'), 'utf8'));
 const builtinCode = stripComments(fs.readFileSync(path.join(ROOT, 'src/tools/builtin.ts'), 'utf8'));
 
-check('E1 postcheck.ts 零 import（纯函数模块，解析渲染能脱离终端验）',
-  !/^import /m.test(moduleCode), ok(moduleCode.slice(0, 60)));
+// 2026-09-28（ROADMAP 10.6.3）：postcheck 不再是「零 import」—— 它 import 了同层的
+// test-report.ts（认测试器输出）。判据因此改成**看 import 的方向**：只许同层相对路径，
+// 不许 node: 内置模块、也不许往上够（上层 = tools / harness 那些碰 fs 与进程的地方）。
+// 意思没变：**解析与渲染仍然能脱离终端验**，只是「纯」的边界从"不 import 任何东西"
+// 变成"只 import 同样是纯函数的东西"。
+const moduleImports = [...moduleCode.matchAll(/from ['"]([^'"]+)['"]/g)].map((m) => m[1]);
+check('E1 postcheck.ts 只 import 同层纯函数模块（解析渲染能脱离终端验）',
+  moduleImports.length > 0 && moduleImports.every((s) => s.startsWith('./')),
+  moduleImports.join(',') || '（无 import）');
 check('E2 postcheck.ts 不碰 fs / 不起子进程（读写与起进程都在调用层）',
   !/node:(fs|child_process)/.test(moduleCode) && !/\b(spawnSync|execSync|readFileSync)\b/.test(moduleCode));
 check('E3 main.ts 在启动时读了登记表',
@@ -575,7 +583,7 @@ check('K14 总闸跳过的那条在多命令里仍说「未执行」（不是「
 console.log('\n⑫ 源码守护（三项增强的接线）');
 
 const mainSrc = fs.readFileSync(path.join(ROOT, 'src/harness/main.ts'), 'utf-8');
-const pcSrc = fs.readFileSync(path.join(ROOT, 'src/project/postcheck.ts'), 'utf-8');
+const pcSrc = stripComments(fs.readFileSync(path.join(ROOT, 'src/project/postcheck.ts'), 'utf-8'));
 check('L1 启动时播种基线（main.ts 里调了 seedPostcheckBaseline）',
   /await seedPostcheckBaseline\(\)/.test(mainSrc));
 check('L2 播种失败不影响启动（它是附加情报，不是启动的前置条件）',
@@ -584,8 +592,8 @@ check('L3 注册表没登记就不采基线（没登记 = 什么都不跑）',
   /if \(!postcheckRegistry\.get\(\)\) return;/.test(builtinCode));
 check('L4 builtin 里串行跑每一条（for...of，不是并发）',
   /for \(const command of config\.commands\)/.test(builtinCode));
-check('L5 纯模块仍然零 import（新增的三个能力没破坏这条）',
-  !/^import .*from/m.test(pcSrc.replace(/^import type .*$/gm, '')));
+check('L5 纯模块不反向依赖上层（不许 import ../ —— 层序是承重的）',
+  !/from ['"]\.\./.test(pcSrc));
 check('L6 基线的键**不含行列号**（含了就会因行号漂移全部误判成新错）',
   /return `\$\{d\.file\}\|\$\{d\.code\}\|\$\{d\.message\}`/.test(pcSrc));
 
