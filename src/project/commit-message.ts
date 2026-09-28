@@ -11,19 +11,22 @@
  * 于是这里把"从 diff 反推 message"抽成一个纯模块，让 handler 在跑 commit 前先补一句。
  *
  * ── 这份模块只做"基于结构"的生成，不做"读懂内容" ──
- * 输入只有两样都是**结构性**的东西：
- *   ① `git diff --cached --numstat` 的纯文本 —— 每行 `增\t删\t路径`，没有任何源码内容；
- *   ② 规约文件的正文（可选）—— 只用来判断"要不要走 Conventional Commits"。
+ * 输入只有一样、且是**结构性**的东西：`git diff --cached --numstat` 的纯文本 ——
+ *   每行 `增\t删\t路径`，没有任何源码内容。规约正文（AGENTS.md / CLAUDE.md）**不再参与**
+ *   （早先参与过，2026-09-28 删掉，理由见下）。
  * 我们**不读源码、不调任何语言模型**：靠路径特征（`.md` / `.test.ts` / `tsconfig.json` …）与
  * 行数统计反推，产出的是一条**草稿**，用户可在弹窗前/后改。
  * 这不是缺陷而是刻意的边界：读懂"这次到底改了什么业务逻辑"超出了 numstat 能给的信息，
  * 硬猜反而会比"让用户补一句"更糟。
  *
- * ── "格式取规约文件"具体指什么 ──
- * 默认走 **Conventional Commits**（`type(scope): subject`）。规约文件（AGENTS.md / CLAUDE.md）
- * 若写明了"不要用 Conventional Commits / 提交用中文"，本模块识别到就退回纯中文一行式
- * （`改动 N 个文件`，**不带任何前缀**）。除此之外**不解析任意模板**：规约里的格式写法千奇百怪，
- * 真去解析等于引入一套没人拍过板的语法，与本项目"判据只认结构性信号"的纪律相悖。
+ * ── 格式为什么不再取规约（2026-09-28 用户拍板删掉 opt-out）──
+ * 早先有一支"规约里写了'不要用 Conventional Commits'就退回纯中文一行式"。删掉它：
+ *   ① 中文一行式把**类型**这个信息整段丢了 —— "改动 2 个文件"既看不出是加功能还是修 bug，
+ *      机器也读不懂（自动汇总更新日志、自动定版本号全用不了）。拿一个明显更差的输出去
+ *      "尊重"一条多半是随口写下的规矩，不划算。
+ *   ② 真有项目要别的格式（Jira 编号、gitmoji …），正解是**调用方显式给 message**，
+ *      不是让本模块去解析模板 —— 那等于引入一套没人拍过板的语法。
+ * 于是格式固定为 **Conventional Commits**（`type(scope): subject`），规约正文不再参与。
  *
  * ── 复用口径（不另搓一份）──
  * numstat 解析与汇总**直接调** `git.ts` 的 `parseNumstat` / `summarizeFiles` ——
@@ -42,16 +45,9 @@ export type CommitType =
   | 'feat' | 'fix' | 'docs' | 'style' | 'refactor' | 'perf'
   | 'test' | 'build' | 'ci' | 'chore' | 'revert';
 
-/** 生成时所用的格式。默认 conventional；规约显式 opt-out 时退回纯中文 */
-export interface CommitFormat {
-  conventional: boolean;
-}
-
-/** 生成消息的入参（files 来自 numstat 解析；rulesText 来自 rulesRegistry，可空） */
+/** 生成消息的入参（files 来自 numstat 解析；格式固定 Conventional Commits，没有其它开关） */
 export interface CommitMessageOptions {
   files: DiffFile[];
-  /** 项目规约正文（AGENTS.md / CLAUDE.md）；没有就传 null/undefined → 走默认 Conventional */
-  rulesText?: string | null;
 }
 
 /** numstat 文本 → 文件清单 + 汇总（薄封装，调用方拿到的就是 git.ts 那套口径） */
@@ -146,30 +142,6 @@ export function inferScope(files: DiffFile[]): string | null {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   格式：默认 Conventional，规约可显式 opt-out
-   ───────────────────────────────────────────────────────────────────────────── */
-
-/**
- * 规约正文里若出现"不要用 Conventional Commits / 提交用中文"这类信号，就退回纯中文一行式。
- * 只认这一条显式 opt-out —— 不解析任意模板（理由见文件头）。
- *
- * 形状：**否定词（不 / 别）→ 同一句内的任意字 → 关键字（conventional / 约定式提交）**。
- * 中间那一段刻意写成 `[^句读]*?`（惰性、且**不跨句**）而不是"否定助词的字符集"——
- * 中文否定助词连写起来是"不要用""不要使用"这种两三个字，用字符集只能吃掉其中一个，
- * 剩下一个就卡在后面（2026-09-27 实测踩到：把"要用"当成 `[要]*` 只吃掉"要"，"用"挡住
- * 后面的关键字，整条判据恒不成立）。跨句限制是为了不让上一段的"不要"去否定下一段的关键词。
- */
-const CONV_OPT_OUT = /(?:不|别)[^。，、！？；：\n]*?(conventional|约定式提交)|commit\s*(消息|信息)\s*(用|采用)\s*(中文|自然语言|大白话)/i;
-
-/** 从规约正文提取格式。没有正文 / 没命中 opt-out → 默认 Conventional Commits */
-export function extractCommitFormat(rulesText: string | null): CommitFormat {
-  if (rulesText && rulesText.trim() !== '' && CONV_OPT_OUT.test(rulesText)) {
-    return { conventional: false };
-  }
-  return { conventional: true };
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
    拼装：subject + body
    ───────────────────────────────────────────────────────────────────────────── */
 
@@ -178,20 +150,21 @@ function basename(p: string): string {
   return i < 0 ? p : p.slice(i + 1);
 }
 
-/** 单行主题：单文件用文件名，多文件用"改动 N 个文件"（数字来自程序汇总，不随 locale 变） */
+/**
+ * 单行主题：`type(scope): 描述`。单文件用文件名，多文件用"改动 N 个文件"
+ * （数字来自程序汇总，不随 locale 变）。
+ *
+ * scope 放在括号里是安全的，**前提是冒号前第一个词是类型词**。2026-09-28 实测踩过反面：
+ * 早先的中文一行式没有类型词，scope 就被顶到了冒号前（`git: 改动 2 个文件`），而 `git`
+ * 只是个**目录名**，读者会当成提交类型 —— 比不加还误导。所以：scope 要么跟在类型词后面，
+ * 要么整个不带，绝不单独占用冒号前面的位置。
+ */
 function buildSubject(
-  type: CommitType, scope: string | null, files: DiffFile[], summary: FileSummary, fmt: CommitFormat,
+  type: CommitType, scope: string | null, files: DiffFile[], summary: FileSummary,
 ): string {
   const what = files.length === 1
     ? `更新 ${basename(files[0]!.path)}`
     : `改动 ${summary.files} 个文件`;
-  if (!fmt.conventional) {
-    // 纯中文一行式：**不带任何前缀**，连 scope 也不带。
-    // 2026-09-28 实测改掉：早先写成 `scope: 描述`，产出 "git: 更新 write.ts" —— scope 是
-    // **目录名**，顶在冒号前会被当成提交类型（比 Conventional 的 `feat` 更误导：feat 至少
-    // 真是类型词，git 只是个文件夹）。位置信息不靠标题补：正文已逐行列出完整路径。
-    return what;
-  }
   const head = scope ? `${type}(${scope})` : type;
   return `${head}: ${what}`;
 }
@@ -216,11 +189,10 @@ function buildBody(files: DiffFile[], summary: FileSummary): string {
 export function generateCommitMessage(opts: CommitMessageOptions): string | null {
   const files = opts.files ?? [];
   if (files.length === 0) return null;
-  const fmt = extractCommitFormat(opts.rulesText ?? null);
   const summary = summarizeFiles(files);
   const type = classifyChangeType(files);
   const scope = inferScope(files);
-  const subject = buildSubject(type, scope, files, summary, fmt);
+  const subject = buildSubject(type, scope, files, summary);
   const body = buildBody(files, summary);
   return `${subject}\n\n${body}`;
 }

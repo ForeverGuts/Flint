@@ -3,16 +3,17 @@
  *
  * 为什么需要它：本模块的**全部价值都在"从 diff 反推文案"的判断上**，而那几条判断都"错了也不报错"：
  *   · 分类错了（把 docs 判成 feat）→ 只是消息不准，git 照样提交成功；
- *   · scope 猜错了（`src` 当成了 scope）→ 只是标题多余一个词，没有任何症状；
- *   · opt-out 正则漏判 → 规约说"用中文"却还是出了 Conventional 标题，模型也看不出"本该不同"。
- * 这三条的共同点是**没有运行时报错**，所以只能靠断言盯着。
+ *   · scope 猜错了（`src` 当成了 scope）→ 只是标题多余一个词，没有任何症状。
+ * 共同点是**没有运行时报错**，所以只能靠断言盯着。
  *
  * 验什么（手段与行为分开钉，断言名字 = 它的射程，正反都给）：
  *   ① summarizeChanges —— numstat 解析 + 汇总（与 git.ts 的口径是否同一份）
  *   ② classifyChangeType —— 路径特征 → 类型（docs/test/style/config/code 各路径 + 混合兜底 + 空兜底）
  *   ③ inferScope —— 目录公共前缀 → scope（同子目录 / 仅 src / 根目录 / 单文件深层 / tests / 分叉 / 空）
- *   ④ extractCommitFormat —— 默认 Conventional + 规约显式 opt-out（含"只提约定式提交没说不要"的反例）
- *   ⑤ generateCommitMessage —— 组装（单文件 / 多文件 / scope 缺席 / 空 files 返回 null / 二进制标注 / opt-out 走纯中文）
+ *   ④ generateCommitMessage —— 组装（单文件 / 多文件 / scope 缺席 / 空 files 返回 null / 二进制标注 / 超 20 封顶）
+ *
+ * 2026-09-28：删掉原 ④（extractCommitFormat + 规约 opt-out）整段与相关断言 —— 用户拍板**格式固定
+ * 走 Conventional Commits**，规约正文不再参与。原 E6/E8（opt-out 标题形态）随之删除，E 段重编为 D 段。
  *
  * 运行：node node_modules/tsx/dist/cli.mjs scripts/verify-commit-message.ts
  * 退出码：failed > 0 → 1
@@ -21,7 +22,7 @@
  */
 import { parseNumstat, summarizeFiles, type DiffFile } from '../src/git/git.js';
 import {
-  classifyChangeType, extractCommitFormat, generateCommitMessage, inferScope, summarizeChanges,
+  classifyChangeType, generateCommitMessage, inferScope, summarizeChanges,
 } from '../src/project/commit-message.js';
 
 let passed = 0;
@@ -97,79 +98,45 @@ check('C7 空数组 → null',
   inferScope([]) === null);
 
 console.log('');
-console.log('【④ extractCommitFormat：默认 Conventional + 规约 opt-out】');
-check('D1 没有规约正文 → 默认 Conventional（conventional: true）',
-  extractCommitFormat(null).conventional === true);
-check('D2 规约正文为空串 → 默认 Conventional',
-  extractCommitFormat('   \n ').conventional === true);
-check('D3 规约只说"遵循 Conventional Commits"（没说不要）→ 仍是 Conventional',
-  extractCommitFormat('提交请遵循 Conventional Commits：type(scope): subject').conventional === true);
-check('D4 规约"不要用 Conventional Commits" → opt-out（conventional: false）',
-  extractCommitFormat('提交不要用 Conventional Commits，用中文写）。').conventional === false);
-check('D5 规约"commit 消息用中文" → opt-out',
-  extractCommitFormat('commit 消息用中文描述本次改动。').conventional === false);
-check('D6 规约只提"约定式提交"四个字、没说"不要" → 不误判为 opt-out（仍是 Conventional）',
-  extractCommitFormat('我们项目采用约定式提交规范。').conventional === true);
-
-console.log('');
-console.log('【⑤ generateCommitMessage：组装（单/多/空/scope/二进制/opt-out）】');
+console.log('【④ generateCommitMessage：组装（单/多/空/scope/二进制/超 20 封顶）】');
 {
   const msg = generateCommitMessage({ files: files('5\t3\tsrc/git/write.ts\n') })!;
-  check('E1 单文件源码 → 标题 "feat(git): 更新 write.ts"，正文含路径与 (+5 −3)',
+  check('D1 单文件源码 → 标题 "feat(git): 更新 write.ts"，正文含路径与 (+5 −3)',
     msg.startsWith('feat(git): 更新 write.ts')
     && msg.includes('\n\n+5 −3：')
     && msg.includes('src/git/write.ts (+5 −3)'), msg);
 }
 {
   const msg = generateCommitMessage({ files: files('1\t0\tx.md\n2\t0\ty.md\n') })!;
-  check('E2 多文件 docs → 标题 "docs: 改动 2 个文件"，正文逐文件列 (+1 −0)(+2 −0)',
+  check('D2 多文件 docs → 标题 "docs: 改动 2 个文件"，正文逐文件列 (+1 −0)(+2 −0)',
     msg.startsWith('docs: 改动 2 个文件')
     && msg.includes('x.md (+1 −0)') && msg.includes('y.md (+2 −0)'), msg);
 }
 {
   const msg = generateCommitMessage({ files: files('1\t0\tsrc/a.ts\n2\t0\tsrc/b.ts\n') })!;
-  check('E3 scope 缺席（仅 src）→ 标题不带括号 scope（"feat: 改动 2 个文件"，而非 "feat(src): …"）',
+  check('D3 scope 缺席（仅 src）→ 标题不带括号 scope（"feat: 改动 2 个文件"，而非 "feat(src): …"）',
     msg.startsWith('feat: 改动 2 个文件') && !msg.includes('(src)'), msg);
 }
-check('E4 空 files → 返回 null（调用方据此回绝，而不是生成空消息）',
+check('D4 空 files → 返回 null（调用方据此回绝，而不是生成空消息）',
   generateCommitMessage({ files: [] }) === null);
-check('E5 二进制文件 → 正文标"（二进制）"而非行数',
+check('D5 二进制文件 → 正文标"（二进制）"而非行数',
   (() => { const m = generateCommitMessage({ files: files('-\t-\tlogo.png\n') })!;
     return m.includes('logo.png（二进制）') && !m.includes('logo.png (+'); })(),
   generateCommitMessage({ files: files('-\t-\tlogo.png\n') }) ?? 'null');
-/** opt-out 下不该出现的两种前缀形状：Conventional 类型词，以及任何"英文词:"（含 scope 目录名） */
-const TYPE_WORD_RE = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(|$)/;
-const ASCII_LABEL_RE = /^[A-Za-z][\w./-]*\s*[:：]/;
-{
-  // opt-out：规约说不要 Conventional → 标题是**纯中文一句话，不带任何前缀**。
-  // 2026-09-28 实测改掉早先的 "git: 更新 write.ts"：scope 是目录名，顶在冒号前会被当成
-  // 提交类型。位置信息不靠标题补——正文已逐行列出完整路径。
-  const msg = generateCommitMessage({
-    files: files('5\t3\tsrc/git/write.ts\n'),
-    rulesText: '提交消息不要用 Conventional Commits，用中文一句话说明。',
-  })!;
-  const subject = msg.split('\n')[0]!;
-  check('E6 opt-out（单文件有 scope）→ 标题 "更新 write.ts"，既无类型词也无 "git:" 这类前缀',
-    subject === '更新 write.ts' && !TYPE_WORD_RE.test(subject) && !ASCII_LABEL_RE.test(subject),
-    subject);
-}
-check('E7 多文件超 20 条时正文封顶并标"共 N 个文件"（防止消息爆长，验证手段而非死板数字）',
+check('D6 多文件超 20 条时正文封顶并标"共 N 个文件"（防止消息爆长，验证手段而非死板数字）',
   (() => {
     const many = Array.from({ length: 25 }, (_, i) => `1\t0\tf${i}.ts`).join('\n') + '\n';
     const m = generateCommitMessage({ files: files(many) })!;
     return m.includes('…（共 25 个文件）') && (m.match(/\(\+\d+ −\d+\)/g) ?? []).length === 20;
   })());
 {
-  // E6 只覆盖了"单文件"；多文件且能推断出 scope 时才是早先 `scope: 描述` 露馅的地方
-  // （会产出 "git: 改动 2 个文件"）。补这一条把该形态钉住。
-  const msg = generateCommitMessage({
-    files: files('1\t0\tsrc/git/a.ts\n2\t0\tsrc/git/b.ts\n'),
-    rulesText: '提交消息不要用 Conventional Commits，用中文一句话说明。',
-  })!;
+  // 钉住"冒号前第一个词必须是类型词"这条形状判据：scope 只许跟在类型词后面的括号里，
+  // 绝不单独顶在冒号前 —— 早先 `git: 改动 2 个文件` 就是这么错的（git 只是个目录名）。
+  // D1 只覆盖了单文件，这条补"多文件 + 能推断出 scope"这个形态。
+  const msg = generateCommitMessage({ files: files('1\t0\tsrc/git/a.ts\n2\t0\tsrc/git/b.ts\n') })!;
   const subject = msg.split('\n')[0]!;
-  check('E8 opt-out（多文件有 scope）→ 标题 "改动 2 个文件"，不出现 "git:" 这类目录名当前缀',
-    subject === '改动 2 个文件' && !subject.includes('git') && !ASCII_LABEL_RE.test(subject),
-    subject);
+  check('D7 多文件有 scope → 标题 "feat(git): 改动 2 个文件"（类型词在括号之前）',
+    subject === 'feat(git): 改动 2 个文件', subject);
 }
 
 console.log('');
