@@ -84,6 +84,22 @@ export interface TaskItem {
   startedAt: number | null;
   /** 完成时刻；未完成 / 由种子恢复的项为 null。 */
   doneAt: number | null;
+  /**
+   * **落实这项的那次提交的短 hash**（ROADMAP 10.5.4 的"任务 ↔ 提交关联"）；null = 还没关联。
+   *
+   * ⚠ **它只活在内存里，不进 TASK.md 投影**（`render()` 不带它）。三条理由：
+   *   ① 投影的 **render/parse 严格互逆**是本机制三条承重之一，加第三个行尾标记要同时改
+   *      encode / render / parse 三处并把一整批互逆断言重新钉一遍 —— 风险落在最承重的地方；
+   *   ② hash 是**本轮的事实**：TASK.md 的用途是"续传还没做完的步骤"，而"上次是在哪个提交
+   *      里做的"是**回看**性质，那条路归事件库（events.jsonl，拉通道、不占上下文）；
+   *   ③ 一个提交 hash 挂在一行清单里，下一轮再读进来时没人消费它 —— 只占地方。
+   * 于是：本轮内模型能在清单上看见它（`renderNumbered`）、UI 不显示（面板宽度按"还剩几项"
+   * 排的），**跨会话则只留在 events.jsonl 里**（那里每次关联都记一条，历史不丢）。
+   *
+   * **只留最后一次**：同一项改了两次会有两个 hash，这里保留后写的那个（清单是"当前状态"，
+   * 完整的那串提交在 git log 里，不需要在这里再存一份数组）。
+   */
+  commit: string | null;
 }
 
 export interface TaskCounts {
@@ -409,6 +425,7 @@ export class TaskStore {
     this.items.push({
       text: t, status: 'pending', parent, after: after === 0 ? null : after,
       createdAt: this.now(), startedAt: null, doneAt: null,
+      commit: null,   // 新登记的一项还没被任何提交落实
     });
     this.notify();
     return { kind: 'added', index: this.items.length };
@@ -462,6 +479,30 @@ export class TaskStore {
   }
 
   /**
+   * 把一次提交的短 hash 挂到第 index 项上（ROADMAP 10.5.4 的"任务 ↔ 提交关联"）。
+   *
+   * 两条拒绝（都返回 false，**不改任何状态**）：序号越界、hash 是空串。
+   * 越界这里挡的是**防御性**那一层 —— 真正的越界由调用方在提交**之前**就拒掉
+   * （git 已经跑完再发现序号不存在，那时只能干瞪眼，见 commit-link.ts 的注释）；
+   * store 是共享单例，两次调用之间清单可能被改，所以这一层不能省。
+   *
+   * **重复挂同一个 hash 视为成功但不通知**（幂等）：UI 不会为一个没变的状态重绘。
+   *
+   * 刻意**不顺手把这项标成完成**：提交 ≠ 那件活儿干完了（可能还要推、还要验证）。
+   * 一件事只做一件 —— 要标完成请走 `done()`。
+   */
+  attachCommit(index: number, hash: string): boolean {
+    const h = hash.trim();
+    if (h === '') return false;
+    if (!this.valid(index)) return false;
+    const it = this.items[index - 1]!;
+    if (it.commit === h) return true;
+    this.items[index - 1] = { ...it, commit: h };
+    this.notify();
+    return true;
+  }
+
+  /**
    * 清空清单。**不清 `lastCompleted`** —— 见该字段的注释：
    * 面板收起 + TASK.md 已删之后，它是唯一还能回看上一轮的地方。
    */
@@ -499,12 +540,13 @@ export class TaskStore {
    * 不可能出现"磁盘上是 `[x]`、终端上画成别的"。
    * （同一手法：Log/ 生成区的 `syncText` 一份模板同时给"写"和"查"用。）
    *
-   * 行形状：`<缩进>- [<glyph>] <正文>[ ⤴<父项>][ ←<前置>]`。
+   * 行形状：`<缩进>- [<glyph>] <正文>[ ⤴<父项>][ ←<前置>][ #<提交短 hash>]`。
+   * 最后那个提交号**只在 `numbered` 版出现**（10.5.4）—— 它不落盘，见 `TaskItem.commit`。
    * **父标记按需出现**：只有当"缩进 + 顺序"推不出真实父项时才补（见 `PARENT_RE` 的注释）——
    * 判据与 `parseLines` 的推导规则**逐字对应**（同一个 `lastAtDepth` 扫描），
    * 于是"渲染时不加、解析时推错"这种分家不可能发生。
-   * `numbered` 只影响每行前面的序号（给模型看的 `renderNumbered` 用），**不影响可逆性** ——
-   * `renderNumbered` 的产物从不被 parse（它只在工具回执里走一趟）。
+   * `numbered` 只影响"给模型看的那两样"—— 每行前面的序号、以及行尾的提交号 ——
+   * **都不影响可逆性**：`renderNumbered` 的产物从不被 parse（它只在工具回执里走一趟）。
    */
   static renderItems(items: ReadonlyArray<TaskItem>, numbered = false): string {
     const depths = depthsOf(items);
@@ -518,7 +560,12 @@ export class TaskStore {
           if (lastAtDepth[dd]) { inferred = lastAtDepth[dd]; break; }
         }
         const needParent = it.parent !== 0 && it.parent !== inferred;
-        const markers = `${needParent ? ` ⤴${it.parent}` : ''}${it.after !== null ? ` ←${it.after}` : ''}`;
+        // 提交号**只在给模型看的那一版**出现（10.5.4）：它不落盘、不参与 parse，
+        // 所以写在这里不会碰到 render/parse 互逆那条承重。
+        // 用真值判断而不是 `!== null`：`scripts/` 下的套件不受 tsc 检查，手工构造的
+        // TaskItem 字面量可能没带这个字段（那时 undefined 会印成字面量 "#undefined"）。
+        const commitMark = numbered && it.commit ? ` #${it.commit}` : '';
+        const markers = `${needParent ? ` ⤴${it.parent}` : ''}${it.after !== null ? ` ←${it.after}` : ''}${commitMark}`;
         const body = encodeText(it.text);
         lastAtDepth.length = d + 1;
         lastAtDepth[d] = i + 1;
@@ -598,7 +645,8 @@ export class TaskStore {
       }
       const glyph = m[1].toLowerCase();
       let status: TaskStatus = glyph === 'x' ? 'done' : glyph === '>' ? 'active' : 'pending';
-      items.push({ text, status, parent, after, createdAt: null, startedAt: null, doneAt: null });
+      // commit 一律 null：文件里没有"它对应哪次提交"这个事实（该字段刻意不落盘，见接口注释）
+      items.push({ text, status, parent, after, createdAt: null, startedAt: null, doneAt: null, commit: null });
       // ③ 记表：按**规范深度**（= 父项深度 + 1）而不是行首缩进 —— 显式父标记可能把一项
       //    挂得比它的缩进更深/更浅，若按缩进记，后面的兄弟项会认错爹
       const canonical = parent === 0 ? 0 : depths[parent - 1] + 1;

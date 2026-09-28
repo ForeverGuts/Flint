@@ -235,6 +235,54 @@ console.log('\n① TaskStore 操作与不变量');
     })());
 }
 
+/* ── ①d 任务 ↔ 提交关联（10.5.4） ──
+   三件事各有一条守卫，缺一条就会在"没人看着"的地方漂：
+     · 挂得上 / 挂不上（A31–A33）
+     · 挂上要通知 UI（A34–A36 —— "状态从文件搬内存"必须回答谁通知 UI）
+     · **投影里不许出现 hash**（A38 —— 本条最承重的一条：它守住"刻意不落盘"这个决定） */
+{
+  const s = new TaskStore();
+  s.add('改 commit 生成');
+  s.add('补断言');
+  check('A31 attachCommit 挂上后读得回来（hash 落在那一项上）',
+    s.attachCommit(1, 'abc1234') === true && s.list()[0].commit === 'abc1234',
+    JSON.stringify(s.list()[0].commit));
+  check('A32 越界 → false 且**一项都没动**（这是防御层，主防线在提交之前）',
+    s.attachCommit(9, 'zzz') === false && s.list()[0].commit === 'abc1234'
+    && s.list()[1].commit === null);
+  check('A33 空 hash / 全空白 → false（空串不是 hash，不挂）',
+    s.attachCommit(1, '') === false && s.attachCommit(1, '   ') === false
+    && s.list()[0].commit === 'abc1234');
+
+  let notified = 0;
+  const off = s.onChange(() => { notified++; });
+  s.attachCommit(2, 'def5678');
+  check('A34 挂上会通知 UI（面板靠 onChange 刷新 —— 不通知 = 屏幕上看不见这次关联）',
+    notified === 1);
+  s.attachCommit(2, 'def5678');
+  check('A35 重复挂同一个 hash → 成功但**不再通知**（幂等：不为没变的状态重绘）',
+    notified === 1 && s.list()[1].commit === 'def5678');
+  s.attachCommit(2, 'aaa9999');
+  check('A36 换一个 hash → 覆盖（只留最后一次；完整那串提交在 git log 与事件库里）',
+    s.list()[1].commit === 'aaa9999' && notified === 2);
+  off();
+
+  check('A37 给模型看的那版带提交号，且**只带在挂过的那几项上**',
+    (() => {
+      const lines = s.renderNumbered().split('\n');
+      return lines[0]!.endsWith(' #abc1234') && lines[1]!.endsWith(' #aaa9999');
+    })(), JSON.stringify(s.renderNumbered()));
+
+  check('A38 ⚠ 投影版（写进 TASK.md 的那一份）**不含** hash —— "刻意不落盘"这条判据的直接守卫',
+    !s.render().includes('abc1234') && !s.render().includes('aaa9999') && !s.render().includes('#'),
+    JSON.stringify(s.render()));
+  check('A39 种子读回：commit 一律 null（文件里没有"它对应哪次提交"这个事实）',
+    TaskStore.fromMarkdown(s.render()).list().every((i) => i.commit === null));
+  check('A40 挂了 hash 之后 render/parse 仍然互逆（新字段不掺和投影，互逆不受影响）',
+    structOf(TaskStore.fromMarkdown(s.render())) === structOf(s),
+    structOf(TaskStore.fromMarkdown(s.render())));
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
    ② render / parse 互逆（投影与种子是一对逆运算）
    ══════════════════════════════════════════════════════════════════════════ */
@@ -268,8 +316,11 @@ console.log('\n② render 与 parse 严格互逆（写盘 / 读盘是一对逆�
   const keys = Object.keys(sample.list()[0]).sort();
   const structKeys = ['after', 'parent', 'status', 'text'];
   const timeKeys = ['createdAt', 'doneAt', 'startedAt'];
-  check('B8 字段归类完备：TaskItem 的键 = 结构字段（参与互逆）∪ 时间戳（刻意不投影）',
-    JSON.stringify(keys) === JSON.stringify([...structKeys, ...timeKeys].sort()),
+  // 提交号（10.5.4）：与时间戳**同一类** —— 刻意不投影（理由见 TaskItem.commit 的注释）。
+  // 归错类的后果很具体：把它算进"参与互逆"那组，A38 那类守卫就没人写了。
+  const linkKeys = ['commit'];
+  check('B8 字段归类完备：TaskItem 的键 = 结构字段（参与互逆）∪ 时间戳 ∪ 提交号（后两类刻意不投影）',
+    JSON.stringify(keys) === JSON.stringify([...structKeys, ...timeKeys, ...linkKeys].sort()),
     keys.join(','));
 
   // 属性测试：伪随机生成合法状态（含层级与依赖）→ render → parse → 结构必须完全一致

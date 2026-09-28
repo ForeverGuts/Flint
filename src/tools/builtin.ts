@@ -84,6 +84,8 @@ import {
 } from '../git/write.js';
 // commit message 自动生成（ROADMAP 10.5.3）：纯函数模块，handler 在跑 commit 前调它
 import { generateCommitMessage } from '../project/commit-message.js';
+// 任务 ↔ 提交关联（ROADMAP 10.5.4）：接缝模块，提交成功后把 hash 挂到任务项上 + 记事件
+import { linkCommitToTask, taskLinkError } from '../git/commit-link.js';
 // 起子进程的两处（bash / 自检）都走统一执行器 —— 它管住的是**整棵进程树**（ROADMAP 10.6.6）
 import { realPathOf, resolveToolPath } from './paths.js';
 // 工作区边界（ROADMAP 10.9.3）与回收站执行层（10.9.6）：`trash` 工具的判定与动手分在两处，
@@ -1617,7 +1619,7 @@ export function registerBuiltinTools(
      输出经 `decodeChildOutput` 做编码判别。 */
   tools.register(defineTool({
     name: 'git_write',
-    description: 'git 的**写操作**：暂存 / 提交 / 推送（查仓库状态请用只读的 git 工具，别用 bash 跑 git）。op: add 把改动放进暂存区（path）/ commit 提交**已经暂存**的改动（message）/ push 推送到远端（remote 与 branch 可留空 = 走配置好的上游）。每一次写都会**单独弹权限窗问用户**；强制推送必须在 force 里显式选 lease（--force-with-lease，远端被别人推过就失败）或 overwrite（--force，会盖掉远端已有的提交）—— 它算**独立的一笔授权**，普通 push 的"本次全部允许"覆盖不到它。本工具不跳过 git 钩子（没有 --no-verify）、不替你决定 `-a`（只提交你已暂存的东西）、也不接任何交互输入（需要输密码时会直接失败，而不是挂住等你敲）。',
+    description: 'git 的**写操作**：暂存 / 提交 / 推送（查仓库状态请用只读的 git 工具，别用 bash 跑 git）。op: add 把改动放进暂存区（path）/ commit 提交**已经暂存**的改动（message）/ push 推送到远端（remote 与 branch 可留空 = 走配置好的上游）。每一次写都会**单独弹权限窗问用户**；强制推送必须在 force 里显式选 lease（--force-with-lease，远端被别人推过就失败）或 overwrite（--force，会盖掉远端已有的提交）—— 它算**独立的一笔授权**，普通 push 的"本次全部允许"覆盖不到它。本工具不跳过 git 钩子（没有 --no-verify）、不替你决定 `-a`（只提交你已暂存的东西）、也不接任何交互输入（需要输密码时会直接失败，而不是挂住等你敲）。commit 还可以带 task（任务清单里那一项的序号），把这次提交与那一项关联起来 —— 提交成功后 hash 会挂到清单上、并记进事件库。',
     spec: {
       op: str('操作', `要做的操作：${GIT_WRITE_OPS.join(' / ')}`),
       path: optStr('暂存路径', 'add 用：**必填**，要暂存什么（仓库根相对或绝对路径；要暂存本目录下全部改动就写 "."）。示例: "src/tools"', ''),
@@ -1625,6 +1627,7 @@ export function registerBuiltinTools(
       remote: optStr('远端', 'push 用：远端名或 URL，留空 = 用配置好的上游。与 branch **成对**给。示例: "origin"', ''),
       branch: optStr('分支', 'push 用：要推的分支名，留空 = 当前分支。与 remote **成对**给。示例: "main"', ''),
       force: optStr('强制模式', 'push 用：留空 = 只推能快进的（安全默认）；"lease" = --force-with-lease；"overwrite" = --force（会盖掉远端提交）。示例: "lease"', ''),
+      task: optPosInt('关联任务', 'commit 用：任务清单里那一项的**序号**（1 基，就是 todo 返回值里最前面的那个数字）。留空 / 0 = 不关联。给了的话，提交成功后这次的 hash 会挂到那一项上、并记进事件库（以后能查出"这项活儿落在哪个提交里"）。序号超出清单范围会**在提交之前**被拒 —— 不会先提交再告诉你序号不对。示例: 3', 0),
     },
     requirePermission: true,
     permissionKey: (args) => gitWritePermissionKey(args),
@@ -1672,6 +1675,14 @@ export function registerBuiltinTools(
             return { ok: false, text: renderWriteFailure(p.op, merged) };
           }
         };
+
+        // ── 10.5.4：commit 带 task 时，**先**确认那个序号存在 ──
+        //    放在跑 git **之前**是承重的：提交一旦落进仓库就撤不回来，那时再说"第 7 项不存在"
+        //    模型只能干瞪眼。能在事前判定的错别拖到事后报（判据见 commit-link.ts 的文件头）。
+        if (p.op === 'commit' && p.task > 0) {
+          const bad = taskLinkError(store, p.task);
+          if (bad !== null) return toolInvalid(bad);
+        }
 
         // ── 10.5.3：commit 消息留空时，先读已暂存的 diff 自动生成，再构造 argv ──
         //    放在 run 定义之后、构造 commit argv 之前：先确认"有没有已暂存的改动"，
@@ -1724,7 +1735,12 @@ export function registerBuiltinTools(
             return toolOk('提交成功（commit 已经落进本仓库），但 log 的输出没读懂（形状不对），'
               + '请用只读的 git(op="log") 确认结果。');
           }
-          return toolOk(renderCommitResult(entry));
+          // ── 10.5.4：把这次的 hash 挂到任务项上（带 task 时），并记一条事件 ──
+          //    没带 task 时 link.text 是空串，回执与改前**逐字相同**。
+          const link = linkCommitToTask(store, evs, {
+            index: p.task, hash: entry.short, subject: entry.subject, file: EVENTS_FILE,
+          });
+          return toolOk(renderCommitResult(entry) + (link.text === '' ? '' : `\n  ${link.text}`));
         }
 
         const second = run(pushFollowUpArgs(), FOLLOW_UP_TIMEOUT);

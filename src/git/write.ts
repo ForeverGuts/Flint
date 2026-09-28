@@ -127,6 +127,12 @@ export interface GitWriteParams {
   /** push：分支名；留空 = 当前分支 */
   branch: string;
   force: ForceMode;
+  /**
+   * commit：要关联的**任务序号**（1 基，指向任务清单那一项）；**0 = 不关联**（缺省）。
+   * 提交成功后那个短 hash 会挂到这一项上，并在事件库留一条（ROADMAP 10.5.4）。
+   * 为什么必须显式给而不是自动猜"当前进行中的那一项"，见 `commit-link.ts` 的判据 ①。
+   */
+  task: number;
 }
 
 /** 与只读侧同一前缀：quotepath 管中文路径、color.ui 管 ANSI 码（**push 的输出是会着色的**） */
@@ -186,6 +192,16 @@ function rawStr(v: unknown): string {
 }
 
 /**
+ * `task` 的取值：缺失（可选参数没给）→ 0（= 不关联）；非负整数 → 原样；其余 → **-1**。
+ * 用 -1 而不是"随手当 0"是因为：模型传了个 `task="3"` 或 `task=-1` 时，静默当成
+ * "不关联"会让它**以为关联上了** —— 这是一个没有症状的错（与 commit-link 判据 ① 同源）。
+ */
+function rawTask(v: unknown): number {
+  if (v === undefined || v === null) return 0;
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : -1;
+}
+
+/**
  * 把**未校验的原始 args** 变成规范化参数 + 一句原因。纯函数、不抛异常
  * （权限层拿到的就是未经 parse 的 args，所以这里必须容忍任何形状）。
  */
@@ -209,6 +225,14 @@ export function checkWriteArgs(args: unknown): WriteCheck {
         + '远端被别人推过就失败）、overwrite（--force，直接盖掉远端提交）；不强制就留空。',
     };
   }
+  const task = rawTask(r.task);
+  if (task < 0) {
+    return {
+      params: null,
+      problem: `task 只认一个非负整数（0 = 不关联，1 = 任务清单第 1 项），`
+        + `收到的是 ${JSON.stringify(r.task)}。`,
+    };
+  }
   const params: GitWriteParams = {
     op: opRaw as GitWriteOp,
     path: rawStr(r.path),
@@ -216,6 +240,7 @@ export function checkWriteArgs(args: unknown): WriteCheck {
     remote: rawStr(r.remote),
     branch: rawStr(r.branch),
     force,
+    task,
   };
   const problem = validateWriteParams(params);
   return problem === null ? { params, problem: null } : { params: null, problem };
@@ -228,6 +253,13 @@ export function checkWriteArgs(args: unknown): WriteCheck {
  * 由它在跑 commit 前基于已暂存 diff 生成（ROADMAP 10.5.3）。
  */
 export function validateWriteParams(p: GitWriteParams): string | null {
+  // task 只在 commit 时有效（**只有提交才产生 hash**，才谈得上"挂到任务上"）。
+  // 给了却用不上必须**说出来**：静默忽略会让模型以为关联上了，而那是个没有症状的错
+  // —— 与 push 只给 branch 不给 remote 那处同一条纪律（"看着成功、其实做错"要当场拒）。
+  if (p.op !== 'commit' && p.task !== 0) {
+    return `task 只在 op=commit 时有效（只有提交才产生 hash、能挂到任务上），`
+      + `这次是 op=${p.op} 却带了 task=${p.task}。要么去掉 task，要么把 op 改成 commit。`;
+  }
   if (p.op === 'add') {
     if (p.path.trim() === '') {
       return 'add 要说清暂存什么：path 不能是空的（要暂存本目录下全部改动就写 "."）。';
@@ -270,6 +302,9 @@ function firstLine(s: string): string {
  *
  * 三条判断：
  *   · **commit 的键带消息**（同 bash 给整条命令）：换一条消息就是另一次提交，该重问；
+ *     ⚠ **`task` 刻意不进键**：键回答的是"用户刚才同意的那件事"，而那件事是**这次提交** ——
+ *     换一个任务号不改变提交本身，关联改的又只是内存清单里的一个字段（模型用 `todo`
+ *     工具本来就能改它）。进键的代价是"换个任务号就要重新点一次允许"，纯噪音。
  *   · **add 的键带路径**（同 write/edit 给路径）；
  *   · **push 的键带远端/分支，并且带强制模式** —— 这是本模块最重要的一个键，它让
  *     "普通 push 的本次全部允许"**覆盖不到**强制推送（见文件头"二次确认"）。
@@ -297,7 +332,12 @@ export function gitWritePermissionDetail(args: unknown): string {
   const { params, problem } = checkWriteArgs(args);
   if (params === null) return `git_write：参数不合法（${firstLine(problem ?? '')}）`;
   if (params.op === 'add') return `git add：暂存 ${params.path.trim() || '(未填)'}`;
-  if (params.op === 'commit') return `git commit：${firstLine(params.message) || '(消息为空)'}`;
+  if (params.op === 'commit') {
+    // 关联了哪一项要写进弹窗（**人该看见**这次提交会记到清单里），
+    // 但不进授权键 —— 理由见 `gitWritePermissionKey` 上方那条。
+    const link = params.task > 0 ? `（关联任务第 ${params.task} 项）` : '';
+    return `git commit：${firstLine(params.message) || '(消息为空)'}${link}`;
+  }
   const remote = params.remote.trim() === '' ? '(上游)' : params.remote.trim();
   const branch = params.branch.trim() === '' ? '(当前分支)' : params.branch.trim();
   const warn = forceLabel(params.force);

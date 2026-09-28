@@ -253,6 +253,34 @@ console.log('\n④ 机器自动补记：recordToolCall / recordTaskArchive / rec
         && (e.context ?? '').startsWith('摘要快照: ') && (e.context ?? '').includes('方案 Y')
         && JSON.stringify(e.tags) === JSON.stringify(['compaction']) && fs.existsSync(f2);
     })());
+
+  // ── 任务 ↔ 提交关联（10.5.4）──
+  // 记它的判据是"只补 git log 记不下的那一半"：提交历史那边已经有了（而且更全），
+  // 这边补的是"这次提交是为了哪一项任务"。所以它**只在真建立了关联时才被调用**。
+  check('D9 recordCommit：kind=system，标题带 hash + 任务序号 + 任务名，tags=[commit,task]，落盘',
+    (() => {
+      const s2 = new EventStore();
+      const f2 = P('ev4d.jsonl');
+      s2.recordCommit({ hash: 'abc1234', subject: 'feat(git): 加关联', task: 3, taskText: '改 commit 生成' }, f2);
+      const e = s2.all()[0];
+      return e.kind === 'system' && e.title === '提交 abc1234 落实任务 3：改 commit 生成'
+        && JSON.stringify(e.tags) === JSON.stringify(['commit', 'task'])
+        && (e.context ?? '') === '提交说明: feat(git): 加关联'
+        && fs.existsSync(f2) && fs.readFileSync(f2, 'utf-8').includes('abc1234');
+    })());
+  check('D10 按 tag=commit / tag=task 都能检索到它（"按这个标签再查一次"就是它存在的理由）',
+    (() => {
+      const s2 = new EventStore();
+      s2.recordCommit({ hash: 'abc1234', subject: 'feat: x', task: 1, taskText: '甲' }, P('ev4e.jsonl'));
+      return s2.search({ tag: 'commit' }).length === 1 && s2.search({ tag: 'task' }).length === 1
+        && s2.search({ keyword: 'abc1234' }).length === 1;
+    })());
+  check('D11 提交说明为空 → 不写 context 键（行保持紧凑，与 D5 同一口径）',
+    (() => {
+      const s2 = new EventStore();
+      s2.recordCommit({ hash: 'zzz9999', subject: '', task: 1, taskText: '甲' }, P('ev4f.jsonl'));
+      return !('context' in s2.all()[0]) && s2.all()[0].title.includes('zzz9999');
+    })());
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

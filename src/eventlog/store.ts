@@ -65,7 +65,7 @@ export const KIND_LABELS: Record<EventKind, string> = {
  * `tag=audit` 是用户要敲回去的，把 token 抹掉就没法"按这个标签再查一次"了。
  */
 export const TAG_LABELS: Record<string, string> = {
-  tool: '工具', task: '任务', archive: '归档', compaction: '压缩',
+  tool: '工具', task: '任务', archive: '归档', compaction: '压缩', commit: '提交',
   audit: '审计', deny: '拦截', grant: '放行', revoke: '撤销', refuse: '拒绝',
   charter: '契约锁', danger: '危险命令', workspace: '工作区', route: '改道',
 };
@@ -130,6 +130,23 @@ const AUDIT_VERBS: Record<AuditInput['action'], string> = {
   revoke: '撤销',
   refuse: '拒绝',
 };
+
+/**
+ * 任务 ↔ 提交关联的输入（ROADMAP 10.5.4）。
+ *
+ * 刻意**只收结构化字段**：标题由 store 按固定形状拼，于是同一类事件在档案里永远长一个样
+ * （与 AuditInput 同一条纪律 —— 让调用方各写各的句子，第二天就会冒出三种写法）。
+ */
+export interface CommitLinkInput {
+  /** 提交短 hash（`git log -1` 复核出来的那个，够指认） */
+  hash: string;
+  /** 提交说明的首行 */
+  subject: string;
+  /** 关联的任务序号（1 基） */
+  task: number;
+  /** 那一项的正文（进标题，让查账的人一眼看出连的是哪一项） */
+  taskText: string;
+}
 
 /** 叙事条目的输入（id/time 由 store 生成，调用方不碰） */
 export interface NarrativeInput {
@@ -325,6 +342,35 @@ export class EventStore {
       ...(target ? { context: `目标: ${target}` } : {}),
       ...(reason ? { outcome: reason } : {}),
       tags: ['audit', input.action, ...(input.tag !== undefined && input.tag !== '' ? [input.tag] : [])],
+    };
+    this.entries.push(entry);
+    this.appendLine(entry, file);
+  }
+
+  /**
+   * 确定性钩子 ④：**任务 ↔ 提交关联**自动补记（ROADMAP 10.5.4）。
+   *
+   * ⚠ **只在真建立了关联时才记，不是每次 commit 都记** —— 判据是"只记别的通道记不下的
+   *   那一半"：提交历史**已经在 git log 里**，而且那边是更好的档案（能看 diff、能看时间线），
+   *   事件库再抄一份就是一份更差的副本（与 ③ 那条"流水已全量记下、审计不重复记"同源）。
+   *   git log 记不下的是**"这次提交是为了哪一项任务"** —— 那才是本条要补的事实。
+   *   所以本条的落点是**接缝**：把 hash 与"第 N 项"这两件原本互不相干的事钉在一起。
+   *
+   * **模型看不到它**：落点是 events.jsonl（拉通道），只被 `/events`、`search_events`、
+   * `pull_events` 按需取走 —— 与 ③ 同一个理由：它是给人回看与查账的，不是给模型当反馈的。
+   *
+   * 与 ①②③ 同一条纪律：旁路观测、落盘失败静默、绝不反噬主流程（提交已经成功了，
+   * 事件没记上只是少一条回看线索，不该把 git_write 的返回变成 [ERROR]）。
+   */
+  recordCommit(input: CommitLinkInput, file: string): void {
+    const subject = opt(input.subject, 200);
+    const entry: EventEntry = {
+      id: nextEntryId(),
+      time: new Date().toISOString(),
+      kind: 'system',
+      title: clip(`提交 ${input.hash} 落实任务 ${input.task}：${input.taskText}`, 120),
+      ...(subject ? { context: `提交说明: ${subject}` } : {}),
+      tags: ['commit', 'task'],
     };
     this.entries.push(entry);
     this.appendLine(entry, file);

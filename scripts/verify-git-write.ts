@@ -56,6 +56,7 @@ import {
   type GitWriteParams,
 } from '../src/git/write.js';
 import { PLAN_BLOCKED_TOOLS, guardPlanMode, renderPlanReason } from '../src/loop/plan-mode.js';
+import { linkCommitToTask, taskLinkError, type CommitLinkRequest } from '../src/git/commit-link.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -198,6 +199,30 @@ check('C12 validateWriteParams 与 checkWriteArgs 用同一套判据（空消息
   && validateWriteParams(P({ op: 'commit', message: '' })) === null
   && checkWriteArgs({ op: 'commit', message: '' }).params !== null);
 
+/* ── task：任务 ↔ 提交关联（10.5.4） ── */
+check('C13 task 缺失 / 0 → 放行且 task=0（**不关联是缺省**，绝不自动猜"当前进行中的那一项"）',
+  checkWriteArgs({ op: 'commit', message: 'm' }).params?.task === 0
+  && checkWriteArgs({ op: 'commit', message: 'm', task: 0 }).params?.task === 0);
+check('C14 task 不是非负整数（字符串 / 负数 / 小数）→ 拒，且**不静默当 0**'
+  + '（静默当 0 = 模型以为关联上了，而那是个没有症状的错）',
+  (() => {
+    const a = checkWriteArgs({ op: 'commit', message: 'm', task: '3' });
+    const b = checkWriteArgs({ op: 'commit', message: 'm', task: -1 });
+    const c = checkWriteArgs({ op: 'commit', message: 'm', task: 1.5 });
+    return a.params === null && (a.problem ?? '').includes('非负整数')
+      && b.params === null && c.params === null;
+  })());
+check('C15 非 commit 带 task → 拒（**只有提交才产生 hash**，给了却用不上必须说出来）',
+  (() => {
+    const a = checkWriteArgs({ op: 'add', path: '.', task: 2 });
+    const b = checkWriteArgs({ op: 'push', task: 2 });
+    return a.params === null && (a.problem ?? '').includes('commit')
+      && b.params === null && (b.problem ?? '').includes('commit');
+  })());
+check('C16 commit 带 task=3 → 放行并原样带上'
+  + '（"第 3 项存不存在"只有 handler 知道 —— 它在跑 git **之前**判）',
+  checkWriteArgs({ op: 'commit', message: 'm', task: 3 }).params?.task === 3);
+
 console.log('');
 console.log('【④ 权限身份：授权键 与 弹窗文案】');
 check('D1 普通 push 与强制 push 的键**必须不同** —— 这就是"二次确认"的技术含义',
@@ -249,6 +274,15 @@ check('D12 认不出参数时弹窗给的是人话，不是"undefined"（那一�
 check('D13 commit 的弹窗只取消息**首行**（多行消息不该把弹窗撑成三行）',
   gitWritePermissionDetail({ op: 'commit', message: '第一行\n第二行' }) === 'git commit：第一行',
   gitWritePermissionDetail({ op: 'commit', message: '第一行\n第二行' }));
+check('D14 commit 关联了任务时**弹窗**要说出来（按按钮的人该看见这次提交会记到清单上）',
+  gitWritePermissionDetail({ op: 'commit', message: 'm', task: 3 }).includes('关联任务第 3 项')
+  && !gitWritePermissionDetail({ op: 'commit', message: 'm' }).includes('关联'),
+  gitWritePermissionDetail({ op: 'commit', message: 'm', task: 3 }));
+check('D15 但 task **不进授权键** —— 键回答的是"用户同意的那件事"= 这次提交，'
+  + '换个任务号不该让他再点一次允许',
+  gitWritePermissionKey({ op: 'commit', message: 'm', task: 3 })
+  === gitWritePermissionKey({ op: 'commit', message: 'm', task: 4 }),
+  gitWritePermissionKey({ op: 'commit', message: 'm', task: 3 }));
 
 console.log('');
 console.log('【⑤ 渲染（失败正文含打码与"常见原因"）】');
@@ -494,6 +528,80 @@ check('G20 不自己抄一份「凭据打码」（复用 git.ts 的 redactCreden
   check('G21 builtin.ts 的模块头把工具数改到 20（不是\"悄悄多一个\"）',
     /共 20 个/.test(read('src/tools/builtin.ts')),
     '模块头里那句"共 N 个"没跟着改 —— 它是给人读的清单，陈旧了没人会发现');
+
+/* ── 10.5.4：任务 ↔ 提交关联的接线（**真** TaskStore + **真** EventStore，不用替身） ── */
+{
+  const linkTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'flint-gw-link-'));
+  const evFile = path.join(linkTmp, 'events.jsonl');
+  const mk = (n: number): TaskStore => {
+    const s = new TaskStore();
+    for (let i = 1; i <= n; i++) s.add(`第 ${i} 项`);
+    return s;
+  };
+  const req = (index: number, hash = 'abc1234'): CommitLinkRequest =>
+    ({ index, hash, subject: 'feat(git): 加关联', file: evFile });
+
+  check('G22 index=0（没请求关联）→ 什么都不做：不挂、不记事件、**连文案都没有**',
+    (() => {
+      const s = mk(3); const evs = new EventStore();
+      const r = linkCommitToTask(s, evs, req(0));
+      return r.linked === false && r.text === '' && s.list()[0].commit === null && evs.count() === 0;
+    })());
+  check('G23 正常关联 → hash 挂到那一项上、事件库多一条、文案说清连的是第几项',
+    (() => {
+      const s = mk(3); const evs = new EventStore();
+      const r = linkCommitToTask(s, evs, req(2));
+      return r.linked === true && s.list()[1].commit === 'abc1234' && s.list()[0].commit === null
+        && evs.count() === 1 && r.text.includes('第 2 项') && r.text.includes('abc1234');
+    })());
+  check('G24 越界 → 不挂、**不记事件**（没连上就不该留一条说"连上了"的记录），'
+    + '但文案要说清提交已经成了',
+    (() => {
+      const s = mk(3); const evs = new EventStore();
+      const r = linkCommitToTask(s, evs, req(9));
+      return r.linked === false && evs.count() === 0 && s.list().every((i) => i.commit === null)
+        && r.text.includes('提交成功') && r.text.includes('关联没做成');
+    })());
+  check('G25 hash 是空串 / 全空白 → 不挂、不记事件（拿不到 hash 就没东西可连）',
+    (() => {
+      const s = mk(3); const evs = new EventStore();
+      const r = linkCommitToTask(s, evs, req(1, '   '));
+      return r.linked === false && evs.count() === 0 && s.list()[0].commit === null;
+    })());
+  check('G26 那条事件**真写进了文件**（跨会话回看靠它：hash 与任务号都在标题里）',
+    (() => {
+      const s = mk(3); const evs = new EventStore();
+      linkCommitToTask(s, evs, req(2, 'deadbee'));
+      const line = fs.readFileSync(evFile, 'utf-8').trim();
+      return line.includes('deadbee') && line.includes('落实任务 2') && line.includes('commit');
+    })());
+
+  check('G27 taskLinkError：越界给原因，并明说**这次 commit 没有执行**'
+    + '（事前判定的全部价值就在这一句）',
+    (() => {
+      const bad = taskLinkError(mk(3), 7);
+      return bad !== null && bad.includes('7') && bad.includes('没有执行');
+    })());
+  check('G28 taskLinkError：index<=0 → null（不关联不是错，别把它当错误弹回模型）',
+    taskLinkError(mk(3), 0) === null && taskLinkError(mk(3), -1) === null);
+  check('G29 清单为空时 task=1 → 事前就拒（不存在的任务不该拖到提交之后才发现）',
+    taskLinkError(new TaskStore(), 1) !== null);
+
+  check('G30 ⚠ 接线顺序：builtin 在**跑 git 之前**先过 taskLinkError'
+    + '（反了就变成提交完了才告诉你序号不对）',
+    (() => {
+      const at = gwToolCode.indexOf('taskLinkError');
+      const runAt = gwToolCode.indexOf('const first = run(argv');
+      return at > 0 && runAt > at;
+    })(), 'builtin 里没找到 taskLinkError，或它排在跑 git 之后');
+  check('G31 接线：commit 成功后真调了 linkCommitToTask（不是 import 了不用）',
+    /linkCommitToTask\(store, evs,/.test(gwToolCode));
+  check('G32 接线：关联结果拼进了回执（否则模型看不出这次到底连没连上）',
+    /link\.text/.test(gwToolCode));
+
+  fs.rmSync(linkTmp, { recursive: true, force: true });
+  check('G33 临时目录已清理', !fs.existsSync(linkTmp));
+}
 
 console.log('');
 console.log(`结果：${passed} 通过 / ${failed} 失败（共 ${passed + failed} 项）`);
