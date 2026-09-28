@@ -18,6 +18,7 @@
  * 运行：node node_modules/tsx/dist/cli.mjs scripts/verify-doc-numbers.ts
  */
 import path from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { diffDocNumbers, checkDocNumbers } from './check-doc-numbers.mjs';
 import { syncText, findRegions, RENDERERS, AUTOGEN_FILES } from './autogen.mjs';
@@ -309,6 +310,29 @@ console.log('\nD9 生成区（写与查共用渲染器，所以必须单独钉�
     && fixed.split('\n').length === goodTesting().split('\n').length, '行内空白没保住');
   check('findRegions 在两个相邻区段处不会吞成一个（非贪婪）',
     findRegions(goodTesting()).length === 2, `实得 ${findRegions(goodTesting()).length}`);
+}
+
+/* ── 结果行形状的守护：每套 verify-* 都得打得出"结果：N 通过 / M 失败" ── */
+
+/** 剥掉注释 —— 否则下面那条判据会被**自己注释里**的字面量喂饱，恒绿（本项目已九踩） */
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+{
+  // 起因（2026-09-28 全量对账发现）：`collect-stats.mjs` 只认 `结果：N 通过 / M 失败`
+  // 这一个形状、**没有兜底正则**，解析不到就把整套从合计里丢掉 —— 症状不是报错，而是
+  // "总项数永久少一截、文档核对永久漂移"。`verify-read-guard.ts` 曾打印
+  // `═══ verify-read-guard：38 通过 / 0 失败 ═══`（少了"结果"二字），38 项一直被漏算。
+  const dir = path.join(ROOT, 'scripts');
+  const files = readdirSync(dir).filter((f) => /^verify-.*\.(ts|mjs)$/.test(f));
+  const missing = files.filter(
+    (f) => !/结果[：:]/.test(stripComments(readFileSync(path.join(dir, f), 'utf8'))),
+  );
+  check('每套 verify-* 都打得出 `结果：N 通过 / M 失败`（汇总只认这一形状、无兜底，漏了整套不计入合计）',
+    files.length >= 60 && missing.length === 0,
+    missing.length > 0 ? `这些套缺结果行: ${missing.join(', ')}` : `扫到 ${files.length} 套`);
 }
 
 console.log(`\n结果：${passed} 通过，${failed} 失败`);

@@ -269,5 +269,9 @@ console.log('── ⑦ 源码守护 ──');
 }
 
 /* ── 收尾 ── */
-console.log(`\n═══ verify-read-guard：${passed} 通过 / ${failed} 失败 ═══`);
+// 结果行形状是**契约**：`collect-stats.mjs` 只认 `结果：N 通过 / M 失败`（无兜底正则），
+// 解析不到就整套不计入合计 → 官方文档核对永久漂移。2026-09-28 全量对账时发现本套原打印
+// `═══ verify-read-guard：… ═══`，少了"结果"二字，38 项在 `npm run verify` 里**一直被漏算**。
+console.log('');
+console.log(`结果：${passed} 通过 / ${failed} 失败（共 ${passed + failed} 项）`);
 if (failed > 0) process.exit(1);
