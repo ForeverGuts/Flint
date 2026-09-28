@@ -14,6 +14,14 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-09-28 13:09 | [Fix🐛] commit message 生成的 opt-out 标题改形态（ROADMAP 10.5.3）：规约说"不要用约定式提交"时，标题原本是 `scope: 描述`（实测产出 `git: 更新 write.ts`），而 scope 是**目录名**不是提交类型，顶在冒号前比 `feat` 更误导 —— 改为**完全不带前缀**（`更新 write.ts` / `改动 2 个文件`），位置信息不靠标题补（正文已逐行列出完整路径）
+2026-09-28 13:09 | [CI✅] `verify-commit-message.ts` E6 判据改宽 + 新增 E8：E6 原写死 `subject === 'git: 更新 write.ts'`（**照着实现写断言**，故坏形态也能全绿），改为断言"既无 Conventional 类型词、也无任何 `英文词:` 形状前缀"；新增 **E8** 覆盖**多文件且有 scope** 那一支。项数 31 → **32**，总项数 4112 → **4113**，套件数与写法分布不变
+2026-09-28 13:09 | [Fix🐛] `verify-read-guard.ts` 结果行改回标准形状：原本打印 `═══ verify-read-guard：38 通过 / 0 失败 ═══`（**不含"结果"二字**），而 `collect-stats.mjs` 只有一个正则、**没有兜底**，解析不到就整套丢出合计 —— 这 **38 项在 `npm run verify` 里一直被漏算**，症状是"总项数永久少一截、文档核对永久漂移"而非报错。全量对账时才发现
+2026-09-28 13:09 | [CI✅] `verify-doc-numbers.ts` 新增守护（44 → 45 项）：扫全部 `verify-*` 源码、**先剥注释**后断言都含"结果："（不剥会被自己注释里的字面量喂饱、恒绿）。变异 M3（把 read-guard 改回旧写法）精准红并点名该套。**结果行形状从此是契约**
+2026-09-28 13:09 | [CI✅] 本机首次**全量对账**：bash 循环逐套跑完 64 套（官方 `npm run verify` 因 node 起子进程受阻跑不动），总项数 **4114**、`.flint/` 跑完一字未变；非绿 3 套（`verify-git-write` 8 / `verify-proctree` 4 / `verify-extensions` 3）均为沙箱环境限制、非本轮引入
+2026-09-28 13:09 | [Fix🐛] 清理测试污染：跑完全套后 `src/extensions/` 下残留 4 个 untracked 的 `__probe-ext.ts` / `__bad-ext.ts`（`verify-extensions` 自造的探针，沙箱下删不掉），已删除并确认 `git status` 干净
+2026-09-28 13:09 | [CI✅] 10.5.3 **首次端到端真跑**：造临时仓库 → 三轮暂存（纯源码 / 纯文档 / 混合）→ 真 `git commit` 成功（`fd4607d feat(git): 改动 2 个文件`，git 正确切分标题与正文）；变异两轮各精准咬住（M1 改回 `scope: 描述` → E6/E8 两红；M2 关掉 opt-out 分支 → D4/D5/E6/E8 四红）。⚠ 环境事实：**bash 里 `git` 能用、node 里 `spawnSync('git')` 起不来（EBUSY）**，端到端取证须拆成"bash 跑 git + node 纯计算"两段
+
 2026-09-27 21:00 | [Feature✨] 仓库状态注入（ROADMAP 10.5.5）：project 层"三半"合成扩为"四半"，新增【仓库状态】段（分支 / 领先落后 / 工作区脏净），非 git 仓库整段缺席；probe 复用 `git.ts` 的 `parseStatus`，注册表 `repoStatusRegistry` 播种时一次性写入、运行期不回读
 2026-09-27 21:00 | [CI✅] 新增 `scripts/verify-repo-status.ts` 31 项（仓库状态注入）：① `summarizeRepoStatus` 纯函数判据 ② 渲染 `renderRepoStatusSection` ③ 注册表 `repoStatusRegistry` ④ 探针 `probeRepoStatus`（真仓库端到端）⑤ 注入层与种子（project 层"四半"合成）⑥ 源码守护；变异两轮精准变红（M1 计数恒失效 → 5 红；M2 领先落后恒 0 → 2 红）
 2026-09-27 21:00 | [Fix🐛] `verify-stack.ts` E10 / `verify-commands.ts` F10：把"三半"顺序断言改为"四半"顺序断言（仓库状态为第四半），项数维持 72/82 不变
