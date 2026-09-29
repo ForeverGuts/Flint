@@ -25,6 +25,15 @@
     "zero-dependency"
   ],
   "license": "MIT",
+  "author": "LittleLittleRed",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LittleLittleRed/flint.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LittleLittleRed/flint/issues"
+  },
+  "homepage": "https://github.com/LittleLittleRed/flint#readme",
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
