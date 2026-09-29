@@ -602,12 +602,31 @@ export class Runtime {
 
   /* ── 生命周期 ── */
 
+  /**
+   * 生命周期钩子的"开"，与 `stop()` 成对存在。**当前刻意为空，且全 src/ 零调用方**
+   * （2026-09-29 逐处核对）。
+   *
+   * 这不是欠着的账：Runtime 的 11 个依赖**全部由构造函数注入**（见 ARCHITECTURE 决策 2），
+   * 本来就没有需要在 start() 里二次装配的子模块。留着这对空实现，只是让"生命周期"这个
+   * 概念在 API 上对称——**别照着"这里有个 TODO"去补它**，补出来的是一条没人走的第二装配路径。
+   */
   async start(): Promise<void> {
-    // TODO: 使用 session / services 启动子模块
+    // 刻意为空
   }
 
+  /**
+   * 生命周期钩子的"关"。**当前刻意为空** —— 同样不是欠账，理由比 start() 更硬：
+   *
+   *   后台进程的终止挂在 `process/background.ts` 自注册的 `process.on('exit')` 上。
+   *   SIGINT / SIGTERM / 未捕获异常 / 正常退出**全部**汇入"进程退出"这一个事件，
+   *   在那里注册一次就覆盖所有路径；在这里再挂一次是**重复清理**，
+   *   而且 **stop() 在崩溃时恰恰不会被调到** —— 把清理押在它身上反而更不可靠。
+   *
+   * 调用方：`harness/main.ts` 的 SIGINT / SIGTERM 兜底（`runtime.stop().then(() => process.exit(0))`），
+   * 它靠的是这个 Promise 被 resolve，不是靠 stop() 干了什么活。
+   */
   async stop(): Promise<void> {
-    // TODO: 停止 Runtime 子模块
+    // 刻意为空
   }
 
   /* ── 核心方法 ── */
