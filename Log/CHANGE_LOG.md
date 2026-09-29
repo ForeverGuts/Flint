@@ -14,6 +14,8 @@
 字数限制：每段描述最多 1 行
 不同日期的记录之间用空行隔开
 
+2026-09-29 13:25 | [Config⚙️] **开源地址核对收尾**（上一批"待用户核对"的地址有了结论）：GitHub 用户名是 `ForeverGuts`、Gitee 用户名是 `LittleLittleRed`，两者**不同**，故 `package.json` 的 `author` / `repository` / `bugs` / `homepage` 与 `LICENSE` 署名一并改为 `ForeverGuts`；删除 `config/providers.json` 末尾的 `custom-wajis`「测试供应商」残留（`baseUrl` 为 `test.com`，非有效地址，供应商 5 → 4）
+
 2026-09-29 10:52 | [Docs📝] **开源前的体检与补漏**（本轮不做新功能）：新增 `LICENSE`（MIT，与 `package.json` 里已声明的 `license` 对齐 —— 只声明不落文件等于没授权）、新增 `README.md`（定位 / 快速开始 / 20 个工具 / 18 个命令 / 三条设计取舍 / 已知边界 / 文档地图）；`package.json` 补 `author` / `repository` / `bugs` / `homepage`（地址按 Gitee 上的 `LittleLittleRed` 推得，待用户核对）
 2026-09-29 10:52 | [Fix🐛] `runtime.start()` / `stop()` 的两条 `// TODO` 注释**与真实决策矛盾**，改成"刻意为空 + 理由"：`stop()` 的清理实际挂在 `process/background.ts` 自注册的 `process.on('exit')`（四条退出路径全汇入"进程退出"一个事件，且**崩溃时 stop 恰恰不会被调到**，押在它身上反而更不可靠）；`start()` 则**全 src/ 零调用方**（11 个依赖全由构造函数注入，没有需要二次装配的子模块）。**只改注释，行为零变化** —— 留着 TODO 会让读代码的人（开源后是陌生人）以为这里有欠账而去"补"它
 2026-09-29 10:52 | [Docs📝] 体检结论（开源前核对用，均已实测）：已跟踪 236 个文件里**零**本机绝对路径、**零**真实密钥（`active-config.json` / `provider-keys.json` 已被 `.gitignore` 挡住，只跟踪 `*.example.json`）、`sessions/` 与 `.workbuddy/` 与草稿目录同样不随仓库共享、`tsc --noEmit` 0 错、65 套 4221 通过（12 项失败全属本通道起不了子进程的沙箱限制）

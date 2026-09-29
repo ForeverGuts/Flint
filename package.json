@@ -25,15 +25,15 @@
     "zero-dependency"
   ],
   "license": "MIT",
-  "author": "LittleLittleRed",
+  "author": "ForeverGuts",
   "repository": {
     "type": "git",
-    "url": "https://github.com/LittleLittleRed/flint.git"
+    "url": "https://github.com/ForeverGuts/flint.git"
   },
   "bugs": {
-    "url": "https://github.com/LittleLittleRed/flint/issues"
+    "url": "https://github.com/ForeverGuts/flint/issues"
   },
-  "homepage": "https://github.com/LittleLittleRed/flint#readme",
+  "homepage": "https://github.com/ForeverGuts/flint#readme",
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
