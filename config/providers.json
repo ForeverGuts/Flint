@@ -151,18 +151,6 @@
           "description": "最强推理模型"
         }
       ]
-    },
-    {
-      "id": "custom-wajis",
-      "name": "测试供应商",
-      "baseUrl": "test.com",
-      "type": "openai",
-      "staticModels": [
-        {
-          "id": "deepseek",
-          "label": "deepseek"
-        }
-      ]
     }
   ]
 }
