@@ -1,0 +1,5 @@
+# RAG sidecar 依赖（Python 3.13）
+# 安装：.venv/Scripts/pip install -r requirements.txt
+openai>=1.40
+chromadb>=0.6
+langchain-text-splitters>=0.3

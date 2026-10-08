@@ -403,7 +403,7 @@ check('F6 refs 的 0 命中走 toolOk（不是 toolNegative）', (() => {
 })());
 check('F7 类别枚举只在判据模块定义一次（builtin 不抄字面量）',
   !/'definition'/.test(builtinCode) && !/REFERENCE_KINDS\s*=/.test(builtinCode));
-  check('F8 模块头工具数改到 20（不是\"悄悄多一个\"）', /共 20 个/.test(builtinRaw));
+  check('F8 模块头工具数改到 21（不是\"悄悄多一个\"；note_search 2026-10-06 加入后 20→21）', /共 21 个/.test(builtinRaw) && !/共 20 个/.test(builtinRaw));
 check('F9 工具描述里明说"不做作用域分析"（诚实底线写在模型看得见的地方）', (() => {
   const seg = toolSegment('refs');
   return seg.includes('作用域');

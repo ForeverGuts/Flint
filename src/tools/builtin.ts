@@ -2,7 +2,8 @@
  * 内置工具注册 —— Ls / Read / Write / Edit / Grep / Bash 六个核心工具，
  * 外加清单（todo）/ 记忆（memory）/ 事件库（record_event · search_events · pull_events）/
  * 分叉点提问（ask）/ 坐标归档（archive）/ git 只读查询（git）/ git 写操作（git_write）/
- * 符号定义检索（symbols）/ 引用查找（refs）/ 删除回收站（trash）等系统级工具，共 20 个。
+ * 符号定义检索（symbols）/ 引用查找（refs）/ 删除回收站（trash）/ 笔记语义检索（note_search）
+ * 等系统级工具，共 21 个。
  * 调用方：main.ts（组装工具子系统时调用）
  * 服务于：为 LLM 提供列目录、读文件、写文件、精准改片段、搜索内容、查定义、执行命令的能力
  *         （Ls 支撑"工具增强推理"：模型先看清项目结构再动手，不凭记忆脑补）
@@ -18,6 +19,7 @@
  *    静默改错地方比拒绝一次的代价大得多（edit 的 0 命中与多命中两条拒绝路径即此原则）
  */
 import type { ToolProvider } from '../core/tools.js';
+import { McpClient, sharedMcpClient } from '../mcp/client.js';
 import {
   defineTool, str, strAllowEmpty, optStr, optPosInt, optBool, ToolInputError,
   toolOk, toolInvalid, toolError, toolVerifyFailed, toolNegative,
@@ -1867,6 +1869,155 @@ export function registerBuiltinTools(
         if (e instanceof ToolInputError) return toolInvalid(e.message);
         return toolError(`task 执行失败: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
       }
+    },
+  }));
+
+  /* ── note_search：查自建笔记知识库（RAG 语义检索，Python 侧车经 MCP 协议） ──
+   * 调用方：LLM（想回顾"我自己笔记里写过什么"时）
+   * 服务于：flint 本体与重依赖的进程边界 —— 嵌入模型 / 向量库 / reranker 全部住在
+   *         sidecar/rag/（独立 venv），经 MCP stdio 协议暴露（2026-10-06 MCP 化）。
+   *         本体保持零运行时依赖；sidecar 缺席是可选组件未安装，走降级提示。
+   * 通道形状（双保险，2026-10-06 定）：
+   *   主路径 = MCP 长驻连接（src/mcp/client.ts）：spawn 一次 + initialize 握手，
+   *            之后每次 tools/call 复用连接，进程死亡下次调用自愈重启；
+   *   降级   = 一把一 spawn（query.py --json 单发）：MCP 握手失败 / 协议异常时兜底，
+   *            保证"侧车能用"不因协议层单点故障而整体不可用。
+   * 只读承诺：对笔记库零写入（建索引也只读），不 requirePermission 的依据与
+   *   memory / symbols 相同 —— 无副作用、无越权面；会话内问答不落盘。
+   * 口径：语料 = vault 自建知识笔记（黑名单见 sidecar/rag/config.py，含 227 篇
+   *   第三方 clone 资料的排除）。manifest.json 是唯一事实源。
+   * 超时判死：嵌入 API 走外网，MCP 调用 30s / 降级 spawn 20s 收不到响应按失败回报。 */
+  tools.register(defineTool({
+    name: 'note_search',
+    description: '语义检索自建 Obsidian 笔记知识库（约 278 篇：Agent 架构与协议、四开源 Agent 源码分析、设计模式、Python/TS、面试知识）。混合检索：BM25 关键词 + 向量语义双通道 RRF 融合召回，再经 cross-encoder 精排取 top_k（金标 21 问 hit@5=100%）；精确标识符（工具名/代码字面量/文件名）与自然语言问题都适合。用于回顾"我自己的笔记里记过什么"——某条决策的来龙去脉、某概念我的理解、某次踩坑。查代码用 grep / symbols（那是精确匹配）；查第三方公开资料不用本工具（第三方 clone 资料不在库里）。',
+    spec: {
+      query: str('查询问题', '自然语言问题，越具体命中越准。示例: "上下文压缩的实现思路" 或 "flint 为什么自己写 MCP 而不用 SDK"'),
+      top_k: optPosInt('返回条数', '返回最相关的几条，缺省 5。示例: 3', 5),
+      scope: optStr('检索范围', '可选：限定在某个笔记路径前缀内检索（如 "11-实践案例" 或 "2-Agent能力/提示词缓存.md"），缺省空 = 全库。范围内没命中就返回空，不会退回全库。示例: "11-实践案例"', ''),
+    },
+    handler: async (args) => {
+      const { execFile } = await import('node:child_process'); // 降级路径 spawn（G12 计数内）
+      const nodePath = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const fs = await import('node:fs');
+      // sidecar 位置：builtin.ts 在 src/tools/ 下，仓库根 = 上两级；RAG_SIDECAR_DIR 可覆盖
+      const repoRoot = nodePath.resolve(
+        nodePath.dirname(fileURLToPath(import.meta.url)), '../..');
+      const sidecar = process.env.RAG_SIDECAR_DIR
+        ?? nodePath.join(repoRoot, 'sidecar', 'rag');
+      const py = nodePath.join(sidecar, '.venv', 'Scripts', 'python.exe');
+      const queryScript = nodePath.join(sidecar, 'query.py');
+      const mcpScript = nodePath.join(sidecar, 'mcp_server.py');
+      if (!fs.existsSync(py) || !fs.existsSync(queryScript)) {
+        // 组件缺席 ≠ 检索无命中（negative 是"查了没有"，这是"根本没得查"），走 toolError
+        return toolError(
+          '笔记检索侧车未安装（sidecar/rag 下没有 .venv 或 query.py）。'
+          + '安装方法见 sidecar/rag/README.md：venv + pip install -r requirements.txt'
+          + ' + corpus.py + index_build.py。装好前本工具不可用，其他工具不受影响。');
+      }
+
+      // 范围限定（scope）：空串 = 不限（spec 的缺省），两条通道各自表达这一参数。
+      // `typeof` 兜底与 trash 那处（`typeof args.command === 'string'`）同款：handler
+      // 直接调用（不经 parse）时可选参数可能是 undefined —— 套件就是这么打靶的。
+      const scope = (typeof args.scope === 'string' ? args.scope.trim() : '') || undefined;
+
+      // 结果渲染：MCP 与降级两条路产出同一形状，共用。
+      // cutSentence：摘要按句边界截断（宁可短半句，不留半句话）——硬切会把
+      // 半句话当原文喂给模型，引用时容易断章取义
+      const cutSentence = (s: string, limit: number): string => {
+        if (s.length <= limit) return s.replace(/\n/g, ' ');
+        const w = s.slice(0, limit);
+        let best = -1;
+        for (const ch of '。！？；…!?;') best = Math.max(best, w.lastIndexOf(ch));
+        return (best >= limit / 2 ? w.slice(0, best + 1) : w).replace(/\n/g, ' ');
+      };
+      const render = (r: { query: string; scope?: string | null; total_indexed: number; rerank: boolean;
+                           stale: { stale: boolean; changed: number; removed: number; added: number } | null;
+                           rewrites?: string[];
+                           rebuilt?: { changed: number; removed: number; embedded: number } | null;
+                           results: { score: number; title: string; heading: string; path: string; snippet: string }[] }) => {
+        if (r.results.length === 0) {
+          // 带范围时空结果的含义不同：不是"库里没有"，是"你圈的那个域里没有"——
+          // 说成前者会让模型改写查询重试，而正解往往是范围写错了或该换全库查
+          return r.scope
+            ? toolOk(`「${r.query}」在范围「${r.scope}」内没有命中（库内共 ${r.total_indexed} 条，`
+              + `本次只在范围内检索）。**限定范围不会自动退回全库** —— 要么范围写错了`
+              + `（前缀要能对上笔记的相对路径），要么该域里确实没记过；想全库查就别传 scope`)
+            : toolOk(`「${r.query}」在 ${r.total_indexed} 条笔记块中没有命中。`
+              + `0 命中不是有效否定 —— 换个说法再查，或确认该主题确实没记过笔记`);
+        }
+        const lines = r.results.map((it, i) =>
+          `${i + 1}. [${it.score.toFixed(3)}] ${it.title}`
+          + (it.heading ? ` · ${it.heading}` : '')
+          + `\n   ${it.path}\n   ${cutSentence(it.snippet, 160)}…`);
+        // 分数口径随侧车是否重排而变（两段式检索：向量召回 20 → reranker 精排 top_k；
+        // 精排失败侧车自动降级为召回序，rerank=false）——口径说错模型就会错误解读分数
+        const scoreNote = r.rerank === true
+          ? `分数 = reranker 相关度（0~1，>0.5 强相关）`
+          : `分数 = 1 − 余弦距离（召回序，>0.5 算强相关）`;
+        // 陈旧提示：笔记库自上次建索引后有变更时，检索结果可能不含最新内容——
+        // 过期是静默的（不报错），必须当数据回报给模型，让它决定要不要建议重建
+        const stale = r.stale;
+        // 自动重建回执：侧车检索前发现过期已代劳增量重建——必须告诉模型"结果
+        // 基于最新索引"，否则它会按 stale 语义错误地提醒用户去手动重建
+        const rebuildNote = r.rebuilt
+          ? `\n（检索时发现索引过期，已自动增量重建：改 ${r.rebuilt.changed} / 删 ${r.rebuilt.removed} 篇、重嵌 ${r.rebuilt.embedded} 块——以下结果基于最新索引）`
+          : '';
+        const staleNote = stale && stale.stale
+          ? `\n⚠️ 索引可能过期：笔记库自上次建索引后有变更（改 ${stale.changed} / 删 ${stale.removed} / 新增 ${stale.added} 篇），检索结果可能不含最新内容。可建议用户在 sidecar/rag 跑 index_build.py 更新索引`
+          : '';
+        const rewriteNote = r.rewrites && r.rewrites.length > 0
+          ? `\n（口语查询已改写为：${r.rewrites.join('；')}——引用时以笔记原文为准）`
+          : '';
+        // 范围必须报出来：模型按"命中 N 条"下结论时，得知道这 N 条来自全库还是某个域
+        const scopeNote = r.scope ? `；范围「${r.scope}」` : '';
+        return toolOk(`「${r.query}」命中 ${r.results.length} 条（库内 ${r.total_indexed} 条${scopeNote}）：\n${lines.join('\n')}`
+          + `\n（${scoreNote}；引用时给用户报笔记路径）${rebuildNote}${staleNote}${rewriteNote}`);
+      };
+
+      // ── 主路径：MCP 长驻连接（握手一次，tools/call 复用；进程死亡下次自愈） ──
+      try {
+        const client = sharedMcpClient('rag-notes', () => new McpClient({
+          command: py, args: [mcpScript], cwd: sidecar,
+          // PYTHONUTF8=1 让侧车解释器整体进 UTF-8 模式：Windows 上 stdout 默认跟系统
+          // ANSI 代码页（GBK），笔记里的 emoji（🟡 等）一打印就 UnicodeEncodeError，
+          // 实测两次检索均死于此。server 内部另有 reconfigure 双保险（护手测 CLI）。
+          env: { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+        }));
+        await client.ensureReady(15000);
+        const res = await client.callTool('note_search',
+          { query: args.query, top_k: args.top_k, ...(scope ? { scope } : {}) }, 30000);
+        if (res.ok) {
+          return render(JSON.parse(res.text));
+        }
+        // MCP isError（检索失败）也先试降级：server 报错可能是环境抖动，一把一 spawn 值得再试
+      } catch {
+        // MCP 通道整体起不来（协议异常/握手失败）→ 降级，不把协议故障暴露给模型
+      }
+
+      // ── 降级路径：一把一 spawn（每次调用一个进程，argv 进 query、一行 JSON 出） ──
+      return new Promise((resolve) => {
+        execFile(py, [queryScript, '--json', args.query, '-k', String(args.top_k),
+                      ...(scope ? ['--in', scope] : [])],
+          { cwd: sidecar, timeout: 20000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+            env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' } },
+          (err, stdout) => {
+            if (err) {
+              return resolve(toolError(
+                `note_search 侧车调用失败（20s 超时判死或进程报错）: `
+                + `${err.message.slice(0, 300)}。若索引未建，先在 sidecar/rag 跑 index_build.py`));
+            }
+            try {
+              // 侧车约定：一行 JSON，{"result":{...}} 或 {"error":{...}}
+              const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+              const parsed = JSON.parse(line);
+              if (parsed.error) return resolve(toolError(`note_search 侧车错误: ${parsed.error.message}`));
+              resolve(render(parsed.result));
+            } catch (e) {
+              resolve(toolError(`note_search 响应解析失败: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`));
+            }
+          });
+      });
     },
   }));
 }

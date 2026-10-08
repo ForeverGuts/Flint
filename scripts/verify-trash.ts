@@ -272,8 +272,8 @@ check('F3 计划模式名单**真的**含 trash（它是删除的唯一入口，
 const registry = new ToolRegistry();
 registerBuiltinTools(registry);
 const names = registry.getLLMTools().map((t) => t.function.name);
-check('F4 真注册表里有 trash 工具，且工具数到 20（不是"悄悄多一个"）',
-  names.includes('trash') && names.length === 20, String(names.length));
+check('F4 真注册表里有 trash 工具，且工具数到 21（不是"悄悄多一个"；note_search 2026-10-06 加入后 20→21）',
+  names.includes('trash') && names.length === 21, String(names.length));
 check('F5 trash 需要用户确认（删除是改类动作，不可静默执行）',
   registry.requiresPermission('trash') === true);
 

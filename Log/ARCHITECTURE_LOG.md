@@ -11,6 +11,21 @@
 
 ---
 
+<a id="log-2026-10-06-mcp"></a>
+
+## 2026-10-06 15:25 | note_search 的进程边界升级为 MCP 协议：侧车从"私有 CLI"变成"标准 server"
+
+**牵连系统/层次**：`sidecar/rag/mcp_server.py`（新增，协议信封）· `src/mcp/client.ts`（新增，零依赖 MCP 客户端）· `src/tools/builtin.ts` note_search handler（主路径切换 + 降级保留 + 渲染共用）· `scripts/verify-mcp-note-search.ts`（新增，第 67 套件）· `scripts/verify-tools.ts` G12（起子进程模块清单 2 → 3）。
+
+**面向的问题**：MCP 化前 note_search 走"一把一 spawn"——每次检索冷启动一个 Python 进程（chromadb/openai 重 import 全额付费）、协议是私有一行 JSON（只有 flint 一个调用方，别的 MCP 客户端接不进来）；且"协议"没有握手/能力协商，server 端无法拒绝未初始化的请求。
+
+**做出的改动**：① 侧车新增 `mcp_server.py`——纯标准库实现 MCP stdio 传输（newline-delimited JSON-RPC 2.0）：initialize 握手回 protocolVersion/capabilities、未初始化请求按规范 -32002 拒绝、tools/list 带 JSON Schema、tools/call 惰性加载重依赖（轻请求在索引库损坏时依然可用）、检索失败按 `isError:true` 回报不吞成协议错误；检索核心 `query.search()` **一行未改**——v1 预留的 JSON-RPC 形状兑现为只换信封。② 本体新增 `src/mcp/client.ts`——长驻连接（spawn 一次 + 握手，多次调用按 id 配对复用）、超时即杀连接（迟到响应会造成 id 错位，连接不可复用）、进程死亡自愈（下次调用重新握手）、stderr 只留尾部做诊断现场。③ note_search 双通道：MCP 为主、一把一 spawn 为降级，两条路产出同形状共用渲染——协议层单点故障不拖垮工具可用性。④ G12 的"起子进程模块清单"从两个更新为三个（builtin 3 处 / runner 1 处 / mcp/client 1 处）。
+
+**解决的问题**：多轮检索免去重复冷启动；侧车成为任何 MCP 客户端可接的标准 server（不止 flint 自己）；协议纪律（握手、未初始化拒绝、能力协商）有了程序闸而非口头约定；G12 继续钉住"哪些模块有权起进程"的边界。
+
+**未来可优化**：① client 目前只支持 stdio 单工具 server，接入第三方 MCP server（多工具、资源、sampling）时再评估泛化为连接管理器；② note_search 每会话首调用仍付一次冷启动（进程惰性 spawn），若成为体感可改为 Runtime 装配期预热；③ 增量索引（笔记变更后免全量重建）仍是侧车内部的独立课题。
+
+
 <a id="log-2026-09-27-repo-status"></a>
 
 ## 2026-09-27 21:00 | 项目层"三半"合成演进为"四半"：仓库状态注入成为第四半

@@ -78,7 +78,11 @@ console.log('\n① 契约与注册（加的是**可选**成员，9 处 ToolProvi
   // 而是**独立工具名**：前者的理由是"这个工具会不会改用户的文件"必须由**工具身份**回答
   //（计划模式闸只看名字、不看参数）；后者的理由是两种"没找到"的**失败语义相反**
   //（grep 的 0 命中是有效否定，symbols 的 0 命中只是启发式没认出来）。
-  check('A1 内置工具从 7 个变 20 个，含 edit 与 todo 与记忆事件四件套与 ask 与 archive 与 git 与 git_write 与 symbols 与 refs 与 spawn 与 task 与 trash', llmTools.length === 20 && names.includes('trash') && names.includes('edit') && names.includes('todo') && names.includes('memory') && names.includes('record_event') && names.includes('search_events') && names.includes('pull_events') && names.includes('ask') && names.includes('archive') && names.includes('git') && names.includes('git_write') && names.includes('symbols') && names.includes('refs') && names.includes('spawn') && names.includes('task'), names.join(','));
+  // 21 = 20 + note_search（2026-10-06 RAG 笔记检索）。note_search 也不是既有工具的
+  // "多一个模式"：它是**唯一一个把子进程调用留给外部 sidecar 的工具**（python 侧车，
+  // argv 不经 shell、只读、零副作用）——工具身份回答"这是查我自己笔记库的"，不会和
+  // grep（字面搜文件）的语义混淆。
+  check('A1 内置工具从 7 个变 21 个，含 edit 与 todo 与记忆事件四件套与 ask 与 archive 与 git 与 git_write 与 symbols 与 refs 与 spawn 与 task 与 trash 与 note_search', llmTools.length === 21 && names.includes('trash') && names.includes('edit') && names.includes('todo') && names.includes('memory') && names.includes('record_event') && names.includes('search_events') && names.includes('pull_events') && names.includes('ask') && names.includes('archive') && names.includes('git') && names.includes('git_write') && names.includes('symbols') && names.includes('refs') && names.includes('spawn') && names.includes('task') && names.includes('note_search'), names.join(','));
   check('A2 edit 需要用户确认（改类工具不可静默执行）', registry.requiresPermission('edit') === true);
   const params = llmTools.find((t) => t.function.name === 'edit')?.function.parameters as
     | { required?: string[]; properties?: Record<string, unknown> }

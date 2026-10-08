@@ -348,7 +348,7 @@ console.log('\n⑦ 源码文本断言（防回退）');
     : builtinSrc.slice(toolDefs[grepIdx].at,
       grepIdx + 1 < toolDefs.length ? toolDefs[grepIdx + 1].at : undefined);
   check('G0 切片本身有效（否则下面几条是空转的假绿）——射程恰好是 grep 这一个工具，不吃邻居',
-    toolDefs.length === 20 && grepBlock.length > 500
+    toolDefs.length === 21 && grepBlock.length > 500
     && !grepBlock.includes("name: 'bash'") && !grepBlock.includes("name: 'symbols'"),
     `切到 ${grepBlock.length} 字符，工具定义行 ${toolDefs.length} 个`);
   // 断言用**调用形态**（带括号）而非裸标识符：解释性注释里会写"Windows 上 execSync 走
@@ -407,10 +407,20 @@ console.log('\n⑦ 源码文本断言（防回退）');
   // 2026-09-21（ROADMAP 10.10.1 后台任务）：spawn 起进程走 process/background.ts（用 require，
   // 不经 await import），所以 G12 断言的计数**不变**（builtin 仍 2、runner 仍 1）。
   // 若有人把 spawn 也改写成 await import 直连，G12 会红 —— 那是刻意的提醒：要回到 BackgroundTaskStore。
+  // 2026-10-06（RAG 笔记检索）：builtin.ts **2 处变 3 处** —— 新增 note_search 用 execFile
+  // 起 python 侧车。**理由**：检索目标是"flint 自己的笔记库"，属只读问答不入计划模式闸；
+  // 走 argv 数组不经 shell（同 git 两处纪律）；选**异步** execFile 而非 runner 的同步链，
+  // 是因为 20s 超时判死只需杀 python 单进程——侧车不再 spawn 孙进程，proctree 顾虑不存在。
   // runnerSrc 已在 ⑤ 段头部定义（D7/D8 现在钉 runner.ts 而非 builtin.ts）
-  check('G12 起子进程只有两个模块：builtin.ts（git 读/写两个工具，argv 不经 shell，2 处调用）与 process/runner.ts（bash 与自检共用）',
-    (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 2
-    && (runnerSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 1);
+  // 2026-10-06（MCP 化）：新增 src/mcp/client.ts **1 处** —— MCP 长驻连接的 spawn。
+  // **理由**：note_search 主路径升级为 MCP 协议（握手一次、tools/call 复用），client
+  // 必须自己管子进程生命周期（spawn/exit/自愈重启）；降级路径仍是 builtin 里的
+  // execFile（一把一 spawn），所以 builtin 计数不变。协议配对实现在 sidecar/rag/mcp_server.py。
+  check('G12 起子进程只有三个模块：builtin.ts（git 读/写 + note_search 降级 spawn，argv 不经 shell，3 处调用）、process/runner.ts（bash 与自检共用）与 mcp/client.ts（MCP 长驻连接 spawn）',
+    (builtinSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 3
+    && (runnerSrc.match(/await import\('node:child_process'\)/g) ?? []).length === 1
+    && (fs.readFileSync(path.join(ROOT, 'src/mcp/client.ts'), 'utf-8')
+      .match(/await import\('node:child_process'\)/g) ?? []).length === 1);
   check('G12b builtin.ts 里不再直接 spawnSync / execSync（那等于退回"只杀 shell、孙进程照跑"）',
     !/\b(spawnSync|execSync)\(/.test(builtinSrc));
 }

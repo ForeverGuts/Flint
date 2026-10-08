@@ -28,7 +28,7 @@
 │                   命令 / inputHandlers（10.8.1 起 = `@file` 输入引用） / skill 展开 → 压缩 → Agent Loop → 落盘
 └───────────────────────────────────────────────────────────
 
-┌─ 契约层 · core/（11 个文件）──────────────────────────────
+┌─ 契约层 · core/（13 个文件）──────────────────────────────
 │                   子系统之间只通过这里的接口说话，谁也不 import 谁的实现
 │ 执行类 Service    loop · commands · compaction · diagnostics · system-prompt
 │ 能力提供类        tools(ToolProvider) · permission(PermissionProvider)
@@ -51,7 +51,10 @@
 │                     闸那边的真落点也由它提供 —— 由装配处注入，故闸自身仍不碰 fs）
 │                   + read-guard.ts（10.7.4：read 的二进制与整读体积体检 —— 二进制判定只 import walk.ts 的
 │                     headIsBinary 不复制，体检口径全仓一份；命中只报摘要、分段永远放行、探不动 fail-open）
-│                   + 20 个内置工具（ls / read / write / edit / grep / symbols / refs / bash / todo / memory / record_event / search_events / pull_events / ask / archive / git / git_write / spawn / task / trash）
+│                   + 21 个内置工具（ls / read / write / edit / grep / symbols / refs / bash / todo / memory / record_event / search_events / pull_events / ask / archive / git / git_write / spawn / task / trash / note_search）
+│ mcp/              MCP 协议客户端（P11，2026-10-06）：client.ts —— 长驻 stdio JSON-RPC 2.0 连接（initialize 握手 → tools/list
+│                   → tools/call）· id 配对 + 超时杀连接 · 进程退出自愈（下次 ensureReady 重新 spawn + 握手，不探活）；
+│                   `note_search` 的主通道，连不上 → 降级回"一把一 spawn"。零依赖，只动 node:child_process / node:readline
 │ search/           逐文件内容扫描（10.7.1）：walk.ts 遍历器（scanPaths / readForScan / headIsBinary / SKIP_DIRS）—— grep 与
 │                   symbols **共用同一份**"走目录 + 跳过表 + .gitignore + 二进制/体积体检"（ls 复用同一份跳过表，但保留
 │                     自己"列目录树"的遍历形状；read 的体检自 10.7.4 起复用同一份 headIsBinary）；
@@ -108,6 +111,15 @@
 │ llm/              createProvider() 工厂 → AnthropicProvider（provider === 'anthropic'）
 │                                          → DeepSeekProvider（其余一律，OpenAI 兼容）
 │                   OllamaProvider 仍只是注释里的愿景，没有实现
+└───────────────────────────────────────────────────────────
+
+┌─ 进程外 · sidecar/（可选；**不在 flint 进程内**）──────────
+│ sidecar/rag/      RAG 笔记检索侧车（P11，2026-10-06）：Python + 自己的 .venv —— 分块 / 嵌入（SiliconFlow bge-m3）/
+│                   Chroma 向量库 / 精排（bge-reranker-v2-m3）/ 查询改写 / 词典三层 / 增量索引**全在这里**；
+│                   经 mcp_server.py 以 MCP（stdio JSON-RPC 2.0）暴露检索工具
+│ ↑↓ 由 src/mcp/client.ts 连（上面子系统里的那个，**在进程内**）：长驻连接 / 握手一次 / 进程退出自愈
+│    连不上 → note_search 降级回"一把一 spawn"（可选组件缺席 = 环境问题，不是模型错）
+│ 边界：flint 的 dependencies 仍为**空**；侧车缺席只影响 note_search 一个工具，其余工具照常
 └───────────────────────────────────────────────────────────
 
 ┌─ 交互层 · io/ ────────────────────────────────────────────

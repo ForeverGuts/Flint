@@ -664,6 +664,15 @@ LLM 调用抽象接口，位于 `src/llm/types.ts`。两个方法：`chat(messag
 
 ## M
 
+### MCP（Model Context Protocol）
+一种**工具协议**（Anthropic 提出）：server 在 stdio 上用 **newline-delimited JSON-RPC 2.0** 暴露 `tools/list` / `tools/call`，client 握手（`initialize`）后**长驻**调用。本项目的用法是**自己当 client**（`src/mcp/client.ts`）去连**自己的侧车**（`sidecar/rag/mcp_server.py`）——把 [note_search](#notesearch笔记检索工具) 的主路径从"一把一 spawn"换成"长驻连接"：握手一次、多次调用分摊连接成本。
+
+**三条规范级细节**（都进了验证）：未 `initialize` 就发请求 → server 回 **-32002**；`tools/call` 缺必填参数 → **-32602**；`result.isError=true` → 归一化成"工具失败"。
+
+**零依赖 + 自愈**：client 只动 `node:child_process` / `node:readline`，**不引官方 SDK**（与 [决策 6](./ARCHITECTURE.md#决策-6不做-di-容器) 同一种"能不引就不引"的口径——不引的是 **SDK**，不是能力）；server 进程退出后置空连接，下次 `ensureReady` 重新 spawn + 握手（**刻意不做探活**：探活要多一次往返，而"用了再发现死了"的代价只是重 spawn 一次）。
+
+参见：[note_search](#notesearch笔记检索工具) · [RAG 侧车](#rag-侧车rag-sidecar) · [ARCHITECTURE_LOG 2026-10-06 MCP 化](./ARCHITECTURE_LOG.md#log-2026-10-06-mcp)
+
 ### Mode（运行模式）
 `enum Mode { Repl = 'repl', Rpc = 'rpc' }`（`types.ts`），用于切换交互模式。缺省 `Repl`。
 
@@ -673,6 +682,21 @@ LLM 调用抽象接口，位于 `src/llm/types.ts`。两个方法：`chat(messag
 `SessionStorage` 的测试替身，位于 **`src/session/mock.ts`**（旧文档写的 `src/runtime/session.mock.ts` 不存在）。`messages` 字段公开，测试中可直接断言内容。
 
 参见：[SessionStorage](#sessionstorage)
+
+## N
+
+### note_search（笔记检索工具）
+把**自然语言问题**拿去检索**用户自己写过的笔记库**（Obsidian vault；本项目口径 **278 篇自建笔记**，另 227 篇第三方 clone 资料与模板经黑名单排除），返回最相关的段落——补的是"查代码"（[grep](#grep递归搜索工具) / symbols / refs）之外的**语义**通道：问题与答案**用词不同也能命中**（"怎么让 AI 记住前面聊过的话"要能捞到讲上下文压缩的笔记）。
+
+**重活全在进程外**：分块 / 嵌入（SiliconFlow `BAAI/bge-m3`，1024 维）/ Chroma 向量库 / 精排（`bge-reranker-v2-m3`）/ 查询改写都在 [RAG 侧车](#rag-侧车rag-sidecar) 里，经 [MCP](#mcpmodel-context-protocol) 暴露给 `src/mcp/client.ts` —— **flint 本体的 `dependencies` 仍为空**。
+
+**两条通道 + 一条降级**：主通道是长驻 MCP 连接；MCP 起不来时**降级回"一把一 spawn"**（直接起一次 `query.py`）。**可选组件缺席是环境问题、不是模型错**：回执必须带**安装指引**（"怎么装"），而不是一句"失败了"。
+
+**检索链路**：向量召回（`RECALL_K=20`）→ 精排取 top-k；**混合检索** = BM25 字面通道 + 向量语义通道经 **RRF**（`RRF_K=60`）融合 —— 融合的是**排名**不是分数（两路分数不同量纲，加权求和等于把两把单位不同的尺子相加）；检索前先过**查询改写**（口语 → 书面变体，`变体只补充不稀释`、`REWRITE_GATE=0.60`、命中判据取各变体的 `max`）。单篇上限 `MAX_PER_NOTE=2`（要的是**笔记清单**，不是同一篇的 5 段）。
+
+**索引纪律**：增量索引按 `(mtime, size)` 签名判"变更 / 删除 / 未变"；**零变更运行时连库都不开**（`chroma.sqlite3` 逐字节一致 —— 账本那条"跑完一字未变"认字节不认语义）；笔记被删 / 改名时**先删旧块再插新块**，修掉"孤儿块被检索到"这个正确性问题 —— 它比"漏更新"更坏，因为会**检索到已经不存在的文本**。
+
+参见：[RAG 侧车](#rag-侧车rag-sidecar) · [ROADMAP](./ROADMAP.md) 的 P11 · [TESTING.md](./TESTING.md)（三套：note-search / mcp-note-search / rag-index）
 
 ## O
 
@@ -776,6 +800,15 @@ ROADMAP **10.9.5**（2026-09-19）：`write cwd/link-out/x` 里那个 `link-out`
 
 ## R
 
+### RAG 侧车（RAG Sidecar）
+一个**可选的外部进程**，专门装"本体重活不想背"的那部分能力：当前唯一一个是 `sidecar/rag/` —— Python + 自己的 `.venv`（LangChain / Chroma / 嵌入 / 精排都在里头），经 [MCP](#mcpmodel-context-protocol) 暴露给 [note_search](#notesearch笔记检索工具)。
+
+**为什么外置而不是直接写进 flint**：flint 的硬约束是**零运行时依赖 + 秒级启动**（`package.json` 的 `dependencies` 为空），把 Chroma 这类库绑进本体等于把这条约束破掉；而 RAG 需要的模型 / 向量库 / 网络全是"慢、重、可选"的东西。**边界非常清楚**：侧车缺席只影响 `note_search` 一个工具，其余 20 个工具照常工作。
+
+**它不是插件系统**：不做自动发现、不做热加载，就是一个目录；`src/mcp/client.ts` 里写死怎么起它（venv 的 `python.exe` + `mcp_server.py`）。路径 / 索引目录 / manifest 全走环境变量（`RAG_VAULT` / `RAG_INDEX_DIR` / `RAG_MANIFEST`），所以验证套件能把它们指到临时目录、**真实索引零接触**。
+
+参见：[note_search](#notesearch笔记检索工具) · [MCP](#mcpmodel-context-protocol) · 目录职责表见 [目录.md](./目录.md)
+
 ### REPL 模式
 `Read → Eval → Print → Loop` 的交互循环。用户打字 → Agent 回复 → 等下一次输入。
 
@@ -839,6 +872,18 @@ Agent 可调用的能力模块，**已落地**（旧文档标“计划中”已�
 技能的**声明式依赖**（2026-09-12）：frontmatter 写 `depends: a, b`（逗号分隔、去重保序），加载进 `Skill.depends`；`getDependents(name)` 反查"谁声明了依赖 X"（悬空名字也可查）。两个消费出口：系统提示词技能段标注「依赖 / 缺失」（静态悬空声明的暴露口，每轮自愈）；热重载 `SkillChange.broken` 列出因本次删除而失去依赖的技能（TreeUI 提示「⚠ x 失去依赖」）。**没有 `addDependency`**——无调用方的公开方法是「支持但未接线」债，见 [DECISION_LOG](./DECISION_LOG.md#log-2026-09-12-skill-deps)。
 
 **"谁通知 UI"的答案**：不需要通知——提示词层每轮 `systemPromptService.build` 现取 `getAll()`，内存清单一刷新 LLM 侧自动生效；`onChange` 观察者只服务 UI 提示（TreeUI 诊断区追加「🔄 技能已热更新」行）。启动期 `load()` 不通知，通知只在热重载路径。参见 [TaskStore](#taskstore任务清单真相源)（同一观察者范式）与 [Compaction](#compaction上下文压缩)（同日修掉的绑死 bug）。
+
+### scope（检索范围限定 / `--in`）
+
+[`note_search`](#notesearch笔记检索工具) 的工具参数 `scope`、侧车 CLI 的 `--in 路径前缀`、[MCP](#mcpmodel-context-protocol) `tools/call` 的 `scope` 参数 —— 三处**同一个语义**：把检索圈在一条**路径前缀**内（`"11-实践案例"`，或细到 `"2-Agent能力/提示词缓存.md"`）。
+
+判据只此一处 —— [RAG 侧车](#rag-侧车rag-sidecar) 的 `query._in_scope()`，**向量与 BM25 两条通道共用同一个口径**（各筛各的会让"范围"有两个定义）。三处刻意的选择：**路径段级**匹配（`1-A` 不吞 `1-Agent理论`，不是裸字符串前缀）、尾斜杠先剥再拼（`"11-实践案例"` 与 `"11-实践案例/"` 同结果）、`None`/空 = 不限（缺省行为与本参数落地之前**逐位一致**）。
+
+两条边界必须说清：① 带范围时召回放大到 `SCOPE_RECALL_K=200` —— 两通道都没有"前缀过滤"的原生支持，只能多召回再筛，不放大就会出现"范围内明明有、只是排在 20 名之外"的**假空结果**；② **范围内无命中就返回空**，回执回显 `scope` 并明说"限定范围不会自动退回全库" —— **"范围写错了"与"库里真没有"必须是两种回执**，否则人会把前者误读成后者、以为那件事压根没记过。
+
+**为什么不做"精确行号引用"**：实测把 120 条命中块的正文回源文件里逐字找，**只有 1 条（0.8%）对得上**（分块是 LangChain `MarkdownHeaderTextSplitter` 的产物，空白与标题处理跟原文件不一致），硬做等于 99% 的偏移默默算错。
+
+参见：[note_search](#notesearch笔记检索工具) · [RAG 侧车](#rag-侧车rag-sidecar) · `Log/ROADMAP.md` 的 P11（第 14 步） · `Log/DECISION_LOG.md#log-2026-10-07-rag-scope`
 
 ### spec（工具参数规格）
 `tools/spec.ts`（2026-09-06 新增，5 个构造器 + 2 个派生函数 + [defineTool](#definetool工具定义构造器)）。**一份定义派生三样**：`toJsonSchema(spec)` → 发给 LLM 的 `parameters`；`parseSpec(spec, args)` → 运行时审核并补齐默认值；`Infer<typeof spec>` → handler 的入参类型。改一处、三处同时变——`verify-spec.ts` 的 1-6~1-8b 用**对照组**钉住这一点（只改 spec 里一个键，两个派生物必须同时跟着变），否则“同源”可以被实现成“两份各自硬编码但恰好一致”而全绿。

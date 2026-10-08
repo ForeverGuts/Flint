@@ -56,7 +56,8 @@ check('B2 task 注册且不含 requirePermission: true（管理自有资源不�
     builtinSrc.slice(builtinSrc.indexOf("name: 'task'"), builtinSrc.length)));
 check('B3 spawn 的授权键 = 完整命令（一字不截，与 bash 同边界）',
   /permissionKey: \(args\) => String\(args\.command/.test(builtinSrc));
-check('B4 模块头工具数到 20（不是"悄悄多一个"）', /共 20 个/.test(builtinSrc));
+check('B4 模块头工具数到 21（不是"悄悄多一个"；2026-10-06 加 note_search 后 20→21）',
+  /共 21 个/.test(builtinSrc) && !/共 20 个/.test(builtinSrc));
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    ② C6：后台输出只进缓冲、绝不直写 stdout
